@@ -1,0 +1,13 @@
+{
+  "tool": "get_trace",
+  "args": {
+    "environment_slug": "receipts-demo",
+    "trace_id": "5b8aa5a2d2c872e8321cf37308d69df2",
+    "time_range": "30d"
+  },
+  "structured_content": null,
+  "content_texts": [
+    "| span_id | parent_id | start_unix_ns | duration_ns | kind | status_code | error | http_status | service | route | name | annotation_type | link_span_id | link_trace_id | depth | child_count | descendant_count | event_count | is_collapsed |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n| 051581bf3cb55c13 |  | 1788384756017159168 | 5000000 | internal | UNSET | false |  | receipts-smoke |  | day0.smoke |  |  |  | 0 | 0 | 0 | 0 | false |\n\n\n---\nMetadata:\n  environment: receipts-demo\n  mean_sample_rate: 1\n  navigation_hints: Small trace. Use 'full' mode to see all details.; Use focus_span_id='051581bf3cb55c13' to examine the slowest span and its children.\n  time_range: 2592000 seconds\n  total_spans: 1\n  trace_id: 5b8aa5a2d2c872e8321cf37308d69df2\n  trace_link: \"https://ui.honeycomb.io/acme-team/environments/receipts-demo/result/xzqzcEtfJ7z/trace?trace_id=5b8aa5a2d2c872e8321cf37308d69df2\"\n  trace_result_json: \"https://mcp.honeycomb.io/query_results/REDACTED-SIGNED-URL\"\n  trace_result_pk: xzqzcEtfJ7z\n  view_mode: auto\n  visible_spans: 1\n"
+  ],
+  "is_error": false
+}

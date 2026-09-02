@@ -1,0 +1,31 @@
+{
+  "tool": "run_query",
+  "args": {
+    "environment_slug": "receipts-demo",
+    "dataset_slug": "receipts-shop",
+    "query_spec": {
+      "calculations": [
+        {
+          "op": "COUNT"
+        }
+      ],
+      "filters": [
+        {
+          "column": "cloud.region",
+          "op": "=",
+          "value": "us-west-2"
+        }
+      ],
+      "breakdowns": [
+        "customer.id"
+      ],
+      "time_range": 1800
+    }
+  },
+  "structured_content": null,
+  "content_texts": [
+    "# Results\n\n| COUNT | customer.id |\n| --- | --- |\n| 100 | customer-0000 |\n| 99 | customer-0001 |\n| 98 | customer-0002 |\n| 97 | customer-0003 |\n| 96 | customer-0004 |\n| 95 | customer-0005 |\n| 94 | customer-0006 |\n| 93 | customer-0007 |\n| 92 | customer-0008 |\n| 91 | customer-0009 |\n| 90 | customer-0010 |\n| 89 | customer-0011 |\n| 88 | customer-0012 |\n| 87 | customer-0013 |\n| 86 | customer-0014 |\n| 85 | customer-0015 |\n| 84 | customer-0016 |\n| 83 | customer-0017 |\n| 82 | customer-0018 |\n| 81 | customer-0019 |\n| 80 | customer-0020 |\n| 79 | customer-0021 |\n| 78 | customer-0022 |\n| 77 | customer-0023 |\n| 76 | customer-0024 |\n| 75 | customer-0025 |\n| 74 | customer-0026 |\n| 73 | customer-0027 |\n| 72 | customer-0028 |\n| 71 | customer-0029 |\n\n---\nMetadata:\n  elapsed_str: 42.000000ms\n  granularity: 900\n  query_result_image: \"https://ui.honeycomb.io/img/synthetic\"\n  query_result_json: \"https://mcp.honeycomb.io/query_results/SYNTHETIC\"\n  query_run_pk: synthPk123\n  query_url: \"https://ui.honeycomb.io/acme-team/environments/receipts-demo/datasets/receipts-shop/result/synthPk123\"\n  rows_examined: 30\n  total: 30\n---\n"
+  ],
+  "is_error": false,
+  "note": "Synthesized, not a live capture: exercises the 25-row cap (30 breakdown rows)."
+}

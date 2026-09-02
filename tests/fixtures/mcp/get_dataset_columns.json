@@ -1,0 +1,12 @@
+{
+  "tool": "get_dataset_columns",
+  "args": {
+    "environment_slug": "receipts-demo",
+    "dataset_slug": "receipts-smoke"
+  },
+  "structured_content": null,
+  "content_texts": [
+    "# Columns\n\n| Name | Type | Description | LastWritten |\n| --- | --- | --- | --- |\n| duration_ms | float | Elapsed span time in milliseconds | 2026-09-02 21:32:36 |\n| meta.signal_type | string | The original signal type before Honeycomb event conversion (`trace`, `log`, `metric`) | 2026-09-02 21:32:36 |\n| name | string | Span operation name (from `Span.name`) | 2026-09-02 21:32:36 |\n| scenario.run_id | string |  | 2026-09-02 21:32:36 |\n| service.name | string | Logical name of the service.<br> | 2026-09-02 21:32:36 |\n| span.kind | string | Span kind: `client`, `server`, `internal`, `producer`, `consumer` | 2026-09-02 21:32:36 |\n| span.num_events | integer |  | 2026-09-02 21:32:36 |\n| span.num_links | integer |  | 2026-09-02 21:32:36 |\n| status_code | integer | OTel span status: `0`=Unset, `1`=Ok, `2`=Error | 2026-09-02 21:32:36 |\n| trace.span_id | string | Span ID as a hex string. Also present on log events for trace correlation | 2026-09-02 21:32:36 |\n| trace.trace_id | string | Trace ID as a hex string. Also present on log events for trace correlation | 2026-09-02 21:32:36 |\n| type | string | Honeycomb-specific span kind field; same values as `span.kind`, included for backwards compatibility | 2026-09-02 21:32:36 |\n\n\n---\nMetadata:\n  dataset: receipts-smoke\n  environment: receipts-demo\n  items_per_page: 1000\n  page: 1\n  total_items: 12\n  total_pages: 1\n---\nDataset semantics:\n  kind: events (tracing)\n  row_unit: span\n  notes:\n    - Each row is a span \u2014 a unit of work or operation, per OpenTelemetry.\n    - COUNT aggregates spans (instrumentation points), not requests, users, or traffic volume.\n    - Span-count ratios are meaningful only when both sides filter to spans representing the same unit of work (e.g., same name, kind, or required attribute). An unfiltered COUNT denominator almost always mixes heterogeneous span types.\n    - For counting underlying work events, prefer SUM on a numeric count attribute on the span (e.g., app.*.success_count, app.*.batch_size) over COUNT of spans.\n    - For latency, use HEATMAP or P95/P99 over the duration_ms column rather than AVG.\n    - If a metrics dataset exposes the same signal directly (bytes, ops, errors), it is usually the better source for rate/ratio questions.\n"
+  ],
+  "is_error": false
+}

@@ -1,0 +1,19 @@
+{
+  "tool": "run_bubbleup",
+  "args": {
+    "environment_slug": "receipts-demo",
+    "dataset_slug": "receipts-smoke",
+    "query_pk": "ig2gXHFcbfm",
+    "selection": {
+      "type": "group",
+      "group": {
+        "service.name": "receipts-smoke"
+      }
+    }
+  },
+  "structured_content": null,
+  "content_texts": [
+    "# BubbleUp Analysis\n\n**12 significant columns** (Page 1/1)\n\nBaseline: 0 rows | Selection: 1 rows | Last 24h0m0s\n\n## Dimensions\n\n**duration_ms** (100% baseline / 100% selection populated)\n- 5: 0.0% \u2192 100.0% (\u2191 100.0%)\n\n\n**meta.signal_type** (100% baseline / 100% selection populated)\n- trace: 0.0% \u2192 100.0% (\u2191 100.0%)\n\n\n**name** (100% baseline / 100% selection populated)\n- day0.smoke: 0.0% \u2192 100.0% (\u2191 100.0%)\n\n\n**scenario.run_id** (100% baseline / 100% selection populated)\n- day0: 0.0% \u2192 100.0% (\u2191 100.0%)\n\n\n**service.name** (100% baseline / 100% selection populated)\n- receipts-smoke: 0.0% \u2192 100.0% (\u2191 100.0%)\n\n\n**span.kind** (100% baseline / 100% selection populated)\n- internal: 0.0% \u2192 100.0% (\u2191 100.0%)\n\n\n**span.num_events** (100% baseline / 100% selection populated)\n- 0: 0.0% \u2192 100.0% (\u2191 100.0%)\n\n\n**span.num_links** (100% baseline / 100% selection populated)\n- 0: 0.0% \u2192 100.0% (\u2191 100.0%)\n\n\n**status_code** (100% baseline / 100% selection populated)\n- 0: 0.0% \u2192 100.0% (\u2191 100.0%)\n\n\n**trace.span_id** (100% baseline / 100% selection populated)\n- 051581bf3cb55c13: 0.0% \u2192 100.0% (\u2191 100.0%)\n\n\n**trace.trace_id** (100% baseline / 100% selection populated)\n- 5b8aa5a2d2c872e8321cf37308d69df2: 0.0% \u2192 100.0% (\u2191 100.0%)\n\n\n**type** (100% baseline / 100% selection populated)\n- internal: 0.0% \u2192 100.0% (\u2191 100.0%)\n\n\n\n---\nMetadata:\n  bubble_up_url: \"https://ui.honeycomb.io/acme-team/environments/receipts-demo/datasets/receipts-smoke/result/ig2gXHFcbfm?tab=bubbleup&bubbleup_result=ujVTPWn4uyd\"\n  dataset: receipts-smoke\n  end_item: 12\n  environment: receipts-demo\n  page: 1\n  query_run_pk: ig2gXHFcbfm\n  start_item: 1\n  total_columns: 12\n  total_pages: 1\n"
+  ],
+  "is_error": false
+}
