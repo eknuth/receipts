@@ -143,7 +143,9 @@ class Report(BaseModel):
 ```
 
 Providers share one interface (messages in, tool use out). `anthropic.py` first, default model
-`claude-sonnet-4-5`. `bedrock.py` uses `boto3` `converse` with tool config (R11). Budget per run:
+from `ANTHROPIC_MODEL` (`claude-sonnet-4-5` in the plan; `claude-sonnet-5` also verified working and
+cheaper). The Anthropic key is identity-linked, so every request must carry the header
+`anthropic-workspace-id: $ANTHROPIC_WORKSPACE_ID` (pass `default_headers` to the SDK client). `bedrock.py` uses `boto3` `converse` with tool config (R11). Budget per run:
 under 40 MCP calls and 8 minutes.
 
 Self-telemetry (`agent/telemetry.py`), OTel GenAI semconv, exported to the same environment:
