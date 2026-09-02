@@ -1,0 +1,46 @@
+[project]
+name = "receipts"
+version = "0.1.0"
+description = "Investigation agent for the hosted Honeycomb MCP, plus an outcome-grading eval harness."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic",
+    "mcp>=2,<3",
+    "opentelemetry-sdk",
+    "opentelemetry-exporter-otlp-proto-http",
+    "pydantic",
+    "pydantic-settings",
+    "pyyaml",
+    "rich",
+    "httpx",
+]
+
+[project.optional-dependencies]
+bedrock = ["boto3"]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["receipts", "gen", "agent", "evals"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
