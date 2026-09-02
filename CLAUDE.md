@@ -6,7 +6,7 @@ truth that grades outcomes, not process. Target: a working vertical slice by 202
 build by 2026-09-09.
 
 Work is tracked in Linear, team EDW, project "Receipts", issues EDW-1323 through EDW-1336
-(R1 to R14). Each issue carries Context, Spec, Acceptance criteria, and Out of scope. Read the
+(R1 to R14) plus R15 (Ollama provider). Each issue carries Context, Spec, Acceptance criteria, and Out of scope. Read the
 issue before starting it. Use the Linear MCP; the `linear` CLI is the fallback.
 
 Vault note: `~/proj/edwin-knuth/Projects/Honeycomb Demo - Receipts.md`. Full plan:
@@ -40,7 +40,7 @@ receipts/
     emit.py           baseline + fault traffic to Honeycomb via OTLP/HTTP
     verify.py         asserts the injected fault is visible via a Honeycomb query
   agent/          the investigator
-    providers/    anthropic.py, bedrock.py (same interface: messages + tool use)
+    providers/    anthropic.py, bedrock.py, ollama.py (same interface: messages + tool use)
     mcp_client.py hosted Honeycomb MCP over streamable HTTP, Bearer key, read tools only
     loop.py       orient -> characterize -> bubbleup -> trace -> verify-by-negation -> report
     report.py     pydantic Report schema
@@ -186,6 +186,6 @@ per-scenario table, mean and spread per config, and Honeycomb permalinks per run
 ## Build order
 
 Vertical slice first, then expand: R1, R2, R3, R4 (two scenarios: one latency spike, one
-control), R6, R7, R8 (2 x 1 x 3), R9. Then R5, R10, R13, R14. R11 (Bedrock) and R12 (Canvas) last
-and droppable. If the recruiter screen lands before the grader exists, the honest line is
+control), R6, R7, R8 (2 x 1 x 3), R9. Then R5, R10, R13, R14. R15 (Ollama, `qwen3.8:27b` local, free dev runs
+and a third report column), then R11 (Bedrock) and R12 (Canvas) last and droppable. If the recruiter screen lands before the grader exists, the honest line is
 "generator and MCP loop work, grader is this week." Never present partial numbers.
