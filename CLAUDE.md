@@ -63,6 +63,9 @@ Packages: `anthropic`, `boto3` (R11 only), `mcp` (streamable HTTP client), `open
   `get_dataset_columns`, `find_columns`, `find_queries`, `run_query`, `get_query_results`,
   `run_bubbleup`, `get_trace`, `get_slos`, `get_triggers`. Write tools (R12 only):
   `create_board`, `canvas_agent_invoke`, `canvas_agent_poll_response`.
+- `mcp` is pinned to 2.x. The 2.x client entrypoint is
+  `mcp.client.streamable_http.streamable_http_client` (1.x called it `streamablehttp_client`);
+  Honeycomb's published snippets use the 1.x name.
 - Propagate `traceparent` in MCP `params._meta` so agent spans link to MCP-side spans.
 - Agent Timeline groups spans by `gen_ai.conversation.id`. Free tier: 20M events/month.
 - Method to follow, from `honeycombio/agent-skill` (`honeycomb-investigator` agent and

@@ -1,18 +1,43 @@
+import re
+
 import pytest
 
-from receipts.settings import Settings
+from receipts.settings import REPO_ROOT, Settings
+
+ENV_EXAMPLE = REPO_ROOT / ".env.example"
+
+
+def env_example_names() -> list[str]:
+    """Every variable name declared in .env.example."""
+    names = []
+    for line in ENV_EXAMPLE.read_text().splitlines():
+        m = re.match(r"^([A-Z][A-Z0-9_]*)=", line)
+        if m:
+            names.append(m.group(1))
+    return names
 
 
 @pytest.fixture
-def settings() -> Settings:
+def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Remove every project variable from the process environment.
+
+    _env_file=None alone only blocks the dotenv file; an exported shell
+    variable would still leak into a test-built Settings.
+    """
+    for name in env_example_names():
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture
+def settings(clean_env: None) -> Settings:
     """A Settings instance populated with fake, non-secret values.
 
-    Ignores any real .env so tests do not depend on local secrets.
+    Ignores the real .env and the shell so tests never depend on local secrets.
     """
     return Settings(
         _env_file=None,
-        HONEYCOMB_INGEST_KEY="fake-ingest-key",
-        HONEYCOMB_MCP_KEY="fake-key-id:fake-secret",
-        ANTHROPIC_API_KEY="fake-anthropic-key",
-        ANTHROPIC_WORKSPACE_ID="fake-workspace-id",
+        honeycomb_ingest_key="fake-ingest-key",
+        honeycomb_mcp_key="fake-key-id:fake-secret",
+        anthropic_api_key="fake-anthropic-key",
+        anthropic_workspace_id="fake-workspace-id",
     )

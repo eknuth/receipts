@@ -1061,7 +1061,7 @@ requires-dist = [
     { name = "anthropic" },
     { name = "boto3", marker = "extra == 'bedrock'" },
     { name = "httpx" },
-    { name = "mcp" },
+    { name = "mcp", specifier = ">=2,<3" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-sdk" },
     { name = "pydantic" },
