@@ -49,8 +49,10 @@ receipts/
     telemetry.py  gen_ai.* spans for the agent's own loop -> same Honeycomb env
   evals/
     grader.py     outcome scoring against scenario ground truth
-    run.py        N scenarios x M configs x K repeats, JSON + markdown report
+    run.py        N scenarios x M configs x K repeats; writes results/<config>/<scenario>/<n>/
+    report.py     renders report.md from the grade.json files, nothing hand-typed
     report.md     generated
+    results/      gitignored except runs.json, the index of emitted run ids per scenario
 ```
 
 Packages: `anthropic`, `boto3` (R11 only), `mcp` (streamable HTTP client), `opentelemetry-sdk`,
@@ -197,9 +199,16 @@ receipts components are reported separately on `Grade` as well as summed. Record
 next to the outcome score: tool calls, tokens, cost, wall time, plus Honeycomb's own process
 score for contrast. Every weight and penalty is explained in `evals/grader.md`.
 
-Runner: `uv run evals/run.py --scenarios all --configs full,no-negation,no-notchecked --repeats 3`.
-A failed run is recorded as 0 with the error, never skipped. Output `evals/report.md` with a
-per-scenario table, mean and spread per config, and Honeycomb permalinks per run.
+Runner: `uv run python -m evals.run --scenarios all --configs full,no-negation,no-notchecked
+--repeats 3`. One emit per scenario serves every config and repeat; `--emit` makes a fresh one,
+otherwise the latest run id per scenario in `evals/results/runs.json` is reused (that file is an
+index over the manifests in `gen/runs/`, rebuilt from them when an entry is missing). A run that
+raises, or that the loop ends with an error, is recorded as `total=0` with the error and is not
+put through the grader (an empty report on a control would grade as right); a run the call cap
+or wall cap ended is graded normally. Output `evals/report.md` with a per-scenario table showing
+`total` next to `outcome_score` per config, mean and range, top-right count, a process table, the
+"passes Honeycomb's process eval, total under 0.5" column, and a permalink per run. Rendering is
+byte-identical from the same results directory, and a test pins it.
 
 ## Reuse
 

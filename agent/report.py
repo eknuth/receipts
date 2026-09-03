@@ -257,6 +257,11 @@ class Report(BaseModel):
             while path.exists():
                 path = directory / f"report-{attempt}.json"
                 attempt += 1
+        return self.write_to(path)
+
+    def write_to(self, path: Path) -> Path:
+        """Write the report to exactly `path`. The eval runner chooses its own layout."""
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(self.model_dump_json(indent=2) + "\n")
         return path
 
