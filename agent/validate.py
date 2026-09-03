@@ -4,13 +4,22 @@ The two rules that are the point of this project are enforced here, in code,
 against the tool log. Nothing in this module trusts a field the model wrote.
 
   Receipts. Every hypothesis carries at least one `run_query` that was made in
-  this run, and, when negation is required, a `WHERE NOT` query that was made
-  too. Every `query_id` in the report has to appear in the log.
+  this run, and, when negation is required, a query that was made in this run
+  and that actually excluded one of the dimensions the hypothesis claims. Every
+  `query_id` in the report has to appear in the log against the tool that
+  returned it.
 
   Not checked. Every entry in `not_checked` names something that is absent from
   the arguments of the queries that were run. An entry naming a column the run
   broke down on is a false claim about the run's own coverage, which is worse
   than an empty list.
+
+A citation is a pair, not a string. The hosted MCP returns the same `query_id`
+from `run_query`, from a `run_bubbleup` built on that query, and from
+`get_query_results` reading it back. Matching on the identifier alone therefore
+let a BubbleUp ranking satisfy the requirement to cite rows. Every check here
+matches the identifier against the tool that produced it, and ignores calls the
+server flagged as errors.
 
 The vocabulary comes from `charles/api/src/services/fact-checker.ts`:
 `unsupported` for a claim with nothing behind it, `partial` for one that goes
@@ -25,11 +34,12 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from agent.report import (
     PRIMARY_EVIDENCE_TOOL,
     Evidence,
+    Hypothesis,
     ReportDraft,
     ToolCall,
 )
@@ -38,6 +48,21 @@ from agent.report import (
 # means for the not-checked list. Discovery calls such as `find_columns` are
 # not in here: looking a column up is not measuring it.
 QUERY_TOOLS: frozenset[str] = frozenset({"run_query", "run_bubbleup", "list_spans"})
+
+# Filter operators that cut a population out rather than select one. A negation
+# query has to carry one of these on a dimension the hypothesis claims. That is
+# what separates a real `WHERE NOT` from a second look at the same rows.
+EXCLUDING_OPS: frozenset[str] = frozenset(
+    {
+        "!=",
+        "not-in",
+        "does-not-contain",
+        "does-not-start-with",
+        "does-not-end-with",
+        "does-not-exist",
+        "not-exists",
+    }
+)
 
 # Argument keys that carry a column name or a filter value.
 _COLUMN_KEYS: frozenset[str] = frozenset({"column", "columns", "breakdowns", "group_by"})
@@ -48,12 +73,12 @@ _VALUE_KEYS: frozenset[str] = frozenset({"value", "values"})
 # `payments.charge`, `duration_ms`, and `us-west-2` from ordinary prose. A
 # live run showed why: an entry reading "did not examine specific error
 # message text" was rejected for naming the `error` column, which it was not.
-# The cost of the rule is that an entry naming a single-word column, such as
-# `error` on its own, gets through. That is the cheaper mistake: a false
-# rejection burns a turn and reads as the validator being wrong, and the
-# single-word columns in this dataset are the ones a reader is least likely to
-# care about.
 _TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:[.\-][A-Za-z0-9_]+)+|[A-Za-z]+_[A-Za-z0-9_]+")
+
+# A single-word column is only caught when the entry points at it as a column:
+# in backticks or quotes, or as the whole entry. That keeps `error` on its own
+# from getting through while leaving "specific error message text" alone.
+_QUOTED = re.compile(r"[`\"']\s*([A-Za-z_][A-Za-z0-9_.\-]*)\s*[`\"']")
 
 
 @dataclass(frozen=True)
@@ -70,13 +95,50 @@ class Issue:
         return f"{self.code}: {self.message}"
 
 
+@dataclass(frozen=True)
+class LogIndex:
+    """The tool log, keyed the way the checks need to read it.
+
+    Only calls the server did not flag as errors are indexed. A failed call
+    returns no rows, so its identifier is not a receipt for anything.
+    """
+
+    ids_by_tool: dict[str, set[str]] = field(default_factory=dict)
+    calls_by_id: dict[str, list[ToolCall]] = field(default_factory=dict)
+
+    @property
+    def all_ids(self) -> set[str]:
+        return {qid for ids in self.ids_by_tool.values() for qid in ids}
+
+    def ids_from(self, tool: str) -> set[str]:
+        return self.ids_by_tool.get(tool, set())
+
+    def calls_for(self, query_id: str, *, tool: str) -> list[ToolCall]:
+        return [call for call in self.calls_by_id.get(query_id, []) if call.name == tool]
+
+
+def index_log(tool_log: Sequence[ToolCall]) -> LogIndex:
+    """Index the successful calls by tool and by identifier."""
+    ids_by_tool: dict[str, set[str]] = {}
+    calls_by_id: dict[str, list[ToolCall]] = {}
+    for call in tool_log:
+        if not call.query_id or call.is_error:
+            continue
+        ids_by_tool.setdefault(call.name, set()).add(call.query_id)
+        calls_by_id.setdefault(call.query_id, []).append(call)
+    return LogIndex(ids_by_tool=ids_by_tool, calls_by_id=calls_by_id)
+
+
 def query_ids(tool_log: Sequence[ToolCall], *, tools: Iterable[str] | None = None) -> set[str]:
-    """Every `query_id` the run collected, optionally from named tools only."""
+    """Every `query_id` the run collected, optionally from named tools only.
+
+    Calls the server flagged as errors are left out.
+    """
     allowed = None if tools is None else set(tools)
     return {
         call.query_id
         for call in tool_log
-        if call.query_id and (allowed is None or call.name in allowed)
+        if call.query_id and not call.is_error and (allowed is None or call.name in allowed)
     }
 
 
@@ -84,16 +146,25 @@ def queried_terms(tool_log: Sequence[ToolCall], *, run_id: str | None = None) ->
     """The columns and values the run's queries named.
 
     The run id is dropped: it is on every query by construction, so it is not
-    evidence that anything was investigated.
+    evidence that anything was investigated. A call the server rejected is
+    dropped too: it returned no rows, so it measured nothing.
     """
     terms: set[str] = set()
     for call in tool_log:
-        if call.name in QUERY_TOOLS:
+        if call.name in QUERY_TOOLS and not call.is_error:
             _collect(call.args, None, terms)
     terms.discard("scenario.run_id")
     if run_id:
         terms.discard(run_id)
     return terms
+
+
+def excluded_columns(calls: Sequence[ToolCall]) -> set[str]:
+    """The columns these calls filtered out, by any operator that excludes."""
+    out: set[str] = set()
+    for call in calls:
+        _collect_exclusions(call.args, out)
+    return out
 
 
 def _collect(node: object, key: str | None, out: set[str]) -> None:
@@ -113,6 +184,24 @@ def _collect(node: object, key: str | None, out: set[str]) -> None:
         out.add(node)
 
 
+def _collect_exclusions(node: object, out: set[str]) -> None:
+    """Walk one arguments tree for filter clauses that exclude a population.
+
+    Per-calculation filters count. A query that measures the population and
+    its complement in one shot is the shape Honeycomb's own guidance asks for.
+    """
+    if isinstance(node, dict):
+        op = node.get("op")
+        column = node.get("column")
+        if isinstance(op, str) and isinstance(column, str) and op in EXCLUDING_OPS:
+            out.add(column)
+        for value in node.values():
+            _collect_exclusions(value, out)
+    elif isinstance(node, list):
+        for item in node:
+            _collect_exclusions(item, out)
+
+
 def validate_draft(
     draft: ReportDraft,
     tool_log: Sequence[ToolCall],
@@ -123,20 +212,20 @@ def validate_draft(
 ) -> list[Issue]:
     """Every reason this report should not be accepted. Empty means accepted."""
     issues: list[Issue] = []
-    known = query_ids(tool_log)
-    from_queries = query_ids(tool_log, tools=[PRIMARY_EVIDENCE_TOOL])
+    index = index_log(tool_log)
+    terms = queried_terms(tool_log, run_id=run_id)
 
-    issues += _check_hypotheses(draft, known, from_queries, require_negation=require_negation)
-    issues += _check_baseline(draft, known, from_queries)
+    issues += _check_hypotheses(draft, index, terms, require_negation=require_negation)
+    issues += _check_baseline(draft, index)
     if require_not_checked:
-        issues += _check_not_checked(draft, tool_log, run_id=run_id)
+        issues += _check_not_checked(draft, terms)
     return issues
 
 
 def _check_hypotheses(
     draft: ReportDraft,
-    known: set[str],
-    from_queries: set[str],
+    index: LogIndex,
+    terms: set[str],
     *,
     require_negation: bool,
 ) -> list[Issue]:
@@ -150,28 +239,10 @@ def _check_hypotheses(
             )
         )
 
-    for index, hypothesis in enumerate(draft.hypotheses):
-        label = f"hypotheses[{index}] ({hypothesis.claim[:60]!r})"
-
-        if not hypothesis.evidence:
-            issues.append(
-                Issue(
-                    "unsupported",
-                    f"{label} carries no evidence. Every hypothesis needs at least one "
-                    "run_query from this session whose rows support it.",
-                )
-            )
-        else:
-            issues += _check_ids(hypothesis.evidence, known, f"{label} evidence")
-            if not any(item.query_id in from_queries for item in hypothesis.evidence):
-                issues.append(
-                    Issue(
-                        "partial",
-                        f"{label} cites no run_query. BubbleUp and traces point at a cause; "
-                        "rows are what carry it. Run the query and cite it.",
-                    )
-                )
-
+    for position, hypothesis in enumerate(draft.hypotheses):
+        label = f"hypotheses[{position}] ({hypothesis.claim[:60]!r})"
+        issues += _check_evidence(hypothesis, label, index)
+        issues += _check_dims(hypothesis, label, terms)
         if hypothesis.negation is None:
             if require_negation:
                 issues.append(
@@ -182,16 +253,127 @@ def _check_hypotheses(
                     )
                 )
         else:
-            issues += _check_ids([hypothesis.negation], known, f"{label} negation")
+            issues += _check_negation(hypothesis, label, index, require_negation=require_negation)
 
     return issues
 
 
-def _check_baseline(draft: ReportDraft, known: set[str], from_queries: set[str]) -> list[Issue]:
+def _check_evidence(hypothesis: Hypothesis, label: str, index: LogIndex) -> list[Issue]:
+    if not hypothesis.evidence:
+        return [
+            Issue(
+                "unsupported",
+                f"{label} carries no evidence. Every hypothesis needs at least one "
+                "run_query from this session whose rows support it.",
+            )
+        ]
+    issues = _check_ids(hypothesis.evidence, index, f"{label} evidence")
+    from_queries = index.ids_from(PRIMARY_EVIDENCE_TOOL)
+    if not any(item.query_id in from_queries for item in hypothesis.evidence):
+        issues.append(
+            Issue(
+                "partial",
+                f"{label} cites no run_query. BubbleUp and traces point at a cause; "
+                "rows are what carry it. Run the query and cite it.",
+            )
+        )
+    return issues
+
+
+def _check_dims(hypothesis: Hypothesis, label: str, terms: set[str]) -> list[Issue]:
+    """The dimensions a hypothesis claims have to be dimensions it measured.
+
+    `dims` is the field the grader scores, so it is the field most worth
+    checking. A column that appears in no query's arguments was not measured,
+    whatever the claim says about it.
+    """
+    unmeasured = sorted(column for column in hypothesis.dims if column not in terms)
+    if not unmeasured:
+        return []
+    return [
+        Issue(
+            "unsupported",
+            f"{label} names {unmeasured} in dims, and no query in this session filtered or "
+            "broke down on them. Measure a dimension before claiming it.",
+        )
+    ]
+
+
+def _check_negation(
+    hypothesis: Hypothesis,
+    label: str,
+    index: LogIndex,
+    *,
+    require_negation: bool,
+) -> list[Issue]:
+    """A negation has to be a query that excluded what the hypothesis claims.
+
+    Presence of a second identifier is not enough. Without this the rule can be
+    satisfied by citing the evidence query twice, or by citing an unrelated
+    ranking, which would make the receipts rule a formality.
+
+    One claimed dimension is enough. A live run reported three dimensions and
+    negated the deployment version alone, which is a real test of the claim, so
+    requiring every dimension to be excluded would reject a correct report.
+    """
+    negation = hypothesis.negation
+    if negation is None:  # pragma: no cover - guarded by the caller
+        return []
+
+    issues = _check_ids([negation], index, f"{label} negation")
+    if issues:
+        return issues
+
+    if negation.query_id not in index.ids_from(PRIMARY_EVIDENCE_TOOL):
+        return [
+            Issue(
+                "partial",
+                f"{label} negation cites {negation.query_id!r}, which no run_query in this "
+                "session returned. A negation is a measurement, so it has to be a run_query.",
+            )
+        ]
+
+    if negation.query_id in {item.query_id for item in hypothesis.evidence}:
+        return [
+            Issue(
+                "partial",
+                f"{label} negation cites {negation.query_id!r}, the same query as its own "
+                "evidence. Run the measurement again WHERE NOT the dimensions in dims.",
+            )
+        ]
+
+    if not require_negation:
+        return []
+
+    if not hypothesis.dims:
+        return [
+            Issue(
+                "partial",
+                f"{label} carries a negation but no dims, so there is nothing for it to "
+                "exclude. Name the dimensions that select the affected population.",
+            )
+        ]
+
+    excluded = excluded_columns(index.calls_for(negation.query_id, tool=PRIMARY_EVIDENCE_TOOL))
+    claimed = set(hypothesis.dims)
+    if not (excluded & claimed):
+        return [
+            Issue(
+                "partial",
+                f"{label} negation query {negation.query_id!r} excludes {sorted(excluded)} and "
+                f"the claim rests on {sorted(claimed)}. Run the same measurement with a "
+                "!= or not-in on at least one of the dimensions in dims.",
+            )
+        ]
+    return []
+
+
+def _check_baseline(draft: ReportDraft, index: LogIndex) -> list[Issue]:
     """A report that says nothing happened has to show the window that was flat."""
-    issues = _check_ids(draft.baseline_evidence, known, "baseline_evidence")
+    issues = _check_ids(draft.baseline_evidence, index, "baseline_evidence")
     if draft.incident_present:
         return issues
+    from_queries = index.ids_from(PRIMARY_EVIDENCE_TOOL)
     if not draft.baseline_evidence:
         issues.append(
             Issue(
@@ -210,21 +392,20 @@ def _check_baseline(draft: ReportDraft, known: set[str], from_queries: set[str])
     return issues
 
 
-def _check_ids(evidence: Sequence[Evidence], known: set[str], label: str) -> list[Issue]:
+def _check_ids(evidence: Sequence[Evidence], index: LogIndex, label: str) -> list[Issue]:
+    known = index.all_ids
     return [
         Issue(
             "unsupported",
-            f"{label} cites query_id {item.query_id!r}, which no tool call in this session "
-            "returned. Cite an identifier from a result you received.",
+            f"{label} cites query_id {item.query_id!r}, which no successful tool call in this "
+            "session returned. Cite an identifier from a result you received.",
         )
         for item in evidence
         if item.query_id not in known
     ]
 
 
-def _check_not_checked(
-    draft: ReportDraft, tool_log: Sequence[ToolCall], *, run_id: str | None
-) -> list[Issue]:
+def _check_not_checked(draft: ReportDraft, terms: set[str]) -> list[Issue]:
     if not draft.not_checked:
         return [
             Issue(
@@ -234,19 +415,33 @@ def _check_not_checked(
             )
         ]
 
-    terms = queried_terms(tool_log, run_id=run_id)
+    lowered = {term.lower() for term in terms}
     issues: list[Issue] = []
     for entry in draft.not_checked:
-        named = {token for token in _TOKEN.findall(entry) if token in terms}
+        named = sorted({token for token in _candidates(entry) if token.lower() in lowered})
         if named:
             issues.append(
                 Issue(
                     "not_checked_false",
-                    f"not_checked entry {entry!r} names {sorted(named)}, which your own "
+                    f"not_checked entry {entry!r} names {named}, which your own "
                     "queries used. Take it off the list.",
                 )
             )
     return issues
+
+
+def _candidates(entry: str) -> set[str]:
+    """The words in one entry that could be naming a column.
+
+    Identifier-shaped words anywhere in the entry, plus anything quoted or
+    backticked, plus the entry itself when it is a bare name.
+    """
+    found = set(_TOKEN.findall(entry))
+    found |= set(_QUOTED.findall(entry))
+    stripped = entry.strip().strip("`\"'").strip()
+    if stripped and " " not in stripped:
+        found.add(stripped)
+    return found
 
 
 def rejection_message(issues: Sequence[Issue]) -> str:

@@ -128,6 +128,24 @@ def query_use(ident: str = "q") -> ToolUse:
     )
 
 
+def negation_use(ident: str = "n", column: str = "deployment.version") -> ToolUse:
+    """A real WHERE NOT: the same measurement with the population cut out."""
+    return use(
+        "run_query",
+        {
+            "dataset_slug": "receipts-shop",
+            "query_spec": {
+                "calculations": [{"op": "P99", "column": "duration_ms"}],
+                "filters": [
+                    {"column": "scenario.run_id", "op": "=", "value": RUN.run_id},
+                    {"column": column, "op": "!=", "value": "9.9.9"},
+                ],
+            },
+        },
+        ident,
+    )
+
+
 def report_args(**overrides: Any) -> dict[str, Any]:
     base: dict[str, Any] = {
         "incident_present": True,
@@ -239,7 +257,7 @@ async def test_the_loop_stops_when_a_valid_report_is_submitted(settings: Setting
     provider = FakeProvider(
         [
             completion(use("get_workspace_context", ident="a")),
-            completion(query_use("b"), query_use("c")),
+            completion(query_use("b"), negation_use("c")),
             completion(use(SUBMIT_REPORT, report_args(), ident="d")),
         ]
     )
@@ -258,7 +276,7 @@ async def test_the_process_fields_are_counted_not_taken_from_the_model(
 ) -> None:
     provider = FakeProvider(
         [
-            completion(query_use("b"), query_use("c")),
+            completion(query_use("b"), negation_use("c")),
             completion(use(SUBMIT_REPORT, report_args(), ident="d")),
         ]
     )
@@ -390,7 +408,7 @@ async def test_a_rejected_report_is_handed_back_once_and_can_be_fixed(
     bad = report_args(hypotheses=[dict(report_args()["hypotheses"][0], evidence=[])])
     provider = FakeProvider(
         [
-            completion(query_use("b"), query_use("c")),
+            completion(query_use("b"), negation_use("c")),
             completion(use(SUBMIT_REPORT, bad, ident="d")),
             completion(use(SUBMIT_REPORT, report_args(), ident="e")),
         ]
@@ -413,7 +431,7 @@ async def test_a_second_rejection_keeps_the_report_and_flags_it(settings: Settin
     bad = report_args(hypotheses=[dict(report_args()["hypotheses"][0], evidence=[])])
     provider = FakeProvider(
         [
-            completion(query_use("b"), query_use("c")),
+            completion(query_use("b"), negation_use("c")),
             completion(use(SUBMIT_REPORT, bad, ident="d")),
         ]
     )
@@ -431,7 +449,7 @@ async def test_a_not_checked_entry_that_was_queried_fails_validation(
     lying = report_args(not_checked=["deployment.version was never broken down on"])
     provider = FakeProvider(
         [
-            completion(query_use("b"), query_use("c")),
+            completion(query_use("b"), negation_use("c")),
             completion(use(SUBMIT_REPORT, lying, ident="d")),
         ]
     )
@@ -446,7 +464,7 @@ async def test_a_report_that_does_not_match_the_schema_is_handed_back(
 ) -> None:
     provider = FakeProvider(
         [
-            completion(query_use("b"), query_use("c")),
+            completion(query_use("b"), negation_use("c")),
             completion(use(SUBMIT_REPORT, {"incident_present": "maybe"}, ident="d")),
             completion(use(SUBMIT_REPORT, report_args(), ident="e")),
         ]
@@ -473,7 +491,7 @@ async def test_the_scenario_id_never_reaches_the_provider(settings: Settings) ->
     provider = FakeProvider(
         [
             completion(use("get_workspace_context", ident="a")),
-            completion(query_use("b"), query_use("c")),
+            completion(query_use("b"), negation_use("c")),
             completion(use(SUBMIT_REPORT, report_args(), ident="d")),
         ]
     )
@@ -518,7 +536,7 @@ async def test_the_report_writes_to_results_run_id_report_json(
 ) -> None:
     provider = FakeProvider(
         [
-            completion(query_use("b"), query_use("c")),
+            completion(query_use("b"), negation_use("c")),
             completion(use(SUBMIT_REPORT, report_args(), ident="d")),
         ]
     )
