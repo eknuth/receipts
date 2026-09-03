@@ -1,0 +1,20 @@
+id: payments-stripe-v251-uswest
+narrative: >-
+  v2.5.1 rolled to us-west-2; stripe calls in payments gained about 800ms at the
+  ten minute mark. eu-west-1 has been a little slow on the database all along,
+  which is not this.
+baseline: {rps: 15, minutes: 20}
+fault:
+  onset_min: 10
+  where: {deployment.version: "2.5.1", cloud.region: "us-west-2", payment.provider: "stripe"}
+  effect: {span: "payments.charge", latency_add_ms: 800, error_rate: 0.0}
+ground_truth:
+  incident_present: true
+  root_cause_dims: {deployment.version: "2.5.1", cloud.region: "us-west-2", payment.provider: "stripe"}
+  slow_or_failing_span: payments.charge
+  affected_share: 0.12
+red_herrings:
+  - where: {cloud.region: "eu-west-1"}
+    effect: {span: "db.query", latency_add_ms: 150}
+    onset_min: 0
+    note: pre-existing cross-region database latency, present before onset, not the incident

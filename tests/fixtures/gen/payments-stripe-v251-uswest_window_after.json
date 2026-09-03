@@ -1,0 +1,144 @@
+{
+  "tool": "run_query",
+  "args": {
+    "environment_slug": "receipts-demo",
+    "dataset_slug": "receipts-shop",
+    "query_spec": {
+      "calculations": [
+        {
+          "op": "COUNT",
+          "name": "inside_count",
+          "filters": [
+            {
+              "column": "deployment.version",
+              "op": "=",
+              "value": "2.5.1"
+            },
+            {
+              "column": "cloud.region",
+              "op": "=",
+              "value": "us-west-2"
+            },
+            {
+              "column": "payment.provider",
+              "op": "=",
+              "value": "stripe"
+            }
+          ]
+        },
+        {
+          "op": "P99",
+          "column": "duration_ms",
+          "name": "inside_p99",
+          "filters": [
+            {
+              "column": "deployment.version",
+              "op": "=",
+              "value": "2.5.1"
+            },
+            {
+              "column": "cloud.region",
+              "op": "=",
+              "value": "us-west-2"
+            },
+            {
+              "column": "payment.provider",
+              "op": "=",
+              "value": "stripe"
+            }
+          ]
+        },
+        {
+          "op": "COUNT",
+          "name": "inside_errors",
+          "filters": [
+            {
+              "column": "deployment.version",
+              "op": "=",
+              "value": "2.5.1"
+            },
+            {
+              "column": "cloud.region",
+              "op": "=",
+              "value": "us-west-2"
+            },
+            {
+              "column": "payment.provider",
+              "op": "=",
+              "value": "stripe"
+            },
+            {
+              "column": "error",
+              "op": "=",
+              "value": true
+            }
+          ]
+        },
+        {
+          "op": "COUNT",
+          "name": "outside_count",
+          "filters": [
+            {
+              "column": "deployment.version",
+              "op": "!=",
+              "value": "2.5.1"
+            },
+            {
+              "column": "cloud.region",
+              "op": "!=",
+              "value": "us-west-2"
+            },
+            {
+              "column": "payment.provider",
+              "op": "!=",
+              "value": "stripe"
+            }
+          ],
+          "filter_combination": "OR"
+        },
+        {
+          "op": "P99",
+          "column": "duration_ms",
+          "name": "outside_p99",
+          "filters": [
+            {
+              "column": "deployment.version",
+              "op": "!=",
+              "value": "2.5.1"
+            },
+            {
+              "column": "cloud.region",
+              "op": "!=",
+              "value": "us-west-2"
+            },
+            {
+              "column": "payment.provider",
+              "op": "!=",
+              "value": "stripe"
+            }
+          ],
+          "filter_combination": "OR"
+        }
+      ],
+      "filters": [
+        {
+          "column": "scenario.run_id",
+          "op": "=",
+          "value": "run-665e4c1b3bae"
+        },
+        {
+          "column": "name",
+          "op": "=",
+          "value": "payments.charge"
+        }
+      ],
+      "start_time": "2026-09-03T01:22:51.272426Z",
+      "end_time": "2026-09-03T01:32:51.272426Z"
+    }
+  },
+  "structured_content": null,
+  "content_texts": [
+    "# Results\n\n| inside_count | inside_errors | inside_p99 | outside_count | outside_p99 |\n| --- | --- | --- | --- | --- |\n| 1114 | 2 | 1101.46 | 7886 | 197.61 |\n| 0 | 0 | 0 | 0 | 0 |\n| 1114 | 2 | 1102.01 | 7886 | 197.61 |\n\n\n# Time Series\n\n```\ninside_errors [0.00 - 1.10]\n\u2502                                                                                                                        \n\u2502     \u00b7                                                                                                          \u00b7       \n\u2502                                                                                                                        \n\u2502                                                                                                                        \n\u2502                                                                                                                        \n\u2502                                                                                                                        \n\u2502                                                                                                                        \n\u2502                                                                                                                        \n\u2502                                                                                                                        \n\u2502                                                                                                                        \n\u2502                                                                                                                        \n\u2502\u00b7\u00b7\u00b7\u00b7\u00b7 \u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7 \u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n 2026-09-03T01:22Z                                  2026-09-03T01:27Z                                  2026-09-03T01:32Z\n```\n\n```\noutside_count [8.10 - 78.9]\n\u2502                                                                                                                        \n\u2502                                             \u00b7                                                                          \n\u2502    \u00b7   \u00b7\u00b7   \u00b7       \u00b7   \u00b7  \u00b7\u00b7\u00b7 \u00b7  \u00b7\u00b7    \u00b7 \u00b7  \u00b7  \u00b7 \u00b7 \u00b7\u00b7 \u00b7   \u00b7\u00b7  \u00b7   \u00b7\u00b7 \u00b7      \u00b7 \u00b7\u00b7\u00b7  \u00b7\u00b7\u00b7\u00b7    \u00b7\u00b7\u00b7\u00b7\u00b7\u00b7     \u00b7\u00b7\u00b7\u00b7  \u00b7\u00b7 \u00b7\u00b7 \u00b7 \u00b7 \n\u2502\u00b7\u00b7\u00b7\u00b7 \u00b7\u00b7\u00b7  \u00b7\u00b7\u00b7 \u00b7\u00b7\u00b7\u00b7\u00b7\u00b7\u00b7 \u00b7\u00b7\u00b7 \u00b7\u00b7   \u00b7 \u00b7\u00b7  \u00b7\u00b7\u00b7\u00b7 \u00b7 \u00b7  \u00b7\u00b7 \u00b7 \u00b7  \u00b7 \u00b7\u00b7\u00b7  \u00b7\u00b7 \u00b7\u00b7\u00b7  \u00b7 \u00b7\u00b7\u00b7\u00b7\u00b7\u00b7 \u00b7   \u00b7\u00b7    \u00b7\u00b7\u00b7\u00b7      \u00b7\u00b7\u00b7\u00b7\u00b7    \u00b7   \u00b7  \u00b7 \u00b7  \n\u2502                                                                                                             \u00b7          \n\u2502\u00b7                                                                                                                       \n\u2502                                                                                                                        \n\u2502                                                                                                                        \n\u2502                                                                                                                        \n\u2502                                                                                                                        \n\u2502                                                                                                                        \n\u2502                                                                                                                       \u00b7\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n 2026-09-03T01:22Z                                  2026-09-03T01:27Z                                  2026-09-03T01:32Z\n```\n\n```\noutside_p99 [95.8 - 467]\n\u2502                                                                                                                        \n\u2502                                                                              \u00b7                                         \n\u2502        \u00b7                                                                                                               \n\u2502   \u00b7                            \u00b7                                                                              \u00b7        \n\u2502                \u00b7              \u00b7                                 \u00b7                                    \u00b7                 \n\u2502                      \u00b7                                                                                                 \n\u2502 \u00b7                           \u00b7       \u00b7\u00b7         \u00b7                     \u00b7                          \u00b7                 \u00b7    \n\u2502\u00b7              \u00b7       \u00b7                  \u00b7              \u00b7    \u00b7   \u00b7                          \u00b7  \u00b7          \u00b7\u00b7\u00b7  \u00b7   \u00b7   \n\u2502    \u00b7\u00b7   \u00b7\u00b7          \u00b7    \u00b7        \u00b7   \u00b7         \u00b7    \u00b7 \u00b7   \u00b7\u00b7 \u00b7       \u00b7\u00b7 \u00b7\u00b7 \u00b7   \u00b7       \u00b7     \u00b7   \u00b7 \u00b7  \u00b7\u00b7\u00b7       \u00b7     \n\u2502  \u00b7   \u00b7\u00b7     \u00b7\u00b7  \u00b7\u00b7\u00b7\u00b7      \u00b7  \u00b7  \u00b7\u00b7 \u00b7   \u00b7   \u00b7\u00b7     \u00b7   \u00b7        \u00b7  \u00b7\u00b7    \u00b7     \u00b7\u00b7 \u00b7\u00b7  \u00b7\u00b7\u00b7   \u00b7 \u00b7   \u00b7              \u00b7     \u00b7\n\u2502           \u00b7\u00b7           \u00b7\u00b7  \u00b7            \u00b7 \u00b7  \u00b7\u00b7  \u00b7 \u00b7\u00b7    \u00b7\u00b7         \u00b7      \u00b7       \u00b7\u00b7    \u00b7\u00b7        \u00b7         \u00b7      \u00b7\u00b7 \n\u2502                                                                                                       \u00b7                \n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n 2026-09-03T01:22Z                                  2026-09-03T01:27Z                                  2026-09-03T01:32Z\n```\n\n```\ninside_count [0.70 - 16.3]\n\u2502                                                                                                                        \n\u2502 \u00b7                                                                                                           \u00b7          \n\u2502  \u00b7                                   \u00b7                                 \u00b7                              \u00b7             \u00b7  \n\u2502\u00b7             \u00b7  \u00b7 \u00b7\u00b7      \u00b7         \u00b7                        \u00b7    \u00b7     \u00b7 \u00b7                          \u00b7         \u00b7  \u00b7    \n\u2502          \u00b7\u00b7          \u00b7\u00b7\u00b7 \u00b7    \u00b7            \u00b7   \u00b7   \u00b7             \u00b7         \u00b7\u00b7 \u00b7    \u00b7    \u00b7\u00b7 \u00b7      \u00b7\u00b7\u00b7                  \n\u2502      \u00b7     \u00b7     \u00b7                     \u00b7 \u00b7              \u00b7     \u00b7      \u00b7            \u00b7       \u00b7                            \n\u2502\u00b7  \u00b7\u00b7\u00b7 \u00b7 \u00b7     \u00b7\u00b7                \u00b7\u00b7 \u00b7  \u00b7   \u00b7   \u00b7  \u00b7\u00b7  \u00b7\u00b7  \u00b7\u00b7     \u00b7        \u00b7      \u00b7      \u00b7    \u00b7\u00b7 \u00b7\u00b7         \u00b7\u00b7 \u00b7\u00b7  \u00b7     \n\u2502                         \u00b7  \u00b7\u00b7\u00b7 \u00b7  \u00b7             \u00b7          \u00b7          \u00b7      \u00b7   \u00b7   \u00b7\u00b7       \u00b7                 \u00b7    \u00b7 \n\u2502        \u00b7    \u00b7       \u00b7                   \u00b7    \u00b7      \u00b7  \u00b7       \u00b7   \u00b7\u00b7               \u00b7            \u00b7     \u00b7\u00b7          \u00b7   \n\u2502                                                             \u00b7                  \u00b7                                       \n\u2502                                             \u00b7                                                            \u00b7             \n\u2502                                                                                                                       \u00b7\n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n 2026-09-03T01:22Z                                  2026-09-03T01:27Z                                  2026-09-03T01:32Z\n```\n\n```\ninside_p99 [834 - 1.3K]\n\u2502                                                                                                                        \n\u2502                                                   \u00b7  \u00b7                                                                 \n\u2502                                                                                              \u00b7       \u00b7                 \n\u2502                                                                                                                        \n\u2502                 \u00b7                                            \u00b7  \u00b7        \u00b7                                             \n\u2502  \u00b7           \u00b7                    \u00b7       \u00b7     \u00b7              \u00b7  \u00b7                                              \u00b7    \u00b7\n\u2502\u00b7   \u00b7\u00b7              \u00b7\u00b7\u00b7\u00b7\u00b7      \u00b7  \u00b7  \u00b7         \u00b7        \u00b7  \u00b7            \u00b7      \u00b7             \u00b7      \u00b7  \u00b7     \u00b7 \u00b7\u00b7       \n\u2502 \u00b7 \u00b7  \u00b7\u00b7 \u00b7 \u00b7 \u00b7  \u00b7 \u00b7        \u00b7    \u00b7   \u00b7 \u00b7 \u00b7 \u00b7 \u00b7 \u00b7   \u00b7    \u00b7 \u00b7  \u00b7\u00b7        \u00b7     \u00b7\u00b7  \u00b7  \u00b7  \u00b7 \u00b7 \u00b7\u00b7   \u00b7  \u00b7  \u00b7  \u00b7   \u00b7      \u00b7    \n\u2502\u00b7       \u00b7 \u00b7 \u00b7      \u00b7         \u00b7   \u00b7       \u00b7          \u00b7\u00b7    \u00b7    \u00b7  \u00b7  \u00b7   \u00b7 \u00b7  \u00b7  \u00b7\u00b7  \u00b7 \u00b7 \u00b7  \u00b7   \u00b7\u00b7 \u00b7     \u00b7\u00b7\u00b7         \u00b7\u00b7 \n\u2502                          \u00b7   \u00b7        \u00b7        \u00b7                   \u00b7  \u00b7            \u00b7                         \u00b7  \u00b7  \u00b7   \n\u2502                            \u00b7                \u00b7                                                                          \n\u2502               \u00b7         \u00b7                                                                                              \n\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n 2026-09-03T01:22Z                                  2026-09-03T01:27Z                                  2026-09-03T01:32Z\n```\n\n---\nMetadata:\n  elapsed_str: 94.731673ms\n  granularity: 5\n  query_result_image: \"REDACTED\"\n  query_result_json: \"REDACTED\"\n  query_run_pk: binweomeBC\n  query_url: \"https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/binweomeBC\"\n  rows_examined: 421101\n  total: 1\n---\nDataset semantics:\n  kind: events (tracing)\n  row_unit: span\n  notes:\n    - Each row is a span \u2014 a unit of work or operation, per OpenTelemetry.\n    - COUNT aggregates spans (instrumentation points), not requests, users, or traffic volume.\n    - Span-count ratios are meaningful only when both sides filter to spans representing the same unit of work (e.g., same name, kind, or required attribute). An unfiltered COUNT denominator almost always mixes heterogeneous span types.\n    - For counting underlying work events, prefer SUM on a numeric count attribute on the span (e.g., app.*.success_count, app.*.batch_size) over COUNT of spans.\n    - For latency, use HEATMAP or P95/P99 over the duration_ms column rather than AVG.\n    - If a metrics dataset exposes the same signal directly (bytes, ops, errors), it is usually the better source for rate/ratio questions.\n"
+  ],
+  "is_error": false
+}

@@ -1,0 +1,22 @@
+id: deploy-regression-v260
+narrative: >-
+  v2.6.0 got slower at checkout at the ten minute mark, in every region and on
+  every payment provider. paypal has always been the slowest provider, which is
+  not this.
+baseline: {rps: 15, minutes: 20}
+dimensions:
+  deployment.version: {"2.5.0": 0.35, "2.5.1": 0.30, "2.6.0": 0.35}
+fault:
+  onset_min: 10
+  where: {deployment.version: "2.6.0"}
+  effect: {span: "checkout.process", latency_add_ms: 400, error_rate: 0.0}
+ground_truth:
+  incident_present: true
+  root_cause_dims: {deployment.version: "2.6.0"}
+  slow_or_failing_span: checkout.process
+  affected_share: 0.35
+red_herrings:
+  - where: {payment.provider: "paypal"}
+    effect: {span: "payments.charge", latency_add_ms: 120}
+    onset_min: 0
+    note: paypal is always slower, present before onset, smaller, and on a different span
