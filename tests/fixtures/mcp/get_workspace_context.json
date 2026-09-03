@@ -1,0 +1,9 @@
+{
+  "tool": "get_workspace_context",
+  "args": {},
+  "structured_content": null,
+  "content_texts": [
+    "HONEYCOMB WORKSPACE CONTEXT\n============================\n\nTEAM INFORMATION\n----------------\nName: acme-team\nSlug: acme-team\n\nCURRENT TIME\n------------\nEpoch: 1788391316\nHuman: 2026-09-02 23:21:56 UTC\n\nENVIRONMENTS\n------------\n<env>\nName: test\nSlug: test\nDataset Count: 2\nDescription: Automatically generated environment\n</env>\n\n<env>\nName: production\nSlug: production\nDataset Count: 2\n</env>\n\n<env>\nName: receipts-demo\nSlug: receipts-demo\nDataset Count: 1\nDescription: Receipts: investigation agent + outcome evals demo. Synthetic shop telemetry with injected faults.\n</env>\n\n\n\nSEMANTIC CONVENTIONS\n--------------------\nUse the semconv tool with action=list_namespaces to discover available namespaces, then use\nsearch or get to look up attribute definitions when constructing queries or interpreting columns.\n\n\nNEXT STEP\n---------\nUse 'get_environment' with an environment_slug to populate environment and dataset context.\n\n"
+  ],
+  "is_error": false
+}
