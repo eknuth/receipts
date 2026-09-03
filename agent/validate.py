@@ -231,7 +231,7 @@ def validate_draft(
     issues += _check_hypotheses(draft, index, terms, require_negation=require_negation)
     issues += _check_baseline(draft, index)
     if require_not_checked:
-        issues += _check_not_checked(draft, terms)
+        issues += not_checked_issues(draft.not_checked, terms)
     return issues
 
 
@@ -254,21 +254,46 @@ def _check_hypotheses(
 
     for position, hypothesis in enumerate(draft.hypotheses):
         label = f"hypotheses[{position}] ({hypothesis.claim[:60]!r})"
-        issues += _check_evidence(hypothesis, label, index)
+        issues += evidence_issues(hypothesis, index, label=label)
         issues += _check_dims(hypothesis, label, terms)
-        if hypothesis.negation is None:
-            if require_negation:
-                issues.append(
-                    Issue(
-                        "partial",
-                        f"{label} has no negation. Run the same measurement WHERE NOT the "
-                        "dimensions in dims, over the same window, and cite that query_id.",
-                    )
-                )
-        else:
-            issues += _check_negation(hypothesis, label, index, require_negation=require_negation)
+        issues += negation_issues(hypothesis, index, label=label, require_negation=require_negation)
 
     return issues
+
+
+def evidence_issues(hypothesis: Hypothesis, index: LogIndex, *, label: str) -> list[Issue]:
+    """Why this hypothesis's evidence does not count as a citation. Empty means it does.
+
+    Public because the grader scores the receipts rule with this exact check.
+    One definition of a citation, so the validator and the grader cannot
+    disagree about what counts.
+    """
+    return _check_evidence(hypothesis, label, index)
+
+
+def negation_issues(
+    hypothesis: Hypothesis,
+    index: LogIndex,
+    *,
+    label: str,
+    require_negation: bool = True,
+) -> list[Issue]:
+    """Why this hypothesis's negation does not count as one. Empty means it does.
+
+    A missing negation is an issue only when negation is required. That is
+    the R10 ablation knob; the grader never turns it off.
+    """
+    if hypothesis.negation is None:
+        if not require_negation:
+            return []
+        return [
+            Issue(
+                "partial",
+                f"{label} has no negation. Run the same measurement WHERE NOT the "
+                "dimensions in dims, over the same window, and cite that query_id.",
+            )
+        ]
+    return _check_negation(hypothesis, label, index, require_negation=require_negation)
 
 
 def _check_evidence(hypothesis: Hypothesis, label: str, index: LogIndex) -> list[Issue]:
@@ -442,8 +467,13 @@ def _check_ids(evidence: Sequence[Evidence], index: LogIndex, label: str) -> lis
     ]
 
 
-def _check_not_checked(draft: ReportDraft, terms: set[str]) -> list[Issue]:
-    if not draft.not_checked:
+def not_checked_issues(not_checked: Sequence[str], terms: set[str]) -> list[Issue]:
+    """Why the not-checked list is not truthful. Empty means it is.
+
+    Public for the same reason as `evidence_issues`: the grader's not-checked
+    component is this check, not a second opinion of it.
+    """
+    if not not_checked:
         return [
             Issue(
                 "not_checked_empty",
@@ -454,7 +484,7 @@ def _check_not_checked(draft: ReportDraft, terms: set[str]) -> list[Issue]:
 
     lowered = {term.lower() for term in terms}
     issues: list[Issue] = []
-    for entry in draft.not_checked:
+    for entry in not_checked:
         named = sorted({token for token in _candidates(entry) if token.lower() in lowered})
         if named:
             issues.append(

@@ -1,0 +1,1485 @@
+{
+  "run_id": "run-ebc9c1e4be3d",
+  "scenario_id": "control-quiet",
+  "provider": "anthropic",
+  "model": "claude-sonnet-4-5",
+  "incident_present": false,
+  "hypotheses": [],
+  "affected_population": null,
+  "onset_estimate": null,
+  "not_checked": [
+    "deployment.version",
+    "service.instance.id",
+    "customer.id",
+    "cart.size",
+    "db.statement.hash",
+    "status_message",
+    "library.name"
+  ],
+  "baseline_evidence": [
+    {
+      "query_id": "7Z5vEmmvoyf",
+      "summary": "Whole window: 89998 spans, 243 errors (0.27%), P99 287.68ms - stable throughout",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/7Z5vEmmvoyf"
+    },
+    {
+      "query_id": "7WfgzWmbn8z",
+      "summary": "First 5 minutes (02:38-02:43): 22500 spans, 62 errors (0.28%)",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/7WfgzWmbn8z"
+    },
+    {
+      "query_id": "vNbr4hgFnh5",
+      "summary": "Last 5 minutes (02:53-02:58): 22499 spans, 47 errors (0.21%)",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/vNbr4hgFnh5"
+    },
+    {
+      "query_id": "iwYNvcQDKvE",
+      "summary": "HTTP POST /checkout over full window: 18000 requests, 0.43% error rate, stable minute-by-minute",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/iwYNvcQDKvE"
+    },
+    {
+      "query_id": "AA9bFY67QfQ",
+      "summary": "Checkout P99 early window (02:38-02:43): 310.54ms",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/AA9bFY67QfQ"
+    },
+    {
+      "query_id": "DxBp3K8FtnJ",
+      "summary": "Checkout P99 late window (02:53-02:58): 327.90ms",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/DxBp3K8FtnJ"
+    }
+  ],
+  "rejected_candidates": [],
+  "tool_calls": 34,
+  "model_turns": 34,
+  "tokens_in": 614,
+  "tokens_out": 9717,
+  "cache_read_tokens": 939769,
+  "cache_write_tokens": 36857,
+  "wall_s": 182.69,
+  "cost_usd": 0.567741,
+  "tool_log": [
+    {
+      "name": "get_workspace_context",
+      "args": {},
+      "query_id": null,
+      "permalink": null,
+      "is_error": false,
+      "t": 3.765
+    },
+    {
+      "name": "get_dataset_columns",
+      "args": {
+        "environment_slug": "receipts-demo",
+        "dataset_slug": "receipts-shop"
+      },
+      "query_id": null,
+      "permalink": null,
+      "is_error": false,
+      "t": 4.109
+    },
+    {
+      "name": "find_queries",
+      "args": {
+        "environment_slug": "receipts-demo",
+        "dataset_slug": "receipts-shop",
+        "input": "scenario.run_id run-ebc9c1e4be3d",
+        "recency_days": 7
+      },
+      "query_id": null,
+      "permalink": null,
+      "is_error": false,
+      "t": 9.677
+    },
+    {
+      "name": "run_query",
+      "args": {
+        "environment_slug": "receipts-demo",
+        "dataset_slug": "receipts-shop",
+        "query_spec": {
+          "calculations": [
+            {
+              "op": "COUNT"
+            },
+            {
+              "op": "COUNT",
+              "column": "error",
+              "name": "errors",
+              "filters": [
+                {
+                  "column": "error",
+                  "op": "=",
+                  "value": true
+                }
+              ]
+            },
+            {
+              "op": "P99",
+              "column": "duration_ms"
+            },
+            {
+              "op": "HEATMAP",
+              "column": "duration_ms"
+            }
+          ],
+          "filters": [
+            {
+              "column": "scenario.run_id",
+              "op": "=",
+              "value": "run-ebc9c1e4be3d"
+            }
+          ],
+          "start_time": "2026-09-03T02:38:00Z",
+          "end_time": "2026-09-03T02:58:00Z",
+          "granularity": 60
+        }
+      },
+      "query_id": "feaRe9QeJBM",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/feaRe9QeJBM",
+      "is_error": false,
+      "t": 16.67
+    },
+    {
+      "name": "get_query_results",
+      "args": {
+        "query_id": "feaRe9QeJBM"
+      },
+      "query_id": null,
+      "permalink": null,
+      "is_error": true,
+      "t": 19.69
+    },
+    {
+      "name": "run_query",
+      "args": {
+        "environment_slug": "receipts-demo",
+        "dataset_slug": "receipts-shop",
+        "query_spec": {
+          "calculations": [
+            {
+              "op": "COUNT"
+            },
+            {
+              "op": "COUNT",
+              "column": "error",
+              "name": "errors",
+              "filters": [
+                {
+                  "column": "error",
+                  "op": "=",
+                  "value": true
+                }
+              ]
+            },
+            {
+              "op": "P99",
+              "column": "duration_ms"
+            }
+          ],
+          "filters": [
+            {
+              "column": "scenario.run_id",
+              "op": "=",
+              "value": "run-ebc9c1e4be3d"
+            }
+          ],
+          "start_time": "2026-09-03T02:38:00Z",
+          "end_time": "2026-09-03T02:58:00Z",
+          "granularity": 60
+        }
+      },
+      "query_id": "7Z5vEmmvoyf",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/7Z5vEmmvoyf",
+      "is_error": false,
+      "t": 23.637
+    },
+    {
+      "name": "list_spans",
+      "args": {
+        "environment_slug": "receipts-demo",
+        "dataset_slug": "receipts-shop",
+        "time_range": "2026-09-03T02:38:00Z"
+      },
+      "query_id": null,
+      "permalink": null,
+      "is_error": true,
+      "t": 26.68
+    },
+    {
+      "name": "run_query",
+      "args": {
+        "environment_slug": "receipts-demo",
+        "dataset_slug": "receipts-shop",
+        "query_spec": {
+          "calculations": [
+            {
+              "op": "COUNT"
+            },
+            {
+              "op": "COUNT",
+              "column": "error",
+              "name": "errors",
+              "filters": [
+                {
+                  "column": "error",
+                  "op": "=",
+                  "value": true
+                }
+              ]
+            },
+            {
+              "op": "P99",
+              "column": "duration_ms"
+            }
+          ],
+          "filters": [
+            {
+              "column": "scenario.run_id",
+              "op": "=",
+              "value": "run-ebc9c1e4be3d"
+            }
+          ],
+          "breakdowns": [
+            "name"
+          ],
+          "start_time": "2026-09-03T02:38:00Z",
+          "end_time": "2026-09-03T02:58:00Z",
+          "orders": [
+            {
+              "op": "COUNT",
+              "order": "descending"
+            }
+          ],
+          "limit": 20
+        }
+      },
+      "query_id": "4kAbshKwDG8",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/4kAbshKwDG8",
+      "is_error": false,
+      "t": 31.164
+    },
+    {
+      "name": "run_query",
+      "args": {
+        "environment_slug": "receipts-demo",
+        "dataset_slug": "receipts-shop",
+        "query_spec": {
+          "calculations": [
+            {
+              "op": "COUNT",
+              "name": "early_count"
+            },
+            {
+              "op": "COUNT",
+              "column": "error",
+              "name": "early_errors",
+              "filters": [
+                {
+                  "column": "error",
+                  "op": "=",
+                  "value": true
+                }
+              ]
+            }
+          ],
+          "filters": [
+            {
+              "column": "scenario.run_id",
+              "op": "=",
+              "value": "run-ebc9c1e4be3d"
+            }
+          ],
+          "start_time": "2026-09-03T02:38:00Z",
+          "end_time": "2026-09-03T02:43:00Z"
+        }
+      },
+      "query_id": "7WfgzWmbn8z",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/7WfgzWmbn8z",
+      "is_error": false,
+      "t": 36.705
+    },
+    {
+      "name": "run_query",
+      "args": {
+        "environment_slug": "receipts-demo",
+        "dataset_slug": "receipts-shop",
+        "query_spec": {
+          "calculations": [
+            {
+              "op": "COUNT",
+              "name": "late_count"
+            },
+            {
+              "op": "COUNT",
+              "column": "error",
+              "name": "late_errors",
+              "filters": [
+                {
+                  "column": "error",
+                  "op": "=",
+                  "value": true
+                }
+              ]
+            }
+          ],
+          "filters": [
+            {
+              "column": "scenario.run_id",
+              "op": "=",
+              "value": "run-ebc9c1e4be3d"
+            }
+          ],
+          "start_time": "2026-09-03T02:53:00Z",
+          "end_time": "2026-09-03T02:58:00Z"
+        }
+      },
+      "query_id": "vNbr4hgFnh5",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/vNbr4hgFnh5",
+      "is_error": false,
+      "t": 40.317
+    },
+    {
+      "name": "run_query",
+      "args": {
+        "environment_slug": "receipts-demo",
+        "dataset_slug": "receipts-shop",
+        "query_spec": {
+          "calculations": [
+            {
+              "op": "COUNT",
+              "name": "total"
+            },
+            {
+              "op": "COUNT",
+              "column": "error",
+              "name": "errors",
+              "filters": [
+                {
+                  "column": "error",
+                  "op": "=",
+                  "value": true
+                }
+              ]
+            }
+          ],
+          "formulas": [
+            {
+              "name": "error_rate",
+              "expression": "$errors / $total * 100"
+            }
+          ],
+          "filters": [
+            {
+              "column": "scenario.run_id",
+              "op": "=",
+              "value": "run-ebc9c1e4be3d"
+            }
+          ],
+          "start_time": "2026-09-03T02:38:00Z",
+          "end_time": "2026-09-03T02:58:00Z",
+          "granularity": 60,
+          "orders": [
+            {
+              "column": "error_rate",
+              "order": "descending"
+            }
+          ]
+        }
+      },
+      "query_id": "wKs9CCG7mVZ",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/wKs9CCG7mVZ",
+      "is_error": false,
+      "t": 46.35
+    },
+    {
+      "name": "run_query",
+      "args": {
+        "environment_slug": "receipts-demo",
+        "dataset_slug": "receipts-shop",
+        "query_spec": {
+          "calculations": [
+            {
+              "op": "HEATMAP",
+              "column": "duration_ms"
+            },
+            {
+              "op": "P99",
+              "column": "duration_ms"
+            }
+          ],
+          "filters": [
+            {
+              "column": "scenario.run_id",
+              "op": "=",
+              "value": "run-ebc9c1e4be3d"
+            },
+            {
+              "column": "name",
+              "op": "=",
+              "value": "HTTP POST /checkout"
+            }
+          ],
+          "start_time": "2026-09-03T02:38:00Z",
+          "end_time": "2026-09-03T02:58:00Z",
+          "granularity": 60
+        }
+      },
+      "query_id": "zQc5vAaoSn2",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/zQc5vAaoSn2",
+      "is_error": false,
+      "t": 50.878
+    },
+    {
+      "name": "run_query",
+      "args": {
+        "environment_slug": "receipts-demo",
+        "dataset_slug": "receipts-shop",
+        "query_spec": {
+          "calculations": [
+            {
+              "op": "COUNT",
+              "name": "total"
+            },
+            {
+              "op": "COUNT",
+              "column": "error",
+              "name": "errors",
+              "filters": [
+                {
+                  "column": "error",
+                  "op": "=",
+                  "value": true
+                }
+              ]
+            }
+          ],
+          "formulas": [
+            {
+              "name": "error_rate",
+              "expression": "$errors / $total * 100"
+            }
+          ],
+          "filters": [
+            {
+              "column": "scenario.run_id",
+              "op": "=",
+              "value": "run-ebc9c1e4be3d"
+            }
+          ],
+          "breakdowns": [
+            "name"
+          ],
+          "start_time": "2026-09-03T02:38:00Z",
+          "end_time": "2026-09-03T02:58:00Z",
+          "orders": [
+            {
+              "column": "error_rate",
+              "order": "descending"
+            }
+          ],
+          "limit": 20
+        }
+      },
+      "query_id": "xUBs9xsERug",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/xUBs9xsERug",
+      "is_error": false,
+      "t": 56.854
+    },
+    {
+      "name": "run_query",
+      "args": {
+        "environment_slug": "receipts-demo",
+        "dataset_slug": "receipts-shop",
+        "query_spec": {
+          "calculations": [
+            {
+              "op": "COUNT"
+            },
+            {
+              "op": "HEATMAP",
+              "column": "duration_ms"
+            }
+          ],
+          "filters": [
+            {
+              "column": "scenario.run_id",
+              "op": "=",
+              "value": "run-ebc9c1e4be3d"
+            },
+            {
+              "column": "name",
+              "op": "=",
+              "value": "HTTP POST /checkout"
+            }
+          ],
+          "start_time": "2026-09-03T02:38:00Z",
+          "end_time": "2026-09-03T02:58:00Z",
+          "granularity": 60
+        }
+      },
+      "query_id": "CT2dtmqQSXL",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/CT2dtmqQSXL",
+      "is_error": false,
+      "t": 62.224
+    },
+    {
+      "name": "run_bubbleup",
+      "args": {
+        "query_pk": "CT2dtmqQSXL",
+        "selection": {
+          "type": "group",
+          "group": {
+            "error": "true"
+          }
+        }
+      },
+      "query_id": null,
+      "permalink": null,
+      "is_error": true,
+      "t": 70.66
+    },
+    {
+      "name": "run_query",
+      "args": {
+        "environment_slug": "receipts-demo",
+        "dataset_slug": "receipts-shop",
+        "query_spec": {
+          "calculations": [
+            {
+              "op": "COUNT"
+            },
+            {
+              "op": "HEATMAP",
+              "column": "duration_ms"
+            }
+          ],
+          "filters": [
+            {
+              "column": "scenario.run_id",
+              "op": "=",
+              "value": "run-ebc9c1e4be3d"
+            },
+            {
+              "column": "name",
+              "op": "=",
+              "value": "HTTP POST /checkout"
+            }
+          ],
+          "breakdowns": [
+            "error"
+          ],
+          "start_time": "2026-09-03T02:38:00Z",
+          "end_time": "2026-09-03T02:58:00Z"
+        }
+      },
+      "query_id": "GTkPGcPBYxd",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/GTkPGcPBYxd",
+      "is_error": false,
+      "t": 77.268
+    },
+    {
+      "name": "run_bubbleup",
+      "args": {
+        "query_pk": "GTkPGcPBYxd",
+        "selection": {
+          "type": "group",
+          "group": {
+            "error": "true"
+          }
+        }
+      },
+      "query_id": null,
+      "permalink": null,
+      "is_error": true,
+      "t": 80.379
+    },
+    {
+      "name": "run_query",
+      "args": {
+        "environment_slug": "receipts-demo",
+        "dataset_slug": "receipts-shop",
+        "query_spec": {
+          "calculations": [
+            {
+              "op": "COUNT"
+            }
+          ],
+          "filters": [
+            {
+              "column": "scenario.run_id",
+              "op": "=",
+              "value": "run-ebc9c1e4be3d"
+            },
+            {
+              "column": "name",
+              "op": "=",
+              "value": "HTTP POST /checkout"
+            },
+            {
+              "column": "error",
+              "op": "=",
+              "value": true
+            }
+          ],
+          "breakdowns": [
+            "http.status_code"
+          ],
+          "start_time": "2026-09-03T02:38:00Z",
+          "end_time": "2026-09-03T02:58:00Z",
+          "orders": [
+            {
+              "op": "COUNT",
+              "order": "descending"
+            }
+          ]
+        }
+      },
+      "query_id": "H6WBL6y3EzH",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/H6WBL6y3EzH",
+      "is_error": false,
+      "t": 85.065
+    },
+    {
+      "name": "run_query",
+      "args": {
+        "environment_slug": "receipts-demo",
+        "dataset_slug": "receipts-shop",
+        "query_spec": {
+          "calculations": [
+            {
+              "op": "COUNT"
+            }
+          ],
+          "filters": [
+            {
+              "column": "scenario.run_id",
+              "op": "=",
+              "value": "run-ebc9c1e4be3d"
+            },
+            {
+              "column": "name",
+              "op": "=",
+              "value": "HTTP POST /checkout"
+            },
+            {
+              "column": "error",
+              "op": "=",
+              "value": true
+            }
+          ],
+          "breakdowns": [
+            "payment.provider"
+          ],
+          "start_time": "2026-09-03T02:38:00Z",
+          "end_time": "2026-09-03T02:58:00Z",
+          "orders": [
+            {
+              "op": "COUNT",
+              "order": "descending"
+            }
+          ]
+        }
+      },
+      "query_id": "uUdyCgjSXEB",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/uUdyCgjSXEB",
+      "is_error": false,
+      "t": 89.13
+    },
+    {
+      "name": "run_query",
+      "args": {
+        "environment_slug": "receipts-demo",
+        "dataset_slug": "receipts-shop",
+        "query_spec": {
+          "calculations": [
+            {
+              "op": "COUNT",
+              "name": "total"
+            },
+            {
+              "op": "COUNT",
+              "column": "error",
+              "name": "errors",
+              "filters": [
+                {
+                  "column": "error",
+                  "op": "=",
+                  "value": true
+                }
+              ]
+            }
+          ],
+          "formulas": [
+            {
+              "name": "error_rate",
+              "expression": "$errors / $total * 100"
+            }
+          ],
+          "filters": [
+            {
+              "column": "scenario.run_id",
+              "op": "=",
+              "value": "run-ebc9c1e4be3d"
+            },
+            {
+              "column": "name",
+              "op": "=",
+              "value": "HTTP POST /checkout"
+            }
+          ],
+          "breakdowns": [
+            "payment.provider"
+          ],
+          "start_time": "2026-09-03T02:38:00Z",
+          "end_time": "2026-09-03T02:58:00Z",
+          "orders": [
+            {
+              "column": "error_rate",
+              "order": "descending"
+            }
+          ]
+        }
+      },
+      "query_id": "J5o1E9RS19k",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/J5o1E9RS19k",
+      "is_error": false,
+      "t": 94.767
+    },
+    {
+      "name": "run_query",
+      "args": {
+        "environment_slug": "receipts-demo",
+        "dataset_slug": "receipts-shop",
+        "query_spec": {
+          "calculations": [
+            {
+              "op": "COUNT",
+              "name": "total"
+            },
+            {
+              "op": "COUNT",
+              "column": "error",
+              "name": "errors",
+              "filters": [
+                {
+                  "column": "error",
+                  "op": "=",
+                  "value": true
+                }
+              ]
+            }
+          ],
+          "formulas": [
+            {
+              "name": "error_rate",
+              "expression": "$errors / $total * 100"
+            }
+          ],
+          "filters": [
+            {
+              "column": "scenario.run_id",
+              "op": "=",
+              "value": "run-ebc9c1e4be3d"
+            },
+            {
+              "column": "name",
+              "op": "=",
+              "value": "HTTP POST /checkout"
+            }
+          ],
+          "breakdowns": [
+            "cloud.region"
+          ],
+          "start_time": "2026-09-03T02:38:00Z",
+          "end_time": "2026-09-03T02:58:00Z",
+          "orders": [
+            {
+              "column": "error_rate",
+              "order": "descending"
+            }
+          ]
+        }
+      },
+      "query_id": "xESdJGg6RFF",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/xESdJGg6RFF",
+      "is_error": false,
+      "t": 101.809
+    },
+    {
+      "name": "run_query",
+      "args": {
+        "environment_slug": "receipts-demo",
+        "dataset_slug": "receipts-shop",
+        "query_spec": {
+          "calculations": [
+            {
+              "op": "COUNT",
+              "name": "total"
+            },
+            {
+              "op": "COUNT",
+              "column": "error",
+              "name": "errors",
+              "filters": [
+                {
+                  "column": "error",
+                  "op": "=",
+                  "value": true
+                }
+              ]
+            }
+          ],
+          "formulas": [
+            {
+              "name": "error_rate",
+              "expression": "$errors / $total * 100"
+            }
+          ],
+          "filters": [
+            {
+              "column": "scenario.run_id",
+              "op": "=",
+              "value": "run-ebc9c1e4be3d"
+            },
+            {
+              "column": "name",
+              "op": "=",
+              "value": "HTTP POST /checkout"
+            }
+          ],
+          "breakdowns": [
+            "cloud.region",
+            "payment.provider"
+          ],
+          "start_time": "2026-09-03T02:38:00Z",
+          "end_time": "2026-09-03T02:58:00Z",
+          "orders": [
+            {
+              "column": "error_rate",
+              "order": "descending"
+            }
+          ],
+          "limit": 20
+        }
+      },
+      "query_id": "qKZ9DVNAdsC",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/qKZ9DVNAdsC",
+      "is_error": false,
+      "t": 106.799
+    },
+    {
+      "name": "run_query",
+      "args": {
+        "environment_slug": "receipts-demo",
+        "dataset_slug": "receipts-shop",
+        "query_spec": {
+          "calculations": [
+            {
+              "op": "COUNT",
+              "name": "total"
+            },
+            {
+              "op": "COUNT",
+              "column": "error",
+              "name": "errors",
+              "filters": [
+                {
+                  "column": "error",
+                  "op": "=",
+                  "value": true
+                }
+              ]
+            }
+          ],
+          "formulas": [
+            {
+              "name": "error_rate",
+              "expression": "$errors / $total * 100"
+            }
+          ],
+          "filters": [
+            {
+              "column": "scenario.run_id",
+              "op": "=",
+              "value": "run-ebc9c1e4be3d"
+            },
+            {
+              "column": "name",
+              "op": "=",
+              "value": "HTTP POST /checkout"
+            },
+            {
+              "column": "payment.provider",
+              "op": "=",
+              "value": "adyen"
+            }
+          ],
+          "start_time": "2026-09-03T02:38:00Z",
+          "end_time": "2026-09-03T02:43:00Z"
+        }
+      },
+      "query_id": "E2FdeYkUxBR",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/E2FdeYkUxBR",
+      "is_error": false,
+      "t": 112.582
+    },
+    {
+      "name": "run_query",
+      "args": {
+        "environment_slug": "receipts-demo",
+        "dataset_slug": "receipts-shop",
+        "query_spec": {
+          "calculations": [
+            {
+              "op": "COUNT",
+              "name": "total"
+            },
+            {
+              "op": "COUNT",
+              "column": "error",
+              "name": "errors",
+              "filters": [
+                {
+                  "column": "error",
+                  "op": "=",
+                  "value": true
+                }
+              ]
+            }
+          ],
+          "formulas": [
+            {
+              "name": "error_rate",
+              "expression": "$errors / $total * 100"
+            }
+          ],
+          "filters": [
+            {
+              "column": "scenario.run_id",
+              "op": "=",
+              "value": "run-ebc9c1e4be3d"
+            },
+            {
+              "column": "name",
+              "op": "=",
+              "value": "HTTP POST /checkout"
+            },
+            {
+              "column": "payment.provider",
+              "op": "=",
+              "value": "adyen"
+            }
+          ],
+          "start_time": "2026-09-03T02:53:00Z",
+          "end_time": "2026-09-03T02:58:00Z"
+        }
+      },
+      "query_id": "6L13FxydbzE",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/6L13FxydbzE",
+      "is_error": false,
+      "t": 117.018
+    },
+    {
+      "name": "run_query",
+      "args": {
+        "environment_slug": "receipts-demo",
+        "dataset_slug": "receipts-shop",
+        "query_spec": {
+          "calculations": [
+            {
+              "op": "COUNT",
+              "name": "total"
+            },
+            {
+              "op": "COUNT",
+              "column": "error",
+              "name": "errors",
+              "filters": [
+                {
+                  "column": "error",
+                  "op": "=",
+                  "value": true
+                }
+              ]
+            }
+          ],
+          "formulas": [
+            {
+              "name": "error_rate",
+              "expression": "$errors / $total * 100"
+            }
+          ],
+          "filters": [
+            {
+              "column": "scenario.run_id",
+              "op": "=",
+              "value": "run-ebc9c1e4be3d"
+            },
+            {
+              "column": "name",
+              "op": "=",
+              "value": "HTTP POST /checkout"
+            }
+          ],
+          "breakdowns": [
+            "payment.provider"
+          ],
+          "start_time": "2026-09-03T02:38:00Z",
+          "end_time": "2026-09-03T02:43:00Z",
+          "orders": [
+            {
+              "column": "error_rate",
+              "order": "descending"
+            }
+          ]
+        }
+      },
+      "query_id": "pr4Muur3t8Z",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/pr4Muur3t8Z",
+      "is_error": false,
+      "t": 123.107
+    },
+    {
+      "name": "run_query",
+      "args": {
+        "environment_slug": "receipts-demo",
+        "dataset_slug": "receipts-shop",
+        "query_spec": {
+          "calculations": [
+            {
+              "op": "COUNT",
+              "name": "total"
+            },
+            {
+              "op": "COUNT",
+              "column": "error",
+              "name": "errors",
+              "filters": [
+                {
+                  "column": "error",
+                  "op": "=",
+                  "value": true
+                }
+              ]
+            }
+          ],
+          "formulas": [
+            {
+              "name": "error_rate",
+              "expression": "$errors / $total * 100"
+            }
+          ],
+          "filters": [
+            {
+              "column": "scenario.run_id",
+              "op": "=",
+              "value": "run-ebc9c1e4be3d"
+            },
+            {
+              "column": "name",
+              "op": "=",
+              "value": "HTTP POST /checkout"
+            }
+          ],
+          "breakdowns": [
+            "payment.provider"
+          ],
+          "start_time": "2026-09-03T02:53:00Z",
+          "end_time": "2026-09-03T02:58:00Z",
+          "orders": [
+            {
+              "column": "error_rate",
+              "order": "descending"
+            }
+          ]
+        }
+      },
+      "query_id": "9rM1KkXP7p6",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/9rM1KkXP7p6",
+      "is_error": false,
+      "t": 127.357
+    },
+    {
+      "name": "run_query",
+      "args": {
+        "environment_slug": "receipts-demo",
+        "dataset_slug": "receipts-shop",
+        "query_spec": {
+          "calculations": [
+            {
+              "op": "COUNT",
+              "name": "total"
+            },
+            {
+              "op": "COUNT",
+              "column": "error",
+              "name": "errors",
+              "filters": [
+                {
+                  "column": "error",
+                  "op": "=",
+                  "value": true
+                }
+              ]
+            }
+          ],
+          "formulas": [
+            {
+              "name": "error_rate",
+              "expression": "$errors / $total * 100"
+            }
+          ],
+          "filters": [
+            {
+              "column": "scenario.run_id",
+              "op": "=",
+              "value": "run-ebc9c1e4be3d"
+            },
+            {
+              "column": "name",
+              "op": "=",
+              "value": "HTTP POST /checkout"
+            }
+          ],
+          "start_time": "2026-09-03T02:38:00Z",
+          "end_time": "2026-09-03T02:58:00Z",
+          "granularity": 120,
+          "orders": [
+            {
+              "column": "error_rate",
+              "order": "descending"
+            }
+          ]
+        }
+      },
+      "query_id": "yFcDCMH5C3Y",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/yFcDCMH5C3Y",
+      "is_error": false,
+      "t": 132.566
+    },
+    {
+      "name": "run_query",
+      "args": {
+        "environment_slug": "receipts-demo",
+        "dataset_slug": "receipts-shop",
+        "query_spec": {
+          "calculations": [
+            {
+              "op": "P99",
+              "column": "duration_ms"
+            }
+          ],
+          "filters": [
+            {
+              "column": "scenario.run_id",
+              "op": "=",
+              "value": "run-ebc9c1e4be3d"
+            },
+            {
+              "column": "name",
+              "op": "=",
+              "value": "HTTP POST /checkout"
+            }
+          ],
+          "start_time": "2026-09-03T02:38:00Z",
+          "end_time": "2026-09-03T02:43:00Z"
+        }
+      },
+      "query_id": "AA9bFY67QfQ",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/AA9bFY67QfQ",
+      "is_error": false,
+      "t": 137.236
+    },
+    {
+      "name": "run_query",
+      "args": {
+        "environment_slug": "receipts-demo",
+        "dataset_slug": "receipts-shop",
+        "query_spec": {
+          "calculations": [
+            {
+              "op": "P99",
+              "column": "duration_ms"
+            }
+          ],
+          "filters": [
+            {
+              "column": "scenario.run_id",
+              "op": "=",
+              "value": "run-ebc9c1e4be3d"
+            },
+            {
+              "column": "name",
+              "op": "=",
+              "value": "HTTP POST /checkout"
+            }
+          ],
+          "start_time": "2026-09-03T02:53:00Z",
+          "end_time": "2026-09-03T02:58:00Z"
+        }
+      },
+      "query_id": "DxBp3K8FtnJ",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/DxBp3K8FtnJ",
+      "is_error": false,
+      "t": 140.66
+    },
+    {
+      "name": "run_query",
+      "args": {
+        "environment_slug": "receipts-demo",
+        "dataset_slug": "receipts-shop",
+        "query_spec": {
+          "calculations": [
+            {
+              "op": "COUNT"
+            },
+            {
+              "op": "P99",
+              "column": "duration_ms"
+            },
+            {
+              "op": "COUNT",
+              "column": "error",
+              "name": "errors",
+              "filters": [
+                {
+                  "column": "error",
+                  "op": "=",
+                  "value": true
+                }
+              ]
+            }
+          ],
+          "filters": [
+            {
+              "column": "scenario.run_id",
+              "op": "=",
+              "value": "run-ebc9c1e4be3d"
+            },
+            {
+              "column": "name",
+              "op": "=",
+              "value": "HTTP POST /checkout"
+            }
+          ],
+          "start_time": "2026-09-03T02:38:00Z",
+          "end_time": "2026-09-03T02:58:00Z",
+          "granularity": 60
+        }
+      },
+      "query_id": "vW7j7HJHnQS",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/vW7j7HJHnQS",
+      "is_error": false,
+      "t": 146.011
+    },
+    {
+      "name": "run_query",
+      "args": {
+        "environment_slug": "receipts-demo",
+        "dataset_slug": "receipts-shop",
+        "query_spec": {
+          "calculations": [
+            {
+              "op": "COUNT"
+            }
+          ],
+          "filters": [
+            {
+              "column": "scenario.run_id",
+              "op": "=",
+              "value": "run-ebc9c1e4be3d"
+            },
+            {
+              "column": "name",
+              "op": "=",
+              "value": "HTTP POST /checkout"
+            }
+          ],
+          "breakdowns": [
+            "payment.provider"
+          ],
+          "start_time": "2026-09-03T02:38:00Z",
+          "end_time": "2026-09-03T02:58:00Z",
+          "orders": [
+            {
+              "op": "COUNT",
+              "order": "descending"
+            }
+          ]
+        }
+      },
+      "query_id": "2B7aEY1p9Ko",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/2B7aEY1p9Ko",
+      "is_error": false,
+      "t": 150.509
+    },
+    {
+      "name": "run_query",
+      "args": {
+        "environment_slug": "receipts-demo",
+        "dataset_slug": "receipts-shop",
+        "query_spec": {
+          "calculations": [
+            {
+              "op": "COUNT",
+              "name": "total"
+            },
+            {
+              "op": "COUNT",
+              "column": "error",
+              "name": "errors",
+              "filters": [
+                {
+                  "column": "error",
+                  "op": "=",
+                  "value": true
+                }
+              ]
+            }
+          ],
+          "formulas": [
+            {
+              "name": "error_rate",
+              "expression": "$errors / $total * 100"
+            },
+            {
+              "name": "volume",
+              "expression": "$total"
+            }
+          ],
+          "filters": [
+            {
+              "column": "scenario.run_id",
+              "op": "=",
+              "value": "run-ebc9c1e4be3d"
+            },
+            {
+              "column": "name",
+              "op": "=",
+              "value": "HTTP POST /checkout"
+            }
+          ],
+          "start_time": "2026-09-03T02:38:00Z",
+          "end_time": "2026-09-03T02:58:00Z",
+          "granularity": 60,
+          "orders": [
+            {
+              "column": "error_rate",
+              "order": "descending"
+            }
+          ]
+        }
+      },
+      "query_id": "iwYNvcQDKvE",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/iwYNvcQDKvE",
+      "is_error": false,
+      "t": 157.816
+    },
+    {
+      "name": "run_query",
+      "args": {
+        "environment_slug": "receipts-demo",
+        "dataset_slug": "receipts-shop",
+        "query_spec": {
+          "calculations": [
+            {
+              "op": "COUNT",
+              "name": "total"
+            },
+            {
+              "op": "COUNT",
+              "column": "error",
+              "name": "errors",
+              "filters": [
+                {
+                  "column": "error",
+                  "op": "=",
+                  "value": true
+                }
+              ]
+            }
+          ],
+          "formulas": [
+            {
+              "name": "error_rate",
+              "expression": "$errors / $total * 100"
+            }
+          ],
+          "filters": [
+            {
+              "column": "scenario.run_id",
+              "op": "=",
+              "value": "run-ebc9c1e4be3d"
+            },
+            {
+              "column": "name",
+              "op": "=",
+              "value": "payments.charge"
+            }
+          ],
+          "start_time": "2026-09-03T02:38:00Z",
+          "end_time": "2026-09-03T02:43:00Z"
+        }
+      },
+      "query_id": "fwxRpkiMtVv",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/fwxRpkiMtVv",
+      "is_error": false,
+      "t": 162.445
+    },
+    {
+      "name": "run_query",
+      "args": {
+        "environment_slug": "receipts-demo",
+        "dataset_slug": "receipts-shop",
+        "query_spec": {
+          "calculations": [
+            {
+              "op": "COUNT",
+              "name": "total"
+            },
+            {
+              "op": "COUNT",
+              "column": "error",
+              "name": "errors",
+              "filters": [
+                {
+                  "column": "error",
+                  "op": "=",
+                  "value": true
+                }
+              ]
+            }
+          ],
+          "formulas": [
+            {
+              "name": "error_rate",
+              "expression": "$errors / $total * 100"
+            }
+          ],
+          "filters": [
+            {
+              "column": "scenario.run_id",
+              "op": "=",
+              "value": "run-ebc9c1e4be3d"
+            },
+            {
+              "column": "name",
+              "op": "=",
+              "value": "payments.charge"
+            }
+          ],
+          "start_time": "2026-09-03T02:53:00Z",
+          "end_time": "2026-09-03T02:58:00Z"
+        }
+      },
+      "query_id": "kmCeDQa76X1",
+      "permalink": "https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/kmCeDQa76X1",
+      "is_error": false,
+      "t": 166.16
+    }
+  ],
+  "stop_reason": "report",
+  "model_stop_reason": "tool_use",
+  "validation_failed": false,
+  "validation_messages": [],
+  "error": null
+}
