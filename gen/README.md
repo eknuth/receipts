@@ -200,9 +200,12 @@ Every request in both runs came back HTTP 200 with an empty body. Decoding the b
 `ExportTraceServiceResponse` gives an empty `partial_success`. The Python OTLP exporter returns
 success on any 2xx without reading that field, so it would report nothing even if it were set.
 
-Rate and connection count changed together, so the experiment shows that four posters at 6,800
-spans per second lose data and one poster at 3,300 does not. It does not say where between those the
-limit sits, or whether it is a rate limit or a concurrency limit.
+Rate and connection count changed together, so the experiment on its own shows that four posters at
+6,800 spans per second lose data and one poster at 3,300 does not. The number came an hour later by
+email. Honeycomb support sent a "Rate limit exceeded" notice for the team: the limit is 4,000 events
+per second per ingest type, and 32,500 events in `receipts-shop` were dropped in the past hour. That
+is exactly 90,000 minus 57,500. The email is sent at most once per 24 hours, and there is no
+in-band signal, so an emitter that runs faster than that finds out by mail the next day, if at all.
 
 Two things follow. The emitter defaults to one poster and a cap of 2,500 spans per second. And
 `gen/verify.py` counts the root spans that arrived against the manifest before it believes any

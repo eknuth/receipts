@@ -30,11 +30,12 @@ Ingest is paced because of one experiment. The same 90,000 span run was
 pushed twice: four concurrent posters at about 6,800 spans per second landed
 57,500 of them, and one poster at about 3,300 spans per second landed all
 90,000. Every request in both runs came back HTTP 200 with an empty body and
-an empty OTLP `partial_success`. Rate and connection count changed together,
-so the experiment does not say which one Honeycomb objects to, only that the
-one-poster rate is safe. The default is one poster and a cap of 2,500 spans
-per second, and `gen/verify.py` counts what arrived against this manifest
-before a run is used as ground truth.
+an empty OTLP `partial_success`. An hour later Honeycomb support emailed the
+team's limit: 4,000 events per second, with 32,500 events dropped, which is
+the shortfall exactly. The email comes at most once per 24 hours and there
+is no in-band signal. The default is one poster and a cap of 2,500 spans per
+second, and `gen/verify.py` counts what arrived against this manifest before
+a run is used as ground truth.
 
 The run writes a manifest to `gen/runs/<run_id>.json` with the time window and
 the counts. `gen/verify.py` reads it so a verification does not have to be
@@ -77,8 +78,8 @@ RUNS_DIR = Path(__file__).resolve().parent / "runs"
 
 DEFAULT_LAG_S = 60.0
 DEFAULT_CHUNK_SIZE = 500
-# One poster, paced. Honeycomb sheds spans somewhere above 3,300 per second
-# without saying so; see the module docstring.
+# One poster, paced. The team's ingest limit is 4,000 events per second and
+# the only signal for going over it is an email; see the module docstring.
 DEFAULT_CONCURRENCY = 1
 DEFAULT_MAX_SPANS_PER_SECOND = 2500.0
 
