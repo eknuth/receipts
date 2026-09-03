@@ -189,9 +189,13 @@ and `gen_ai.agent.name = "receipts-investigator"`; `chat {model}` spans with `ge
 | Not-checked list non-empty and truthful against the tool log | 0/1, weight 0.10 |
 
 Calibration penalty on the top hypothesis: high-confidence wrong -0.5, medium wrong -0.25, low
-wrong -0.1, and any hypothesis with zero evidence -0.25 regardless of correctness. The required
-ordering, proven by unit tests: confident-wrong < hedged-wrong < hedged-right < confident-right.
-Record process metrics next to the outcome score: tool calls, tokens, cost, wall time.
+wrong -0.1; right but hedged costs a little too (medium -0.05, low -0.10), which is what makes the
+ordering strict. Any hypothesis with zero evidence -0.25 regardless of correctness, capped at
+-0.50; `validation_failed` -0.25; total floors at -1.0. The required ordering, proven by unit
+tests: confident-wrong < hedged-wrong < hedged-right < confident-right. Outcome components and
+receipts components are reported separately on `Grade` as well as summed. Record process metrics
+next to the outcome score: tool calls, tokens, cost, wall time, plus Honeycomb's own process
+score for contrast. Every weight and penalty is explained in `evals/grader.md`.
 
 Runner: `uv run evals/run.py --scenarios all --configs full,no-negation,no-notchecked --repeats 3`.
 A failed run is recorded as 0 with the error, never skipped. Output `evals/report.md` with a
