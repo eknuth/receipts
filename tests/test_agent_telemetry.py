@@ -58,12 +58,27 @@ def good_script() -> list[Any]:
     ]
 
 
+def make_conversation_id(suffix: str = "1") -> str:
+    """A conversation id shaped like the ones evals/run.py and agent/__main__.py build:
+    the run id plus something that makes this investigation unique, never the
+    run id alone (see the module docstring in agent/telemetry.py)."""
+    return f"{RUN.run_id}/full/{suffix}"
+
+
 async def run_full_investigation(
-    telemetry: Telemetry, *, mcp: FakeMCP | None = None, settings: Settings | None = None
+    telemetry: Telemetry,
+    *,
+    mcp: FakeMCP | None = None,
+    settings: Settings | None = None,
+    conversation_id: str | None = None,
 ):
     """One complete investigation under a real (in-memory) trace. Returns (report, run_trace)."""
     run_trace = telemetry.start_run(
-        RUN.run_id, RUN.scenario_id, config_label="full", provider="fake"
+        RUN.run_id,
+        RUN.scenario_id,
+        conversation_id=conversation_id or make_conversation_id(),
+        config_label="full",
+        provider="fake",
     )
     provider = FakeProvider(good_script())
     report = await investigate(
@@ -124,7 +139,8 @@ class ServerErrorMCP(FakeMCP):
 async def test_every_span_carries_the_three_required_attributes() -> None:
     exporter = InMemorySpanExporter()
     telemetry = Telemetry(exporter=exporter)
-    report, run_trace = await run_full_investigation(telemetry)
+    conversation_id = make_conversation_id("1")
+    report, run_trace = await run_full_investigation(telemetry, conversation_id=conversation_id)
     run_trace.end()
     telemetry.flush()
 
@@ -134,16 +150,24 @@ async def test_every_span_carries_the_three_required_attributes() -> None:
     # (get_workspace_context, then three run_query calls), per good_script().
     assert len(spans) == 1 + 3 + 4
     for span in spans:
-        assert span.attributes["gen_ai.conversation.id"] == RUN.run_id
+        assert span.attributes["gen_ai.conversation.id"] == conversation_id
         assert span.attributes["gen_ai.agent.name"] == "receipts-investigator"
         assert span.attributes["gen_ai.operation.name"] in {"invoke_agent", "chat", "execute_tool"}
+
+    root = next(s for s in spans if s.name == "invoke_agent receipts-investigator")
+    assert root.attributes["receipts.run_id"] == RUN.run_id
 
 
 def test_the_root_span_names_and_operation() -> None:
     exporter = InMemorySpanExporter()
     telemetry = Telemetry(exporter=exporter)
+    conversation_id = make_conversation_id("1")
     run_trace = telemetry.start_run(
-        RUN.run_id, RUN.scenario_id, config_label="full", provider="anthropic"
+        RUN.run_id,
+        RUN.scenario_id,
+        conversation_id=conversation_id,
+        config_label="full",
+        provider="anthropic",
     )
     run_trace.end()
     telemetry.flush()
@@ -151,6 +175,8 @@ def test_the_root_span_names_and_operation() -> None:
     (span,) = exporter.get_finished_spans()
     assert span.name == "invoke_agent receipts-investigator"
     assert span.attributes["gen_ai.operation.name"] == "invoke_agent"
+    assert span.attributes["gen_ai.conversation.id"] == conversation_id
+    assert span.attributes["receipts.run_id"] == RUN.run_id
     assert span.attributes["scenario.id"] == RUN.scenario_id
     assert span.attributes["agent.config"] == "full"
     assert span.attributes["agent.provider"] == "anthropic"
@@ -190,7 +216,11 @@ async def test_a_crash_ends_the_root_span_with_an_error_and_no_evaluation_result
     exporter = InMemorySpanExporter()
     telemetry = Telemetry(exporter=exporter)
     run_trace = telemetry.start_run(
-        RUN.run_id, RUN.scenario_id, config_label="full", provider="fake"
+        RUN.run_id,
+        RUN.scenario_id,
+        conversation_id=make_conversation_id("1"),
+        config_label="full",
+        provider="fake",
     )
     run_trace.end_with_error("RuntimeError", "the provider fell over")
     telemetry.flush()
@@ -357,7 +387,11 @@ def test_tool_call_arguments_are_truncated_at_2kb() -> None:
     exporter = InMemorySpanExporter()
     telemetry = Telemetry(exporter=exporter)
     run_trace = telemetry.start_run(
-        RUN.run_id, RUN.scenario_id, config_label="full", provider="fake"
+        RUN.run_id,
+        RUN.scenario_id,
+        conversation_id=make_conversation_id("1"),
+        config_label="full",
+        provider="fake",
     )
     huge_args = {"filters": ["x" * 100 for _ in range(50)]}
     with run_trace.tool_span("run_query", "tu1", huge_args) as handle:
@@ -377,7 +411,11 @@ def test_tool_call_result_is_truncated_at_500_chars() -> None:
     exporter = InMemorySpanExporter()
     telemetry = Telemetry(exporter=exporter)
     run_trace = telemetry.start_run(
-        RUN.run_id, RUN.scenario_id, config_label="full", provider="fake"
+        RUN.run_id,
+        RUN.scenario_id,
+        conversation_id=make_conversation_id("1"),
+        config_label="full",
+        provider="fake",
     )
     long_result = "y" * 900
     with run_trace.tool_span("run_query", "tu1", {}) as handle:
@@ -395,7 +433,11 @@ def test_short_arguments_and_results_are_not_truncated() -> None:
     exporter = InMemorySpanExporter()
     telemetry = Telemetry(exporter=exporter)
     run_trace = telemetry.start_run(
-        RUN.run_id, RUN.scenario_id, config_label="full", provider="fake"
+        RUN.run_id,
+        RUN.scenario_id,
+        conversation_id=make_conversation_id("1"),
+        config_label="full",
+        provider="fake",
     )
     with run_trace.tool_span("run_query", "tu1", {"a": 1}) as handle:
         handle.record_result("short", is_error=False)

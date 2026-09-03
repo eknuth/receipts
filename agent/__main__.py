@@ -20,6 +20,7 @@ import asyncio
 import logging
 import sys
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -167,9 +168,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     # `python -m agent` never grades, so the root span here never carries
     # gen_ai.evaluation.result; evals/run.py is the caller that does.
+    #
+    # The conversation id is the run id plus a timestamp, not the run id
+    # alone: one emit serves every investigation of that run, and two CLI
+    # runs against the same run id are two separate conversations, not one.
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    conversation_id = f"{run.run_id}/cli/{stamp}"
     telemetry = Telemetry(settings)
     run_trace = telemetry.start_run(
-        run.run_id, run.scenario_id, config_label=config_label(config), provider=config.provider
+        run.run_id,
+        run.scenario_id,
+        conversation_id=conversation_id,
+        config_label=config_label(config),
+        provider=config.provider,
     )
     try:
         report = asyncio.run(investigate(run, config, settings=settings, trace=run_trace))
@@ -183,7 +194,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     path = report.write(args.results_dir)
     console.print(f"\nreport: {path}")
     if telemetry.enabled and run_trace.trace_id:
-        print(f"trace: {run_trace.trace_id}", file=sys.stderr)
+        print(f"trace: {run_trace.trace_id} conversation: {conversation_id}", file=sys.stderr)
 
     if report.error or report.stop_reason != "report":
         return 1

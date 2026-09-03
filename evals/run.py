@@ -481,10 +481,20 @@ async def run_one(
     `agent/telemetry.py`). This is the caller that grades, so it is the one
     that calls `end_with_grade` or `end_with_error`; `agent/loop.py` never
     ends the root span itself.
+
+    The conversation id is `<run_id>/<config_name>/<repeat>`, matching the
+    results path this cell writes to (`run_dir`), not the run id alone: one
+    emit serves every config and repeat since R8, so the run id names the
+    traffic under investigation and this is what names the investigation.
     """
     telemetry = telemetry or Telemetry()
+    conversation_id = f"{run.run_id}/{config_name}/{repeat}"
     run_trace = telemetry.start_run(
-        run.run_id, run.scenario_id, config_label=config_name, provider=config.provider
+        run.run_id,
+        run.scenario_id,
+        conversation_id=conversation_id,
+        config_label=config_name,
+        provider=config.provider,
     )
     directory = run_dir(results_dir, config_name, run.scenario_id, repeat)
     started = time.monotonic()
@@ -547,7 +557,7 @@ async def run_one(
         run_trace.end_with_grade(graded.total, graded.grade.components.model_dump())
     if telemetry.enabled and run_trace.trace_id:
         print(
-            f"trace: {run_trace.trace_id} ({config_name} {run.scenario_id} repeat {repeat})",
+            f"trace: {run_trace.trace_id} conversation: {conversation_id}",
             file=sys.stderr,
         )
     write_run(directory, graded, report)

@@ -28,6 +28,20 @@ by `start_run`, and the loop never touches it, which is also why the model
 never sees it: nothing in `agent/loop.py` reads it back out of the trace to
 put in a message.
 
+`gen_ai.conversation.id` is not the emitted run id. Since R8, one emit
+serves every config and repeat, so the run id names the traffic under
+investigation, not the investigation itself: two investigations of the same
+run id (a CLI run and an eval repeat, or two eval repeats) are two separate
+conversations, and Honeycomb's Agent Timeline groups by this id, so giving
+it the run id merges them into one conversation with duplicated tool calls
+and chat turns. `Telemetry.start_run` takes a `conversation_id` the caller
+builds to be unique per investigation (`evals/run.py` uses
+`f"{run_id}/{config}/{repeat}"`, `agent/__main__.py` uses
+`f"{run_id}/cli/{timestamp}"`) and sets it as `gen_ai.conversation.id` on
+every span. The run id itself still lands on the root span, as
+`receipts.run_id`, so a reader can join the investigation back to the
+receipts-shop traffic it queried.
+
 Disabled by construction, not by luck. `Telemetry()` with no settings and no
 exporter is inert: a genuine OTel no-op tracer, not a stub of this module's
 own. Every span operation it hands out is a true no-op at the SDK boundary,
@@ -294,14 +308,14 @@ class RunTrace:
         self,
         tracer: trace.Tracer,
         span: Span | None,
-        run_id: str,
+        conversation_id: str,
         *,
         capture_content: bool,
     ) -> None:
         self._tracer = tracer
         self._span = span
         self._context = trace.set_span_in_context(span) if span is not None else None
-        self._run_id = run_id
+        self._conversation_id = conversation_id
         self._capture_content = capture_content
         self._ended = False
 
@@ -345,7 +359,7 @@ class RunTrace:
             attributes={
                 "gen_ai.operation.name": "chat",
                 "gen_ai.agent.name": AGENT_NAME,
-                "gen_ai.conversation.id": self._run_id,
+                "gen_ai.conversation.id": self._conversation_id,
                 "gen_ai.request.model": requested_model,
             },
         )
@@ -378,7 +392,7 @@ class RunTrace:
             attributes={
                 "gen_ai.operation.name": "execute_tool",
                 "gen_ai.agent.name": AGENT_NAME,
-                "gen_ai.conversation.id": self._run_id,
+                "gen_ai.conversation.id": self._conversation_id,
                 "gen_ai.tool.name": tool_name,
                 "gen_ai.tool.call.id": tool_call_id,
                 "gen_ai.tool.call.arguments": arguments_json,
@@ -444,16 +458,18 @@ class RunTrace:
         self.end()
 
 
-def disabled_run_trace(run_id: str = "") -> RunTrace:
+def disabled_run_trace(conversation_id: str = "") -> RunTrace:
     """A `RunTrace` that does nothing, for a caller that never wired telemetry.
 
     Used by `agent/loop.py` when `investigate()` is called without a `trace`,
     which is every existing test and any script that only wants a report.
     Genuinely inert: built from a no-op OTel tracer, not a hand-rolled stub,
-    so it degrades exactly the way a disabled `Telemetry` does.
+    so it degrades exactly the way a disabled `Telemetry` does. `conversation_id`
+    is never actually attached to anything here (there is no span to attach
+    it to); it exists only so the signature matches a real `RunTrace`.
     """
     tracer, _ = build_tracer()
-    return RunTrace(tracer, None, run_id, capture_content=False)
+    return RunTrace(tracer, None, conversation_id, capture_content=False)
 
 
 class Telemetry:
@@ -479,14 +495,25 @@ class Telemetry:
         return self._provider is not None
 
     def start_run(
-        self, run_id: str, scenario_id: str, *, config_label: str, provider: str
+        self,
+        run_id: str,
+        scenario_id: str,
+        *,
+        conversation_id: str,
+        config_label: str,
+        provider: str,
     ) -> RunTrace:
-        """Open `invoke_agent receipts-investigator` for one run.
+        """Open `invoke_agent receipts-investigator` for one investigation.
 
-        `scenario.id` is set here, once, by the caller, and nowhere else:
-        `agent/loop.py` never touches this trace's attributes, only its
-        `chat_span` and `tool_span` methods, so there is no path from the
-        model's context to this value.
+        `conversation_id` is what Honeycomb's Agent Timeline groups by, and
+        the caller builds it to be unique per investigation, not per emitted
+        run (see the module docstring). `run_id` still lands here, as
+        `receipts.run_id`, so a reader can join this investigation back to
+        the receipts-shop traffic it queried. `scenario.id` is set here,
+        once, by the caller, and nowhere else: `agent/loop.py` never touches
+        this trace's attributes, only its `chat_span` and `tool_span`
+        methods, so there is no path from the model's context to either
+        value.
         """
         try:
             span = self._tracer.start_span(
@@ -495,7 +522,8 @@ class Telemetry:
                 attributes={
                     "gen_ai.operation.name": "invoke_agent",
                     "gen_ai.agent.name": AGENT_NAME,
-                    "gen_ai.conversation.id": run_id,
+                    "gen_ai.conversation.id": conversation_id,
+                    "receipts.run_id": run_id,
                     "scenario.id": scenario_id,
                     "agent.config": config_label,
                     "agent.provider": provider,
@@ -504,7 +532,7 @@ class Telemetry:
         except Exception:
             logger.warning("telemetry: could not start the root span", exc_info=True)
             span = None
-        return RunTrace(self._tracer, span, run_id, capture_content=self.capture_content)
+        return RunTrace(self._tracer, span, conversation_id, capture_content=self.capture_content)
 
     def flush(self, timeout_millis: int = 5000) -> None:
         """Force-flush pending spans.
