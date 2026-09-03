@@ -8,9 +8,9 @@ Every number here is read from a `grade.json` under `evals/results/`, written by
 
 | scenario | full total | full outcome | full top right |
 | --- | --- | --- | --- |
-| control-quiet | 0.56 (-0.25 to 1.00) | 0.56 (0.00 to 0.75) | 3 of 4 |
+| control-quiet | 0.33 (-0.60 to 1.00) | 0.45 (0.00 to 0.75) | 3 of 5 |
 | payments-stripe-v251-uswest | 0.07 (-0.10 to 0.24) | 0.24 (0.00 to 0.49) | 0 of 2 |
-| all scenarios | 0.40 (-0.25 to 1.00) | 0.46 (0.00 to 0.75) | 3 of 6 |
+| all scenarios | 0.26 (-0.60 to 1.00) | 0.39 (0.00 to 0.75) | 3 of 7 |
 
 ## Process by config
 
@@ -18,7 +18,7 @@ Means over every run in the config, crashes included. `passes theirs, fails ours
 
 | config | runs | crashed | mean calls | mean tokens in | mean tokens out | mean cost USD | mean wall s | passes theirs, fails ours (total < 0.50) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| full | 6 | 0 | 36.2 | 621 | 12,483 | 0.61 | 227 | 3 of 6 |
+| full | 7 | 0 | 36.0 | 621 | 12,363 | 0.62 | 228 | 4 of 7 |
 
 ## Runs
 
@@ -30,5 +30,6 @@ One row per investigation. `query` links to the first evidence query of the top 
 | control-quiet | full | 2 | run-ebc9c1e4be3d | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 |  | report | 38 | 0.58 | 249 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/gMTLyFqM3cE) |
 | control-quiet | full | 3 | run-ebc9c1e4be3d | claude-sonnet-4-5 | 0.50 | 0.75 | 0.00 |  | report (validation failed) | 40 | 0.68 | 271 | 1.00 pass |  |
 | control-quiet | full | 4 | run-ebc9c1e4be3d | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 |  | report | 36 | 0.67 | 211 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/qtvUKayzcUj) |
+| control-quiet | full | 5 | run-ebc9c1e4be3d | claude-sonnet-4-5 | -0.60 | 0.00 | 0.15 | high | report (validation failed) | 35 | 0.66 | 229 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/cq7AbWj3x6y) |
 | payments-stripe-v251-uswest | full | 1 | run-4155490e2a44 | claude-sonnet-4-5 | -0.10 | 0.00 | 0.15 |  | report (validation failed) | 35 | 0.65 | 222 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/eRVtrJcodnJ) |
 | payments-stripe-v251-uswest | full | 2 | run-4155490e2a44 | claude-sonnet-4-5 | 0.24 | 0.49 | 0.25 | high | report | 40 | 0.61 | 232 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/5UG9bVevB4J) |
