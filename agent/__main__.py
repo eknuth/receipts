@@ -20,14 +20,23 @@ import asyncio
 import logging
 import sys
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import ValidationError
 from rich.console import Console
 from rich.table import Table
 
-from agent.loop import DEFAULT_MAX_CALLS, DEFAULT_MAX_WALL_S, AgentConfig, ScenarioRun, investigate
+from agent.loop import (
+    DEFAULT_MAX_CALLS,
+    DEFAULT_MAX_WALL_S,
+    AgentConfig,
+    ScenarioRun,
+    config_label,
+    investigate,
+)
 from agent.report import Report
+from agent.telemetry import Telemetry
 from gen.emit import RUNS_DIR, load_manifest
 from gen.scenario import available_scenarios, load_scenario
 from receipts.settings import Settings
@@ -155,14 +164,49 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_calls=args.max_calls,
         max_wall_s=args.max_wall_s,
     )
-    report = asyncio.run(
-        investigate(ScenarioRun.from_manifest(manifest), config, settings=settings)
+    run = ScenarioRun.from_manifest(manifest)
+
+    # `python -m agent` never grades, so the root span here never carries
+    # gen_ai.evaluation.result; evals/run.py is the caller that does.
+    #
+    # One emit serves every investigation of a run id, so the conversation
+    # id adds a timestamp: two CLI runs against the same run id are two
+    # separate conversations.
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    conversation_id = f"{run.run_id}.cli.{stamp}"
+    telemetry = Telemetry(settings)
+    run_trace = telemetry.start_run(
+        run.run_id,
+        run.scenario_id,
+        conversation_id=conversation_id,
+        config_label=config_label(config),
+        provider=config.provider,
     )
+    try:
+        report = asyncio.run(investigate(run, config, settings=settings, trace=run_trace))
+    except BaseException as exc:
+        # investigate() itself failed, so there is no Report to grade or to
+        # read a stop_reason from: this is a crash, and the root span should
+        # say so rather than export as if the run had simply ended quietly.
+        run_trace.end_with_error(type(exc).__name__, str(exc))
+        raise
+    else:
+        run_trace.record_outcome(report)
+        if report.error is not None or report.stop_reason == "error":
+            error_type = (report.error or "error").split(":", 1)[0].strip() or "error"
+            run_trace.end_with_error(error_type, report.error or "the loop stopped with an error")
+        else:
+            run_trace.end()
+    finally:
+        telemetry.flush()
+        telemetry.shutdown()
 
     console = Console()
     render(report, console)
     path = report.write(args.results_dir)
     console.print(f"\nreport: {path}")
+    if telemetry.enabled and run_trace.trace_id:
+        print(f"trace: {run_trace.trace_id} conversation: {conversation_id}", file=sys.stderr)
 
     if report.error or report.stop_reason != "report":
         return 1

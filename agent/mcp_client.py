@@ -20,10 +20,13 @@ wait. A lock serializes concurrent waiters so the limit holds under
 `traceparent` and `tracestate` (W3C trace context) are injected into
 `params._meta` on every `tools/call`. The pinned `mcp` package (2.x) puts
 this on the wire via `CallToolRequestParams.meta`, aliased to `_meta`, and
-the test suite proves it end to end with an in-process server. Whether the
-hosted Honeycomb MCP reads that field and links its own spans to ours is an
-assumption until R7 checks for linked spans in the Agent Timeline; the
-Honeycomb MCP docs do not document `_meta`.
+the test suite proves it end to end with an in-process server. The OTel MCP
+semantic conventions (SEP-414) say a client SHOULD write `traceparent` and
+`tracestate` unprefixed into `params._meta` and a server SHOULD use it as
+the remote parent; a live check on 2026-09-03 found no spans from
+Honeycomb's hosted MCP in `receipts-demo` for either trace, so the hosted
+MCP does not act on it today. The field goes out regardless, because it is
+the standard.
 """
 
 from __future__ import annotations
@@ -89,6 +92,26 @@ WRITE_TOOLS: frozenset[str] = frozenset(
         "create_board",
         "update_board",
         "canvas_agent_invoke",
+    }
+)
+
+# Tools that take a `dataset_slug` argument. `get_trace` looks a trace up by
+# id across the environment and takes no `dataset_slug`, so it is not here.
+# A call to any of these that omits `dataset_slug` or names a dataset other
+# than `settings.honeycomb_dataset` is refused: this project's own telemetry
+# lands in a second dataset (`receipts-investigator`, see agent/telemetry.py)
+# in the same environment as the shop traffic, and an unscoped or
+# cross-dataset query would let an investigation read a prior repeat's
+# scenario id and grade off its own trace, which is the answer it is being
+# graded on.
+DATASET_SCOPED_TOOLS: frozenset[str] = frozenset(
+    {
+        "run_query",
+        "run_bubbleup",
+        "get_dataset_columns",
+        "find_columns",
+        "list_spans",
+        "get_span_details",
     }
 )
 
@@ -294,16 +317,28 @@ class HoneycombMCP:
         """Call one tool and return its compact result.
 
         Raises `ToolNotAllowed` before any network call if `name` is neither
-        a read tool nor, with `allow_write=True`, a write tool. A server-side
-        error comes back as a `ToolResult` with `is_error=True` and the
-        server's message in `text`, so the agent loop can show the model
-        what went wrong and move on.
+        a read tool nor, with `allow_write=True`, a write tool, or if `name`
+        is dataset-scoped and `args` names a dataset other than
+        `settings.honeycomb_dataset`. A server-side error comes back as a
+        `ToolResult` with `is_error=True` and the server's message in
+        `text`, so the agent loop can show the model what went wrong and
+        move on; the dataset check raises instead, because its message is
+        instructive rather than diagnostic, and either way it becomes the
+        tool result the model reads.
         """
         if not self._allowed(name):
             raise ToolNotAllowed(
                 f"tool {name!r} is not allowed "
                 f"(read tools are always allowed; write tools need allow_write=True)"
             )
+        if name in DATASET_SCOPED_TOOLS:
+            dataset = self._settings.honeycomb_dataset
+            given = (args or {}).get("dataset_slug")
+            if given != dataset:
+                raise ToolNotAllowed(
+                    f"{name} must be called with dataset_slug={dataset!r}; "
+                    f"got {given!r}. This investigation is scoped to {dataset!r} only."
+                )
         session = self._require_session()
 
         await self._bucket.wait()

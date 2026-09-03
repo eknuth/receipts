@@ -272,6 +272,22 @@ def test_an_exporter_that_raises_counts_as_a_failure() -> None:
     assert processor.failed_batches == 1
 
 
+def test_emit_without_an_ingest_key_fails_clearly_before_sending_anything(
+    clean_env: None,
+) -> None:
+    """`honeycomb_ingest_key` is optional on Settings for the agent's sake.
+    The generator has no such fallback: it must refuse up front rather than
+    posting with an empty key, which would ship nothing and say nothing."""
+    settings = Settings(
+        _env_file=None,
+        honeycomb_mcp_key="k",
+        anthropic_api_key="k",
+        anthropic_workspace_id="k",
+    )
+    with pytest.raises(ValueError, match="HONEYCOMB_INGEST_KEY"):
+        E.emit(shrink("control-quiet", minutes=1, rps=1), settings, now_s=NOW)
+
+
 def test_pacing_holds_the_submission_rate(monkeypatch: pytest.MonkeyPatch) -> None:
     """A thousand spans at 500 per second waits about two seconds in total."""
     clock = {"now": 0.0}

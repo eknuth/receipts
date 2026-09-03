@@ -61,7 +61,9 @@ class FakeMCP:
             ToolSpec(name="semconv", description="not an investigation tool", input_schema={}),
         ]
 
-    async def call(self, name: str, args: dict[str, Any] | None = None) -> ToolResult:
+    async def call(
+        self, name: str, args: dict[str, Any] | None = None, **kwargs: Any
+    ) -> ToolResult:
         self.calls.append((name, dict(args or {})))
         if name != "run_query":
             return ToolResult(
@@ -406,7 +408,9 @@ async def test_a_failing_mcp_call_becomes_a_tool_result_the_model_can_read(
     settings: Settings,
 ) -> None:
     class Failing(FakeMCP):
-        async def call(self, name: str, args: dict[str, Any] | None = None) -> ToolResult:
+        async def call(
+            self, name: str, args: dict[str, Any] | None = None, **kwargs: Any
+        ) -> ToolResult:
             self.calls.append((name, dict(args or {})))
             raise RuntimeError("dataset not found")
 

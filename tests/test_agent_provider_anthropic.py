@@ -39,6 +39,8 @@ class ResponseStub:
     content: list[Block]
     usage: UsageStub
     stop_reason: str = "tool_use"
+    model: str = "claude-sonnet-4-5"
+    id: str = "msg_01abc"
 
 
 class FakeMessages:
@@ -96,6 +98,8 @@ async def test_text_and_tool_use_blocks_come_back_as_a_completion(settings: Sett
     assert completion.usage.output_tokens == 20
     assert completion.usage.cache_read_tokens == 7
     assert completion.usage.cache_write_tokens == 3
+    assert completion.response_model == "claude-sonnet-4-5"
+    assert completion.response_id == "msg_01abc"
 
 
 async def test_a_tool_input_that_arrives_as_a_string_is_parsed(settings: Settings) -> None:

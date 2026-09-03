@@ -169,6 +169,8 @@ def _to_completion(response: Any) -> Completion:
             cache_write_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
         ),
         stop_reason=getattr(response, "stop_reason", None),
+        response_model=getattr(response, "model", None),
+        response_id=getattr(response, "id", None),
         raw_content=list(response.content),
     )
 
