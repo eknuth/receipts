@@ -27,8 +27,11 @@ Vault note: `~/proj/edwin-knuth/Projects/Honeycomb Demo - Receipts.md`. Full pla
 - One issue per branch, branch named `r<N>-<slug>`. Commit as Edwin Knuth <eknuth@gmail.com>.
 - Python 3.12, `uv`. Tests with pytest. Lint with ruff. `make test` and `make lint` must pass
   before an issue is called done.
-- Anything that needs a browser (Honeycomb UI, trigger creation, Canvas) is Ed's, not a
-  subagent's. Stop and say what is needed.
+- Browser work (Honeycomb UI, trigger creation, Canvas, Agent Timeline screenshots) is done by
+  the orchestrating session with the `browser-harness` skill against Ed's signed-in Chrome.
+  Implementer and reviewer subagents do not touch the browser; they say what is needed and the
+  orchestrator does it. Stop and ask Ed at a login wall, MFA, a payment step, or any change
+  outside the receipts-demo environment.
 - Honeycomb bugs and docs gaps go to Linear issue EDW-1338 as a row (date, area, finding,
   verified how, action). Report them to Ed; do not edit Linear yourself.
 
