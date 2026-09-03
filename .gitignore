@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .ruff_cache/
-evals/results/
+evals/results/*
+!evals/results/runs.json
 *.egg-info/
 gen/runs/
