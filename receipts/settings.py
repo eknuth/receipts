@@ -31,7 +31,11 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=ENV_FILE, env_file_encoding="utf-8")
 
     # Honeycomb: environment "receipts-demo", dataset "receipts-shop".
-    honeycomb_ingest_key: SecretStr = Field(min_length=1)
+    # honeycomb_ingest_key is optional: R9 self-telemetry runs without it (no
+    # spans, no warnings), and gen/emit.py, which needs a real key to send
+    # anything, checks for one itself and fails with a clear message rather
+    # than posting with an empty key.
+    honeycomb_ingest_key: SecretStr | None = Field(default=None, min_length=1)
     honeycomb_mcp_key: SecretStr = Field(min_length=1)
     honeycomb_mcp_url: str = "https://mcp.honeycomb.io/mcp"
     honeycomb_otlp_endpoint: str = "https://api.honeycomb.io"
@@ -52,3 +56,9 @@ class Settings(BaseSettings):
     # Ollama, R15. Not required until then.
     ollama_host: str = "http://localhost:11434"
     ollama_model: str = "qwen3.8:27b"
+
+    # R9 self-telemetry. Off by default: prompts and completions are only
+    # written to the gen_ai.input.messages / gen_ai.output.messages span
+    # events on the agent's own chat spans when this is set, because those
+    # events carry the full conversation and are opt-in for a reason.
+    receipts_capture_content: bool = False

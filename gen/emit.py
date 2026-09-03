@@ -317,11 +317,24 @@ def load_manifest(run_id: str, runs_dir: Path = RUNS_DIR) -> EmitResult:
     return EmitResult(**json.loads(path.read_text()))
 
 
+def _require_ingest_key(settings: Settings) -> str:
+    """The ingest key, or a clear error. `honeycomb_ingest_key` is optional on
+    `Settings` for the agent's sake (R9 runs without it); the generator has no
+    such fallback, since posting with an empty key would not fail, it would
+    just ship nothing and log it as sent."""
+    if settings.honeycomb_ingest_key is None:
+        raise ValueError(
+            "HONEYCOMB_INGEST_KEY is not set. gen/emit.py cannot send spans without it; "
+            "set it in .env, or pass --dry-run to build spans without sending them."
+        )
+    return settings.honeycomb_ingest_key.get_secret_value()
+
+
 def _make_otlp_exporter(settings: Settings) -> SpanExporter:
     endpoint = settings.honeycomb_otlp_endpoint.rstrip("/") + "/v1/traces"
     return OTLPSpanExporter(
         endpoint=endpoint,
-        headers={"x-honeycomb-team": settings.honeycomb_ingest_key.get_secret_value()},
+        headers={"x-honeycomb-team": _require_ingest_key(settings)},
         timeout=60,
     )
 
@@ -370,6 +383,8 @@ def emit(
     sleep: Callable[[float], None] = time.sleep,
 ) -> EmitResult:
     """Generate and ship one run of `scenario`. Returns the run's manifest."""
+    if not dry_run and make_exporter is None:
+        _require_ingest_key(settings)  # fail before generating anything, not mid-run
     run_id = run_id or new_run_id()
     now_s = time.time() if now_s is None else now_s
     window = window_bounds(now_s, scenario.baseline.minutes, backdate=backdate, lag_s=lag_s)
@@ -492,17 +507,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"error: missing or invalid in .env: {missing}", file=sys.stderr)
         return 2
     started = time.time()
-    result = emit(
-        scenario,
-        settings,
-        seed=args.seed,
-        backdate=args.backdate,
-        lag_s=args.lag_seconds,
-        chunk_size=args.chunk_size,
-        concurrency=args.concurrency,
-        max_spans_per_second=args.max_spans_per_second,
-        dry_run=args.dry_run,
-    )
+    try:
+        result = emit(
+            scenario,
+            settings,
+            seed=args.seed,
+            backdate=args.backdate,
+            lag_s=args.lag_seconds,
+            chunk_size=args.chunk_size,
+            concurrency=args.concurrency,
+            max_spans_per_second=args.max_spans_per_second,
+            dry_run=args.dry_run,
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     elapsed = time.time() - started
 
     if not args.dry_run:

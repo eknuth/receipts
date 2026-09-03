@@ -5,7 +5,6 @@ from receipts.settings import ENV_FILE, REPO_ROOT, Settings
 from tests.conftest import ENV_EXAMPLE, env_example_names
 
 REQUIRED_VARS = (
-    "HONEYCOMB_INGEST_KEY",
     "HONEYCOMB_MCP_KEY",
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_WORKSPACE_ID",
@@ -72,6 +71,12 @@ def test_unknown_variable_in_env_file_is_rejected(clean_env: None, tmp_path) -> 
     env.write_text("".join(f"{k}=k\n" for k in REQUIRED_VARS) + "HONEYCOMB_DATSET=oops\n")
     with pytest.raises(ValidationError, match="honeycomb_datset"):
         Settings(_env_file=env)
+
+
+def test_ingest_key_is_optional(clean_env: None) -> None:
+    """R9 self-telemetry and the agent both run without it; only gen/emit.py needs one."""
+    settings = Settings(_env_file=None, **FAKE_REQUIRED)
+    assert settings.honeycomb_ingest_key is None
 
 
 def test_env_example_matches_settings_fields() -> None:
