@@ -26,7 +26,7 @@ One row per investigation. `query` links to the first evidence query of the top 
 
 | scenario | config | n | run id | total | outcome | receipts | top confidence | stopped by | calls | cost USD | wall s | theirs | query |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| control-quiet | full | 1 | run-ebc9c1e4be3d | -0.25 | 0.00 | 0.25 | high | report | 28 | 0.47 | 179 | 1.00 pass | [query](https://ui.honeycomb.io/edwin-knuth/environments/receipts-demo/datasets/receipts-shop/result/nuLWfLwdr6i) |
-| control-quiet | full | 2 | run-ebc9c1e4be3d | 1.00 | 0.75 | 0.25 |  | report | 38 | 0.58 | 249 | 1.00 pass | [query](https://ui.honeycomb.io/edwin-knuth/environments/receipts-demo/datasets/receipts-shop/result/gMTLyFqM3cE) |
-| payments-stripe-v251-uswest | full | 1 | run-4155490e2a44 | -0.10 | 0.00 | 0.15 |  | report (validation failed) | 35 | 0.65 | 222 | 1.00 pass | [query](https://ui.honeycomb.io/edwin-knuth/environments/receipts-demo/datasets/receipts-shop/result/eRVtrJcodnJ) |
-| payments-stripe-v251-uswest | full | 2 | run-4155490e2a44 | 0.24 | 0.49 | 0.25 | high | report | 40 | 0.61 | 232 | 1.00 pass | [query](https://ui.honeycomb.io/edwin-knuth/environments/receipts-demo/datasets/receipts-shop/result/5UG9bVevB4J) |
+| control-quiet | full | 1 | run-ebc9c1e4be3d | -0.25 | 0.00 | 0.25 | high | report | 28 | 0.47 | 179 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/nuLWfLwdr6i) |
+| control-quiet | full | 2 | run-ebc9c1e4be3d | 1.00 | 0.75 | 0.25 |  | report | 38 | 0.58 | 249 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/gMTLyFqM3cE) |
+| payments-stripe-v251-uswest | full | 1 | run-4155490e2a44 | -0.10 | 0.00 | 0.15 |  | report (validation failed) | 35 | 0.65 | 222 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/eRVtrJcodnJ) |
+| payments-stripe-v251-uswest | full | 2 | run-4155490e2a44 | 0.24 | 0.49 | 0.25 | high | report | 40 | 0.61 | 232 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/5UG9bVevB4J) |
