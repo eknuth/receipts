@@ -1,0 +1,18 @@
+{
+  "runs": [
+    {
+      "run_id": "run-ebc9c1e4be3d",
+      "scenario_id": "control-quiet",
+      "emitted_at": "2026-09-03T02:59:37.190645Z",
+      "window_start": "2026-09-03T02:38:00Z",
+      "window_end": "2026-09-03T02:58:00Z"
+    },
+    {
+      "run_id": "run-4155490e2a44",
+      "scenario_id": "payments-stripe-v251-uswest",
+      "emitted_at": "2026-09-03T02:58:56.842350Z",
+      "window_start": "2026-09-03T02:37:20Z",
+      "window_end": "2026-09-03T02:57:20Z"
+    }
+  ]
+}
