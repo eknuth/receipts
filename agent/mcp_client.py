@@ -95,6 +95,26 @@ WRITE_TOOLS: frozenset[str] = frozenset(
     }
 )
 
+# Tools that take a `dataset_slug` argument. `get_trace` looks a trace up by
+# id across the environment and takes no `dataset_slug`, so it is not here.
+# A call to any of these that omits `dataset_slug` or names a dataset other
+# than `settings.honeycomb_dataset` is refused: this project's own telemetry
+# lands in a second dataset (`receipts-investigator`, see agent/telemetry.py)
+# in the same environment as the shop traffic, and an unscoped or
+# cross-dataset query would let an investigation read a prior repeat's
+# scenario id and grade off its own trace, which is the answer it is being
+# graded on.
+DATASET_SCOPED_TOOLS: frozenset[str] = frozenset(
+    {
+        "run_query",
+        "run_bubbleup",
+        "get_dataset_columns",
+        "find_columns",
+        "list_spans",
+        "get_span_details",
+    }
+)
+
 DEFAULT_RATE = 40
 DEFAULT_PERIOD_S = 60.0
 DEFAULT_MIN_INTERVAL_S = 1.5
@@ -297,16 +317,28 @@ class HoneycombMCP:
         """Call one tool and return its compact result.
 
         Raises `ToolNotAllowed` before any network call if `name` is neither
-        a read tool nor, with `allow_write=True`, a write tool. A server-side
-        error comes back as a `ToolResult` with `is_error=True` and the
-        server's message in `text`, so the agent loop can show the model
-        what went wrong and move on.
+        a read tool nor, with `allow_write=True`, a write tool, or if `name`
+        is dataset-scoped and `args` names a dataset other than
+        `settings.honeycomb_dataset`. A server-side error comes back as a
+        `ToolResult` with `is_error=True` and the server's message in
+        `text`, so the agent loop can show the model what went wrong and
+        move on; the dataset check raises instead, because its message is
+        instructive rather than diagnostic, and either way it becomes the
+        tool result the model reads.
         """
         if not self._allowed(name):
             raise ToolNotAllowed(
                 f"tool {name!r} is not allowed "
                 f"(read tools are always allowed; write tools need allow_write=True)"
             )
+        if name in DATASET_SCOPED_TOOLS:
+            dataset = self._settings.honeycomb_dataset
+            given = (args or {}).get("dataset_slug")
+            if given != dataset:
+                raise ToolNotAllowed(
+                    f"{name} must be called with dataset_slug={dataset!r}; "
+                    f"got {given!r}. This investigation is scoped to {dataset!r} only."
+                )
         session = self._require_session()
 
         await self._bucket.wait()

@@ -79,6 +79,15 @@ def test_ingest_key_is_optional(clean_env: None) -> None:
     assert settings.honeycomb_ingest_key is None
 
 
+def test_an_empty_env_value_means_unset_not_a_validation_error(clean_env: None, tmp_path) -> None:
+    """.env.example ships `HONEYCOMB_INGEST_KEY=` for "leave this unset". Without
+    env_ignore_empty, the empty string would fail the field's own min_length=1."""
+    env = tmp_path / ".env"
+    env.write_text("".join(f"{k}=k\n" for k in REQUIRED_VARS) + "HONEYCOMB_INGEST_KEY=\n")
+    settings = Settings(_env_file=env)
+    assert settings.honeycomb_ingest_key is None
+
+
 def test_env_example_matches_settings_fields() -> None:
     fields = {name.upper() for name in Settings.model_fields}
     assert set(env_example_names()) == fields

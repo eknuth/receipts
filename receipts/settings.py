@@ -27,8 +27,13 @@ class Settings(BaseSettings):
 
     # Field names match the .env names case-insensitively, so no aliases are
     # needed. extra is left at pydantic's default (forbid) so a misspelled name
-    # in .env is an error instead of a silently applied default.
-    model_config = SettingsConfigDict(env_file=ENV_FILE, env_file_encoding="utf-8")
+    # in .env is an error instead of a silently applied default. env_ignore_empty
+    # means an env var set to the empty string is treated as unset, which is
+    # what lets .env.example ship `HONEYCOMB_INGEST_KEY=` and have that mean
+    # "no key" rather than fail the `min_length=1` on the optional field.
+    model_config = SettingsConfigDict(
+        env_file=ENV_FILE, env_file_encoding="utf-8", env_ignore_empty=True
+    )
 
     # Honeycomb: environment "receipts-demo", dataset "receipts-shop".
     # honeycomb_ingest_key is optional: R9 self-telemetry runs without it (no

@@ -20,6 +20,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.shared.memory import create_client_server_memory_streams
 
 from agent.mcp_client import (
+    DATASET_SCOPED_TOOLS,
     READ_TOOLS,
     WRITE_TOOLS,
     HoneycombMCP,
@@ -58,6 +59,24 @@ async def test_unknown_tool_is_not_allowed(settings: Settings) -> None:
 
 def test_read_tools_and_write_tools_are_disjoint() -> None:
     assert READ_TOOLS & WRITE_TOOLS == set()
+
+
+def test_dataset_scoped_tools_are_all_read_tools() -> None:
+    assert DATASET_SCOPED_TOOLS <= READ_TOOLS
+
+
+async def test_a_dataset_scoped_tool_without_dataset_slug_is_refused(settings: Settings) -> None:
+    mcp = HoneycombMCP(settings=settings)  # never entered: refused before any session is needed
+    with pytest.raises(ToolNotAllowed, match=settings.honeycomb_dataset):
+        await mcp.call("run_query", {})
+
+
+async def test_a_dataset_scoped_tool_naming_a_different_dataset_is_refused(
+    settings: Settings,
+) -> None:
+    mcp = HoneycombMCP(settings=settings)
+    with pytest.raises(ToolNotAllowed, match=settings.honeycomb_dataset):
+        await mcp.call("run_query", {"dataset_slug": "receipts-investigator"})
 
 
 # --------------------------------------------------------------------------
@@ -178,10 +197,15 @@ class _RecordingServer:
             return "TEAM INFORMATION\nName: acme-team"
 
         @server.tool()
-        async def run_query(dataset_slug: str, ctx: Context) -> str:
+        async def run_query(
+            dataset_slug: str, ctx: Context, query_spec: dict[str, Any] | None = None
+        ) -> str:
             self.metas.append(ctx.request_context.meta)
-            if dataset_slug == "does-not-exist":
-                raise ToolError(f"Invalid or missing dataset: {dataset_slug}")
+            # The client's own dataset guard refuses a mismatched dataset_slug
+            # before this ever runs, so a server-side failure is triggered a
+            # different way here: a marker in the query spec.
+            if (query_spec or {}).get("force_error"):
+                raise ToolError("Invalid or missing dataset: does-not-exist")
             return "# Results\n\n| COUNT |\n| --- |\n| 1 |\n"
 
         lowlevel = server._lowlevel_server
@@ -256,7 +280,10 @@ async def test_no_trace_context_means_no_traceparent_on_the_wire(settings: Setti
 async def test_server_error_is_flagged_not_swallowed(settings: Settings) -> None:
     async with in_process_mcp(settings) as (mcp, _):
         ok = await mcp.call("run_query", {"dataset_slug": "receipts-shop"})
-        bad = await mcp.call("run_query", {"dataset_slug": "does-not-exist"})
+        bad = await mcp.call(
+            "run_query",
+            {"dataset_slug": "receipts-shop", "query_spec": {"force_error": True}},
+        )
 
     assert ok.is_error is False
     assert bad.is_error is True
