@@ -9,8 +9,10 @@ from pathlib import Path
 from agent.format import (
     MAX_JSON_BYTES,
     extract_ids,
+    format_error,
     format_tool_result,
     parse_metadata_block,
+    truncate,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "mcp"
@@ -141,3 +143,52 @@ def test_format_text_payload_under_4kb_is_returned_verbatim() -> None:
     assert "duration_ms" in rendered
     assert len(text_of(fixture).encode("utf-8")) <= MAX_JSON_BYTES
     assert "truncated" not in rendered
+
+
+def test_escaped_pipe_in_a_cell_is_kept() -> None:
+    text = "# Results\n\n| COUNT | http.route |\n| --- | --- |\n| 3 | /a\\|b |\n"
+    out = format_tool_result("run_query", text, args={"dataset_slug": "d"})
+    assert "/a|b" in out
+
+
+def test_fallback_strips_the_time_series_chart() -> None:
+    fixture = load("run_query")
+    text = text_of(fixture).replace("# Results", "# Unexpected heading")
+    out = format_tool_result("run_query", text, args={})
+    assert "# Time Series" not in out
+    assert "\u2502" not in out
+    assert "query_run_pk" in out
+
+
+def test_empty_text_renders_as_empty_result() -> None:
+    assert format_tool_result("get_dataset", "", args={}) == "(empty result)"
+
+
+def test_truncation_cuts_at_a_line_boundary() -> None:
+    line = "x" * 99 + "\n"
+    text = line * 60
+    out = truncate(text, MAX_JSON_BYTES)
+    body = out.split("\n... truncated")[0]
+    assert len(body.encode()) <= MAX_JSON_BYTES
+    assert all(len(ln) == 99 for ln in body.split("\n"))
+
+
+def test_query_spec_with_start_and_end_time_is_described() -> None:
+    args = {
+        "dataset_slug": "receipts-shop",
+        "query_spec": {
+            "calculations": [{"op": "COUNT"}],
+            "start_time": 1700000000,
+            "end_time": 1700001800,
+        },
+    }
+    text = "# Results\n\n| COUNT |\n| --- |\n| 1 |\n"
+    out = format_tool_result("run_query", text, args=args)
+    assert "time_range=1700000000..1700001800" in out
+
+
+def test_format_error_names_the_tool_and_message() -> None:
+    assert format_error("run_query", "Invalid or missing dataset: nope") == (
+        "run_query failed: Invalid or missing dataset: nope"
+    )
+    assert format_error("get_trace", "  ") == "get_trace failed: (no message)"

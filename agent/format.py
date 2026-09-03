@@ -37,6 +37,8 @@ _QUERY_ID_KEYS = ("query_run_pk", "trace_result_pk", "bubbleup_result_id")
 _PERMALINK_KEYS = ("query_url", "trace_link", "bubble_up_url")
 
 _METADATA_LINE = re.compile(r"^  ([A-Za-z0-9_]+): (.*)$")
+_UNESCAPED_PIPE = re.compile(r"(?<!\\)\|")
+_TIME_SERIES_BLOCK = re.compile(r"^# Time Series\s*\n```.*?^```\s*\n?", re.MULTILINE | re.DOTALL)
 _BUBBLEUP_COLUMN = re.compile(
     r"\*\*(?P<col>[^*]+)\*\*\s*\((?P<populated>[^)]*)\)\s*\n(?P<bullets>(?:-.*\n?)+)"
 )
@@ -96,17 +98,37 @@ def format_tool_result(name: str, payload: Any, *, args: dict[str, Any] | None =
     return _format_json(payload)
 
 
+def format_error(name: str, message: str) -> str:
+    """The text a model sees when the server flags a call as an error."""
+    body = message.strip() or "(no message)"
+    return f"{name} failed: {body}"
+
+
 def _format_json(value: Any) -> str:
-    """Pretty JSON (or plain text, if `value` already is text), truncated to 4 KB."""
+    """Pretty JSON (or plain text, if `value` already is text), truncated to 4 KB.
+
+    Text has the ASCII time-series chart removed first; it is large and
+    carries nothing a model can use. Truncation cuts at a line boundary.
+    """
     if isinstance(value, str):
-        text = value
+        text = _TIME_SERIES_BLOCK.sub("", value).strip()
+        if not text:
+            return "(empty result)"
     else:
         text = json.dumps(value, indent=2, sort_keys=True, default=str)
+    return truncate(text, MAX_JSON_BYTES)
+
+
+def truncate(text: str, limit: int) -> str:
+    """Cut `text` to at most `limit` bytes of UTF-8 at the last newline before the limit."""
     encoded = text.encode("utf-8")
-    if len(encoded) <= MAX_JSON_BYTES:
+    if len(encoded) <= limit:
         return text
-    truncated = encoded[:MAX_JSON_BYTES].decode("utf-8", errors="ignore")
-    return f"{truncated}\n... truncated, {len(encoded)} bytes total"
+    head = encoded[:limit].decode("utf-8", errors="ignore")
+    cut = head.rfind("\n")
+    if cut > limit // 2:
+        head = head[:cut]
+    return f"{head}\n... truncated, {len(encoded)} bytes total"
 
 
 def _parse_markdown_table(
@@ -137,13 +159,19 @@ def _parse_markdown_table(
     if not sep_line.strip().startswith("|"):
         return None
 
-    headers = [c.strip() for c in header_line.strip().strip("|").split("|")]
+    headers = _split_cells(header_line)
     rows: list[list[str]] = []
     j = i + 2
     while j < len(lines) and lines[j].strip().startswith("|"):
-        rows.append([c.strip() for c in lines[j].strip().strip("|").split("|")])
+        rows.append(_split_cells(lines[j]))
         j += 1
     return headers, rows
+
+
+def _split_cells(line: str) -> list[str]:
+    """Cells of one `| a | b |` row. A `\\|` inside a cell is a literal pipe."""
+    inner = line.strip().strip("|")
+    return [c.strip().replace("\\|", "|") for c in _UNESCAPED_PIPE.split(inner)]
 
 
 def _render_table(headers: list[str], rows: list[list[str]], max_rows: int) -> str:
@@ -189,7 +217,10 @@ def _describe_query_spec(args: dict[str, Any] | None) -> str:
     breakdowns = spec.get("breakdowns") or []
     breakdown_str = ", ".join(breakdowns) if breakdowns else "none"
 
-    time_range = spec.get("time_range", "default")
+    if spec.get("start_time") or spec.get("end_time"):
+        time_range = f"{spec.get('start_time', '?')}..{spec.get('end_time', '?')}"
+    else:
+        time_range = spec.get("time_range", "default")
     dataset = (args or {}).get("dataset_slug") or "environment-wide"
 
     return (

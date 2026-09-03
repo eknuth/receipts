@@ -66,7 +66,9 @@ Packages: `anthropic`, `boto3` (R11 only), `mcp` (streamable HTTP client), `open
 - `mcp` is pinned to 2.x. The 2.x client entrypoint is
   `mcp.client.streamable_http.streamable_http_client` (1.x called it `streamablehttp_client`);
   Honeycomb's published snippets use the 1.x name.
-- Propagate `traceparent` in MCP `params._meta` so agent spans link to MCP-side spans.
+- Send `traceparent` in MCP `params._meta` on every call. Honeycomb does not document this
+  field; R7 checks whether MCP-side spans link to ours in the Agent Timeline. Until then it is an
+  assumption, and the wire format is proven by test.
 - Agent Timeline groups spans by `gen_ai.conversation.id`. Free tier: 20M events/month.
 - Method to follow, from `honeycombio/agent-skill` (`honeycomb-investigator` agent and
   `production-investigation` skill): Orient, Characterize, BubbleUp, Traces, Verify by negation

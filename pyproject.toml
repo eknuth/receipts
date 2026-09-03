@@ -13,7 +13,7 @@ dependencies = [
     "pydantic-settings",
     "pyyaml",
     "rich",
-    "httpx",
+    "httpx2",
 ]
 
 [project.optional-dependencies]

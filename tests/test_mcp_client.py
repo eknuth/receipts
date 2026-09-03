@@ -6,11 +6,18 @@ and its redacted output is pasted into the R3 report, not exercised here.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import asyncio
+import time
+from collections.abc import AsyncIterator
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 
+import anyio
 import mcp.types as types
 import pytest
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp.shared.memory import create_client_server_memory_streams
 
 from agent.mcp_client import (
     READ_TOOLS,
@@ -96,6 +103,41 @@ async def test_pacing_never_exceeds_the_rate_in_any_60s_window() -> None:
         assert in_window <= 40
 
 
+async def test_rate_window_holds_without_the_min_interval() -> None:
+    """With min_interval=0 only the sliding window can slow calls down. A
+    bucket with the window removed passes the other pacing tests, since
+    1.5 s spacing alone implies 40 per minute; this one catches it.
+    """
+    fake = FakeClock()
+    bucket = TokenBucket(rate=40, period=60.0, min_interval=0, clock=fake.clock, sleep=fake.sleep)
+
+    call_times = []
+    for _ in range(45):
+        await bucket.wait()
+        call_times.append(fake.now)
+
+    assert fake.now >= 60.0
+    for t in call_times:
+        assert sum(1 for other in call_times if t - 60.0 < other <= t) <= 40
+
+
+async def test_concurrent_waiters_are_serialized() -> None:
+    """Five callers arriving at once with the real clock still leave
+    min_interval between calls. Without the lock they all pass at once."""
+    bucket = TokenBucket(rate=1000, min_interval=0.02)
+    times: list[float] = []
+
+    async def one() -> None:
+        await bucket.wait()
+        times.append(time.monotonic())
+
+    await asyncio.gather(*(one() for _ in range(5)))
+
+    times.sort()
+    gaps = [b - a for a, b in zip(times, times[1:])]
+    assert all(gap >= 0.018 for gap in gaps), gaps
+
+
 async def test_min_interval_is_respected_even_under_the_rate_cap() -> None:
     fake = FakeClock()
     bucket = TokenBucket(
@@ -109,69 +151,139 @@ async def test_min_interval_is_respected_even_under_the_rate_cap() -> None:
 
 
 # --------------------------------------------------------------------------
-# traceparent / tracestate injection
+# Wire-level tests against an in-process MCP server
 # --------------------------------------------------------------------------
 
 
-@dataclass
-class _StubTextContent:
-    text: str
-    type: str = "text"
+class _RecordingServer:
+    """An in-process MCP server that records what each tool call carried.
 
-
-@dataclass
-class _StubCallToolResult:
-    content: list[Any] = field(default_factory=list)
-    structured_content: Any = None
-
-
-class _StubSession:
-    """Records every call_tool invocation; mimics ClientSession's call surface."""
+    Wired to HoneycombMCP over memory streams, so the real ClientSession
+    and the real request serialization are exercised: what the server sees
+    in `ctx.request_context.meta` is what went over the wire as `_meta`.
+    """
 
     def __init__(self) -> None:
-        self.calls: list[dict[str, Any]] = []
+        self.server = MCPServer("fake-honeycomb")
+        self.metas: list[Any] = []
+        self.list_tools_calls = 0
+        self._install_tools()
 
-    async def call_tool(self, name: str, arguments: dict[str, Any] | None = None, *, meta=None):
-        self.calls.append({"name": name, "arguments": arguments, "meta": meta})
-        return _StubCallToolResult(content=[_StubTextContent(text="ok")])
+    def _install_tools(self) -> None:
+        server = self.server
+
+        @server.tool()
+        async def get_workspace_context(ctx: Context) -> str:
+            self.metas.append(ctx.request_context.meta)
+            return "TEAM INFORMATION\nName: acme-team"
+
+        @server.tool()
+        async def run_query(dataset_slug: str, ctx: Context) -> str:
+            self.metas.append(ctx.request_context.meta)
+            if dataset_slug == "does-not-exist":
+                raise ToolError(f"Invalid or missing dataset: {dataset_slug}")
+            return "# Results\n\n| COUNT |\n| --- |\n| 1 |\n"
+
+        lowlevel = server._lowlevel_server
+        original = lowlevel.get_request_handler("tools/list")
+
+        async def counting_list_tools(*args: Any, **kwargs: Any) -> Any:
+            self.list_tools_calls += 1
+            return await original.handler(*args, **kwargs)
+
+        lowlevel.add_request_handler(
+            "tools/list", types.PaginatedRequestParams, counting_list_tools
+        )
 
 
-async def test_call_forwards_traceparent_and_tracestate_into_session_meta(
-    settings: Settings,
-) -> None:
-    mcp = HoneycombMCP(settings=settings)
-    stub = _StubSession()
-    mcp._session = stub  # bypass __aenter__: no real transport needed for this test
+@asynccontextmanager
+async def in_process_mcp(
+    settings: Settings, **kwargs: Any
+) -> AsyncIterator[tuple[HoneycombMCP, _RecordingServer]]:
+    """A HoneycombMCP entered against an in-process server, no network."""
+    recording = _RecordingServer()
+    lowlevel = recording.server._lowlevel_server
 
-    await mcp.call(
-        "get_workspace_context",
-        {},
-        traceparent="00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
-        tracestate="hc=1",
-    )
+    async with create_client_server_memory_streams() as (client_streams, server_streams):
+        async with anyio.create_task_group() as tg:
 
-    assert len(stub.calls) == 1
-    meta = stub.calls[0]["meta"]
-    assert meta["traceparent"] == "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
-    assert meta["tracestate"] == "hc=1"
+            async def serve() -> None:
+                await lowlevel.run(
+                    *server_streams,
+                    lowlevel.create_initialization_options(),
+                    raise_exceptions=False,
+                )
+
+            tg.start_soon(serve)
+
+            class InProcessMCP(HoneycombMCP):
+                async def _open_streams(self, stack: AsyncExitStack) -> tuple[Any, Any]:
+                    return client_streams
+
+            fake = FakeClock()
+            bucket = kwargs.pop(
+                "bucket", TokenBucket(min_interval=0, clock=fake.clock, sleep=fake.sleep)
+            )
+            async with InProcessMCP(settings=settings, bucket=bucket, **kwargs) as mcp:
+                yield mcp, recording
+            tg.cancel_scope.cancel()
 
 
-async def test_call_omits_meta_when_no_trace_context_given(settings: Settings) -> None:
-    mcp = HoneycombMCP(settings=settings)
-    stub = _StubSession()
-    mcp._session = stub
+async def test_traceparent_and_tracestate_reach_the_server_as_meta(settings: Settings) -> None:
+    async with in_process_mcp(settings) as (mcp, server):
+        await mcp.call(
+            "get_workspace_context",
+            {},
+            traceparent="00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+            tracestate="hc=1",
+        )
 
-    await mcp.call("get_workspace_context", {})
+    assert server.metas == [
+        {
+            "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+            "tracestate": "hc=1",
+        }
+    ]
 
-    assert stub.calls[0]["meta"] is None
+
+async def test_no_trace_context_means_no_traceparent_on_the_wire(settings: Settings) -> None:
+    async with in_process_mcp(settings) as (mcp, server):
+        await mcp.call("get_workspace_context", {})
+
+    assert not server.metas[0]
+
+
+async def test_server_error_is_flagged_not_swallowed(settings: Settings) -> None:
+    async with in_process_mcp(settings) as (mcp, _):
+        ok = await mcp.call("run_query", {"dataset_slug": "receipts-shop"})
+        bad = await mcp.call("run_query", {"dataset_slug": "does-not-exist"})
+
+    assert ok.is_error is False
+    assert bad.is_error is True
+    assert bad.query_id is None
+    assert "does-not-exist" in bad.text
+    assert bad.text.startswith("run_query failed:")
+
+
+async def test_tools_list_is_fetched_once_on_enter_and_paced(settings: Settings) -> None:
+    """The SDK validates each tool's first result against tools/list. Fetching
+    the list on enter means that request is paced with everything else and
+    the first real call is not paired with a hidden second request.
+    """
+    fake = FakeClock()
+    bucket = TokenBucket(rate=40, min_interval=1.5, clock=fake.clock, sleep=fake.sleep)
+    async with in_process_mcp(settings, bucket=bucket) as (mcp, server):
+        assert server.list_tools_calls == 1
+        assert len(bucket._call_times) == 1
+        await mcp.call("get_workspace_context", {})
+        await mcp.call("run_query", {"dataset_slug": "receipts-shop"})
+
+    assert server.list_tools_calls == 1
+    assert len(bucket._call_times) == 3
 
 
 def test_meta_kwarg_serializes_to_wire_key_meta() -> None:
-    """The mcp SDK's own serialization: `meta=` on CallToolRequestParams
-    reaches the wire at the `_meta` key. This is what the mocked-session
-    test above feeds into `session.call_tool(..., meta=...)`; together they
-    show traceparent lands in `params._meta` on the wire.
-    """
+    """The SDK's own serialization: `meta=` on CallToolRequestParams lands at `_meta`."""
     params = types.CallToolRequestParams(
         name="get_trace",
         arguments={"trace_id": "abc"},
