@@ -74,6 +74,19 @@ def extract_ids(text: str) -> tuple[str | None, str | None]:
     return query_id, permalink
 
 
+def parse_results_table(
+    text: str, heading: str | None = "# Results"
+) -> tuple[list[str], list[list[str]]] | None:
+    """The `(headers, rows)` of a tool result's Markdown table, or None.
+
+    Public because `gen/verify.py` reads numbers out of a `run_query` result
+    rather than showing it to a model. `heading` defaults to the `# Results`
+    section every aggregate query returns; pass None to take the first table
+    in the text.
+    """
+    return _parse_markdown_table(text, heading)
+
+
 def format_tool_result(name: str, payload: Any, *, args: dict[str, Any] | None = None) -> str:
     """Render one tool's result compactly.
 

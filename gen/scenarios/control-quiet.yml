@@ -1,0 +1,14 @@
+id: control-quiet
+narrative: >-
+  A quiet twenty minutes. Nothing is wrong. eu-west-1 is a little slow on the
+  database, as it always is, and about half a percent of requests fail, as they
+  always do. The right answer is that there is no incident.
+baseline: {rps: 15, minutes: 20}
+ground_truth:
+  incident_present: false
+  affected_share: null
+red_herrings:
+  - where: {cloud.region: "eu-west-1"}
+    effect: {span: "db.query", latency_add_ms: 150}
+    onset_min: 0
+    note: the same pre-existing cross-region database latency, steady across the window

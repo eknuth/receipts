@@ -41,3 +41,19 @@ def settings(clean_env: None) -> Settings:
         anthropic_api_key="fake-anthropic-key",
         anthropic_workspace_id="fake-workspace-id",
     )
+
+
+@pytest.fixture(scope="module")
+def settings_module() -> Settings:
+    """The same fake settings as `settings`, at module scope.
+
+    The generator tests build a few thousand spans per module and want the
+    settings once rather than once per test.
+    """
+    return Settings(
+        _env_file=None,
+        honeycomb_ingest_key="fake-ingest-key",
+        honeycomb_mcp_key="fake-key-id:fake-secret",
+        anthropic_api_key="fake-anthropic-key",
+        anthropic_workspace_id="fake-workspace-id",
+    )

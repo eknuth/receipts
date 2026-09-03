@@ -27,8 +27,10 @@ Vault note: `~/proj/edwin-knuth/Projects/Honeycomb Demo - Receipts.md`. Full pla
 - One issue per branch, branch named `r<N>-<slug>`. Commit as Edwin Knuth <eknuth@gmail.com>.
 - Python 3.12, `uv`. Tests with pytest. Lint with ruff. `make test` and `make lint` must pass
   before an issue is called done.
-- Anything that needs a browser (Honeycomb UI, SLO creation, Canvas) is Ed's, not a subagent's.
-  Stop and say what is needed.
+- Anything that needs a browser (Honeycomb UI, trigger creation, Canvas) is Ed's, not a
+  subagent's. Stop and say what is needed.
+- Honeycomb bugs and docs gaps go to Linear issue EDW-1338 as a row (date, area, finding,
+  verified how, action). Report them to Ed; do not edit Linear yourself.
 
 ## Layout
 
@@ -98,16 +100,29 @@ fault:
   where: {deployment.version: "2.5.1", cloud.region: "us-west-2", payment.provider: "stripe"}
   effect: {span: "payments.charge", latency_add_ms: 800, error_rate: 0.0}
 ground_truth:
-  root_cause_dims: [deployment.version=2.5.1, cloud.region=us-west-2, payment.provider=stripe]
-  slow_span: payments.charge
+  incident_present: true
+  root_cause_dims: {deployment.version: "2.5.1", cloud.region: "us-west-2", payment.provider: "stripe"}
+  slow_or_failing_span: payments.charge
   affected_share: 0.12
 red_herrings:
-  - {cloud.region: "eu-west-1", latency_add_ms: 150, note: "pre-existing, not the incident"}
+  - where: {cloud.region: "eu-west-1"}
+    effect: {span: "db.query", latency_add_ms: 150}
+    onset_min: 0
+    note: "pre-existing, not the incident"
 ```
 
-Scenario classes: latency spike, error surge, deployment regression, dependency failure, SLO
-burn, two controls (no incident, the agent should say so), two where a red herring is stronger in
-count than the true cause.
+Field-by-field documentation is in `gen/README.md`. One dataset (`receipts-shop`), so the resource
+carries `service.name = receipts-shop` and each span names its real service in `service.component`.
+Backdating works. The team's ingest limit is 4,000 events per second. Going over it returns HTTP
+200 with an empty `partial_success` and the spans are dropped; the only notice is an email at most
+once per 24 hours. So `gen/emit.py` posts from one connection at a cap of 2,500 spans per second,
+never run two emits at once, and `gen/verify.py` counts what arrived before it believes any other
+number. The hosted MCP truncates query time bounds to whole seconds, so window edges sit on whole
+seconds.
+
+Scenario classes: latency spike, error surge, deployment regression, dependency failure, trigger
+fired, two controls (no incident, the agent should say so), two where a red herring is stronger
+in count than the true cause.
 
 ## Agent (`agent/`)
 
