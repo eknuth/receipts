@@ -26,8 +26,16 @@ from pydantic import ValidationError
 from rich.console import Console
 from rich.table import Table
 
-from agent.loop import DEFAULT_MAX_CALLS, DEFAULT_MAX_WALL_S, AgentConfig, ScenarioRun, investigate
+from agent.loop import (
+    DEFAULT_MAX_CALLS,
+    DEFAULT_MAX_WALL_S,
+    AgentConfig,
+    ScenarioRun,
+    config_label,
+    investigate,
+)
 from agent.report import Report
+from agent.telemetry import Telemetry
 from gen.emit import RUNS_DIR, load_manifest
 from gen.scenario import available_scenarios, load_scenario
 from receipts.settings import Settings
@@ -155,14 +163,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_calls=args.max_calls,
         max_wall_s=args.max_wall_s,
     )
-    report = asyncio.run(
-        investigate(ScenarioRun.from_manifest(manifest), config, settings=settings)
+    run = ScenarioRun.from_manifest(manifest)
+
+    # `python -m agent` never grades, so the root span here never carries
+    # gen_ai.evaluation.result; evals/run.py is the caller that does.
+    telemetry = Telemetry(settings)
+    run_trace = telemetry.start_run(
+        run.run_id, run.scenario_id, config_label=config_label(config), provider=config.provider
     )
+    try:
+        report = asyncio.run(investigate(run, config, settings=settings, trace=run_trace))
+    finally:
+        run_trace.end()
+        telemetry.flush()
+        telemetry.shutdown()
 
     console = Console()
     render(report, console)
     path = report.write(args.results_dir)
     console.print(f"\nreport: {path}")
+    if telemetry.enabled and run_trace.trace_id:
+        print(f"trace: {run_trace.trace_id}", file=sys.stderr)
 
     if report.error or report.stop_reason != "report":
         return 1

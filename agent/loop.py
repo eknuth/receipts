@@ -50,6 +50,7 @@ from agent.providers.base import (
     Turn,
 )
 from agent.report import Report, ReportDraft, ToolCall, submit_report_schema
+from agent.telemetry import RunTrace, disabled_run_trace
 from evals.pricing import cost_usd
 from receipts.settings import Settings
 
@@ -140,6 +141,22 @@ class AgentConfig:
     max_wall_s: float = DEFAULT_MAX_WALL_S
     max_tokens: int = DEFAULT_MAX_TOKENS
     tools: tuple[str, ...] = INVESTIGATION_TOOLS
+
+
+def config_label(config: AgentConfig) -> str:
+    """A short name for this config, for the trace's `agent.config` attribute.
+
+    Mirrors `evals/run.py`'s config names (`full`, `no-negation`,
+    `no-notchecked`) without importing from `evals`, which `agent/` does not
+    depend on; the eval matrix passes its own config name instead of calling
+    this, since that name is already authoritative there.
+    """
+    parts = []
+    if not config.require_negation:
+        parts.append("no-negation")
+    if not config.require_not_checked:
+        parts.append("no-notchecked")
+    return "+".join(parts) if parts else "full"
 
 
 @dataclass
@@ -258,19 +275,27 @@ async def investigate(
     mcp: HoneycombMCP | None = None,
     provider: Provider | None = None,
     clock: Callable[[], float] = time.monotonic,
+    trace: RunTrace | None = None,
 ) -> Report:
     """Investigate one run and return its report.
 
     `mcp`, `provider`, and `clock` are injectable so the tests can drive the
     whole loop with no network and no waiting. When `mcp` is None a session is
     opened and closed here.
+
+    `trace` is the root span this run's `chat` and `execute_tool` spans
+    attach to, opened by the caller (see `agent/telemetry.py`) so grading,
+    which happens after this returns, can still write the evaluation result
+    onto it. When `trace` is None, as in every existing caller that does not
+    care about telemetry, a disabled trace is used and nothing is emitted.
     """
     config = config or AgentConfig()
     settings = settings or Settings()
+    trace = trace or disabled_run_trace(run.run_id)
     if mcp is not None:
-        return await _investigate(run, config, settings, mcp, provider, clock)
+        return await _investigate(run, config, settings, mcp, provider, clock, trace)
     async with HoneycombMCP(settings=settings) as session:
-        return await _investigate(run, config, settings, session, provider, clock)
+        return await _investigate(run, config, settings, session, provider, clock, trace)
 
 
 async def _investigate(
@@ -280,6 +305,7 @@ async def _investigate(
     mcp: HoneycombMCP,
     provider: Provider | None,
     clock: Callable[[], float],
+    trace: RunTrace,
 ) -> Report:
     provider = provider or _make_provider(config, settings)
     budget = _Budget(
@@ -289,7 +315,7 @@ async def _investigate(
         clock=clock,
     )
 
-    state = _RunState(run=run, config=config, provider=provider, budget=budget)
+    state = _RunState(run=run, config=config, provider=provider, budget=budget, trace=trace)
 
     try:
         tools = await build_tools(mcp, config)
@@ -311,9 +337,11 @@ async def _investigate(
             return state.finish(stop_reason=budget.reason())
         try:
             async with asyncio.timeout(remaining):
-                completion = await provider.complete(
-                    system, turns, tools, max_tokens=config.max_tokens
-                )
+                with trace.chat_span(provider.model) as chat:
+                    completion = await provider.complete(
+                        system, turns, tools, max_tokens=config.max_tokens
+                    )
+                    chat.record(completion, system=system, turns=turns)
         except TimeoutError:
             logger.warning("provider call ran past the wall budget")
             return state.finish(stop_reason="wall_cap")
@@ -389,11 +417,13 @@ class _RunState:
         config: AgentConfig,
         provider: Provider,
         budget: _Budget,
+        trace: RunTrace,
     ) -> None:
         self.run = run
         self.config = config
         self.provider = provider
         self.budget = budget
+        self.trace = trace
         self.tool_log: list[ToolCall] = []
         self.tokens_in = 0
         self.tokens_out = 0
@@ -428,28 +458,39 @@ class _RunState:
 
         self.budget.calls += 1
         elapsed = self.budget.wall_s
-        try:
-            result = await mcp.call(use.name, use.args)
-        except ToolNotAllowed as exc:
-            self._log(use, elapsed, is_error=True)
-            return ToolResultBlock(tool_use_id=use.id, content=str(exc), is_error=True)
-        except Exception as exc:
-            logger.warning("mcp call %s failed: %s", use.name, exc)
-            self._log(use, elapsed, is_error=True)
-            return ToolResultBlock(
-                tool_use_id=use.id,
-                content=f"{use.name} failed: {type(exc).__name__}: {exc}",
-                is_error=True,
-            )
+        with self.trace.tool_span(use.name, use.id, use.args) as tool_span:
+            try:
+                result = await mcp.call(
+                    use.name,
+                    use.args,
+                    traceparent=tool_span.traceparent,
+                    tracestate=tool_span.tracestate,
+                )
+            except ToolNotAllowed as exc:
+                tool_span.record_exception(exc)
+                self._log(use, elapsed, is_error=True)
+                return ToolResultBlock(tool_use_id=use.id, content=str(exc), is_error=True)
+            except Exception as exc:
+                logger.warning("mcp call %s failed: %s", use.name, exc)
+                tool_span.record_exception(exc)
+                self._log(use, elapsed, is_error=True)
+                return ToolResultBlock(
+                    tool_use_id=use.id,
+                    content=f"{use.name} failed: {type(exc).__name__}: {exc}",
+                    is_error=True,
+                )
 
-        self._log(
-            use,
-            elapsed,
-            is_error=result.is_error,
-            query_id=result.query_id,
-            permalink=result.permalink,
-        )
-        return ToolResultBlock(tool_use_id=use.id, content=result.text, is_error=result.is_error)
+            tool_span.record_result(result.text, is_error=result.is_error)
+            self._log(
+                use,
+                elapsed,
+                is_error=result.is_error,
+                query_id=result.query_id,
+                permalink=result.permalink,
+            )
+            return ToolResultBlock(
+                tool_use_id=use.id, content=result.text, is_error=result.is_error
+            )
 
     def _log(
         self,

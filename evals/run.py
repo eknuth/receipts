@@ -80,6 +80,7 @@ from agent.loop import DEFAULT_MAX_CALLS, DEFAULT_MAX_WALL_S, AgentConfig, Scena
 from agent.mcp_client import HoneycombMCP, TokenBucket
 from agent.providers.base import Provider
 from agent.report import Report
+from agent.telemetry import Telemetry
 from evals.grader import WRONG_BELOW, Grade, grade
 from gen.emit import RUNS_DIR, EmitResult, emit, load_manifest
 from gen.scenario import Scenario, available_scenarios, load_scenario
@@ -470,8 +471,21 @@ async def run_one(
     provider_factory: ProviderFactory | None = None,
     clock: Callable[[], float] = time.monotonic,
     on_call: Callable[[int], None] | None = None,
+    telemetry: Telemetry | None = None,
 ) -> GradedRun:
-    """One investigation, graded and written. Never raises for the run's own failure."""
+    """One investigation, graded and written. Never raises for the run's own failure.
+
+    `telemetry` opens this run's root span before `investigate` runs and
+    carries the evaluation result once `grade` returns; with none given, a
+    disabled `Telemetry()` is used, which emits nothing (see
+    `agent/telemetry.py`). This is the caller that grades, so it is the one
+    that calls `end_with_grade` or `end_with_error`; `agent/loop.py` never
+    ends the root span itself.
+    """
+    telemetry = telemetry or Telemetry()
+    run_trace = telemetry.start_run(
+        run.run_id, run.scenario_id, config_label=config_name, provider=config.provider
+    )
     directory = run_dir(results_dir, config_name, run.scenario_id, repeat)
     started = time.monotonic()
     counter: _CountingMCP | None = None
@@ -489,6 +503,7 @@ async def run_one(
                     mcp=counter,
                     provider=provider,
                     clock=clock,
+                    trace=run_trace,
                 )
         except Exception as exc:
             if report is None:
@@ -525,8 +540,30 @@ async def run_one(
             tool_calls=counter.calls if counter else 0,
             wall_s=time.monotonic() - started,
         )
+    if graded.crashed:
+        run_trace.end_with_error(_error_type(graded.error), graded.error or "crash")
+    else:
+        assert graded.grade is not None
+        run_trace.end_with_grade(graded.total, graded.grade.components.model_dump())
+    if telemetry.enabled and run_trace.trace_id:
+        print(
+            f"trace: {run_trace.trace_id} ({config_name} {run.scenario_id} repeat {repeat})",
+            file=sys.stderr,
+        )
     write_run(directory, graded, report)
     return graded
+
+
+def _error_type(error: str | None) -> str:
+    """A low-cardinality `error.type` from a crash message.
+
+    Crash messages are built as `f"{type(exc).__name__}: {exc}"`, so the part
+    before the first colon is usually the exception's class name; anything
+    else is used whole, which is still better than no label at all.
+    """
+    if not error:
+        return "error"
+    return error.split(":", 1)[0].strip() or "error"
 
 
 class _LoopError(Exception):
@@ -552,16 +589,24 @@ async def run_matrix(
     emitter: Callable[[Scenario, Settings], EmitResult] | None = None,
     clock: Callable[[], float] = time.monotonic,
     console: Console | None = None,
+    telemetry: Telemetry | None = None,
 ) -> list[GradedRun]:
     """Run every cell in order and return the graded runs, one per cell.
 
     Sequential on purpose: the MCP rate limit is per team. Every run id is
     resolved (or emitted) before the first investigation, so a missing
     manifest stops the matrix before anything is spent.
+
+    `telemetry` is shared across every cell, one export queue for the whole
+    matrix rather than one per run, the way `_SharedSessions` shares one MCP
+    token bucket. With none given, a disabled `Telemetry()` is used and the
+    matrix emits nothing; the CLI in this module builds a real one from
+    `settings` before calling this.
     """
     index_path = index_path or results_dir / "runs.json"
     console = console or Console()
     open_mcp = open_mcp or _SharedSessions()
+    telemetry = telemetry or Telemetry()
     index = RunIndex.load(index_path)
 
     scenarios = {scenario_id: load_scenario(scenario_id) for scenario_id in scenario_ids}
@@ -629,10 +674,13 @@ async def run_matrix(
                         provider_factory=provider_factory,
                         clock=clock,
                         on_call=on_call,
+                        telemetry=telemetry,
                     )
                     progress.remove_task(task)
                     results.append(graded)
                     progress.console.print(_summary_line(graded))
+    telemetry.flush()
+    telemetry.shutdown()
     return results
 
 
@@ -720,6 +768,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     console = Console()
+    telemetry = Telemetry(settings)
     try:
         results = asyncio.run(
             run_matrix(
@@ -735,6 +784,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 max_calls=args.max_calls,
                 max_wall_s=args.max_wall_s,
                 console=console,
+                telemetry=telemetry,
             )
         )
     except (FileNotFoundError, ValueError) as exc:

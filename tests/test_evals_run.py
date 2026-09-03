@@ -221,6 +221,39 @@ async def test_each_run_writes_a_report_and_a_grade_by_config_scenario_and_repea
     assert report.scenario_id == PAYMENTS
 
 
+async def test_the_root_span_carries_the_same_total_as_grade_json(
+    settings: Settings, results_dir: Path, runs_dir: Path
+) -> None:
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    from agent.telemetry import Telemetry
+
+    exporter = InMemorySpanExporter()
+    telemetry = Telemetry(exporter=exporter)
+    results = await run(
+        [PAYMENTS],
+        ["full"],
+        1,
+        settings=settings,
+        results_dir=results_dir,
+        runs_dir=runs_dir,
+        provider_factory=factory([lambda: FakeProvider(good_script())]),
+        telemetry=telemetry,
+    )
+    graded = load_run(run_dir(results_dir, "full", PAYMENTS, 1) / "grade.json")
+
+    root = next(
+        span
+        for span in exporter.get_finished_spans()
+        if span.name == "invoke_agent receipts-investigator"
+    )
+    assert root.attributes["gen_ai.evaluation.result"] == graded.total == results[0].total
+    assert root.attributes["receipts.grade.dims"] == graded.grade.components.dims
+    assert root.attributes["gen_ai.conversation.id"] == graded.run_id
+    assert root.attributes["scenario.id"] == PAYMENTS
+    assert root.attributes["agent.config"] == "full"
+
+
 async def test_running_the_matrix_again_appends_repeats(
     settings: Settings, results_dir: Path, runs_dir: Path
 ) -> None:
