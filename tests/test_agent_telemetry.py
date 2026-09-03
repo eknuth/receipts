@@ -10,6 +10,7 @@ without a model or the network.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -32,11 +33,17 @@ from test_agent_loop import query_use as _query_use
 from agent import telemetry as T
 from agent.loop import SUBMIT_REPORT, AgentConfig, investigate
 from agent.mcp_client import ToolNotAllowed, ToolResult
+from agent.providers.base import Completion, Usage
+from agent.report import Report
 from agent.telemetry import Telemetry
 from receipts.settings import Settings
 
 FAKE_INGEST_KEY = "fake-ingest-key-do-not-leak"
 FAKE_MCP_KEY = "fake-key-id:fake-secret-do-not-leak"
+
+# root + 3 chat spans (one per model turn) + 4 MCP tool calls
+# (get_workspace_context, then three run_query calls) + 1 submit_report span.
+EXPECTED_SPAN_COUNT = 1 + 3 + 4 + 1
 
 
 def make_settings(*, capture_content: bool = False, ingest_key: str | None = "k") -> Settings:
@@ -59,10 +66,23 @@ def good_script() -> list[Any]:
 
 
 def make_conversation_id(suffix: str = "1") -> str:
-    """A conversation id shaped like the ones evals/run.py and agent/__main__.py build:
-    the run id plus something that makes this investigation unique, never the
-    run id alone (see the module docstring in agent/telemetry.py)."""
-    return f"{RUN.run_id}/full/{suffix}"
+    """A conversation id shaped like the ones evals/run.py and agent/__main__.py
+    build: the run id plus something that makes this investigation unique,
+    joined with dots (a live check found a slash broke the Agent Timeline's
+    Traces panel)."""
+    return f"{RUN.run_id}.full.{suffix}"
+
+
+def start_test_run(
+    telemetry: Telemetry, *, conversation_id: str | None = None, provider: str = "fake"
+) -> T.RunTrace:
+    return telemetry.start_run(
+        RUN.run_id,
+        RUN.scenario_id,
+        conversation_id=conversation_id or make_conversation_id(),
+        config_label="full",
+        provider=provider,
+    )
 
 
 async def run_full_investigation(
@@ -73,13 +93,7 @@ async def run_full_investigation(
     conversation_id: str | None = None,
 ):
     """One complete investigation under a real (in-memory) trace. Returns (report, run_trace)."""
-    run_trace = telemetry.start_run(
-        RUN.run_id,
-        RUN.scenario_id,
-        conversation_id=conversation_id or make_conversation_id(),
-        config_label="full",
-        provider="fake",
-    )
+    run_trace = start_test_run(telemetry, conversation_id=conversation_id)
     provider = FakeProvider(good_script())
     report = await investigate(
         RUN,
@@ -131,6 +145,15 @@ class ServerErrorMCP(FakeMCP):
         )
 
 
+def tool_spans(spans: list[Any]) -> list[Any]:
+    """The MCP execute_tool spans, excluding submit_report's."""
+    return [
+        s
+        for s in spans
+        if s.name.startswith("execute_tool ") and s.name != "execute_tool submit_report"
+    ]
+
+
 # --------------------------------------------------------------------------
 # The three required attributes, everywhere
 # --------------------------------------------------------------------------
@@ -146,9 +169,7 @@ async def test_every_span_carries_the_three_required_attributes() -> None:
 
     spans = exporter.get_finished_spans()
     assert report.stop_reason == "report"
-    # a root span, three chat spans (one per model turn), and four tool calls
-    # (get_workspace_context, then three run_query calls), per good_script().
-    assert len(spans) == 1 + 3 + 4
+    assert len(spans) == EXPECTED_SPAN_COUNT
     for span in spans:
         assert span.attributes["gen_ai.conversation.id"] == conversation_id
         assert span.attributes["gen_ai.agent.name"] == "receipts-investigator"
@@ -171,13 +192,7 @@ def test_the_root_span_names_and_operation() -> None:
     exporter = InMemorySpanExporter()
     telemetry = Telemetry(exporter=exporter)
     conversation_id = make_conversation_id("1")
-    run_trace = telemetry.start_run(
-        RUN.run_id,
-        RUN.scenario_id,
-        conversation_id=conversation_id,
-        config_label="full",
-        provider="anthropic",
-    )
+    run_trace = start_test_run(telemetry, conversation_id=conversation_id, provider="anthropic")
     run_trace.end()
     telemetry.flush()
 
@@ -187,9 +202,36 @@ def test_the_root_span_names_and_operation() -> None:
     assert span.attributes["gen_ai.conversation.id"] == conversation_id
     assert span.attributes["receipts.run_id"] == RUN.run_id
     assert span.attributes["scenario.id"] == RUN.scenario_id
-    assert span.attributes["agent.config"] == "full"
-    assert span.attributes["agent.provider"] == "anthropic"
+    assert span.attributes["receipts.config"] == "full"
     assert span.attributes["gen_ai.provider.name"] == "anthropic"
+    assert "agent.config" not in span.attributes
+    assert "agent.provider" not in span.attributes
+
+
+# --------------------------------------------------------------------------
+# scenario.id is never exported while its own investigation could read it
+# --------------------------------------------------------------------------
+
+
+async def test_scenario_id_is_absent_until_the_root_span_ends() -> None:
+    exporter = InMemorySpanExporter()
+    telemetry = Telemetry(exporter=exporter)
+    report, run_trace = await run_full_investigation(telemetry)
+    telemetry.flush()
+
+    # Every span exported while the investigation ran (everything but the
+    # still-open root) must not carry scenario.id.
+    for span in exporter.get_finished_spans():
+        assert "scenario.id" not in span.attributes
+
+    run_trace.end()
+    telemetry.flush()
+
+    root = next(
+        s for s in exporter.get_finished_spans() if s.name == "invoke_agent receipts-investigator"
+    )
+    assert root.attributes["scenario.id"] == RUN.scenario_id
+    assert report.run_id == RUN.run_id  # unaffected either way
 
 
 # --------------------------------------------------------------------------
@@ -246,13 +288,7 @@ async def test_the_root_span_outlives_investigate_and_takes_the_evaluation_resul
 async def test_a_crash_ends_the_root_span_with_an_error_and_no_evaluation_result() -> None:
     exporter = InMemorySpanExporter()
     telemetry = Telemetry(exporter=exporter)
-    run_trace = telemetry.start_run(
-        RUN.run_id,
-        RUN.scenario_id,
-        conversation_id=make_conversation_id("1"),
-        config_label="full",
-        provider="fake",
-    )
+    run_trace = start_test_run(telemetry, conversation_id=make_conversation_id("1"))
     run_trace.end_with_error("RuntimeError", "the provider fell over")
     telemetry.flush()
 
@@ -260,6 +296,38 @@ async def test_a_crash_ends_the_root_span_with_an_error_and_no_evaluation_result
     assert root.status.status_code == StatusCode.ERROR
     assert root.attributes["error.type"] == "RuntimeError"
     assert "gen_ai.evaluation.result" not in root.attributes
+
+
+# --------------------------------------------------------------------------
+# record_outcome
+# --------------------------------------------------------------------------
+
+
+def test_record_outcome_sets_receipts_fields_from_the_report() -> None:
+    exporter = InMemorySpanExporter()
+    telemetry = Telemetry(exporter=exporter)
+    run_trace = start_test_run(telemetry, conversation_id=make_conversation_id("1"))
+    report = Report(
+        run_id=RUN.run_id,
+        scenario_id=RUN.scenario_id,
+        provider="fake",
+        model="x",
+        stop_reason="report",
+        validation_failed=False,
+        tool_calls=7,
+        cost_usd=0.05,
+        wall_s=12.3,
+    )
+    run_trace.record_outcome(report)
+    run_trace.end()
+    telemetry.flush()
+
+    (root,) = exporter.get_finished_spans()
+    assert root.attributes["receipts.stop_reason"] == "report"
+    assert root.attributes["receipts.validation_failed"] is False
+    assert root.attributes["receipts.tool_calls"] == 7
+    assert root.attributes["receipts.cost_usd"] == 0.05
+    assert root.attributes["receipts.wall_s"] == 12.3
 
 
 # --------------------------------------------------------------------------
@@ -280,9 +348,10 @@ async def test_content_capture_is_off_by_default() -> None:
         event_names = [event.name for event in span.events]
         assert "gen_ai.input.messages" not in event_names
         assert "gen_ai.output.messages" not in event_names
+        assert "gen_ai.system_instructions" not in event_names
 
 
-async def test_content_capture_turns_on_with_the_flag() -> None:
+async def test_content_capture_turns_on_with_the_flag_in_the_semconv_message_shape() -> None:
     exporter = InMemorySpanExporter()
     settings = make_settings(capture_content=True)
     telemetry = Telemetry(settings, exporter=exporter)
@@ -293,20 +362,36 @@ async def test_content_capture_turns_on_with_the_flag() -> None:
 
     chat_spans = [s for s in exporter.get_finished_spans() if s.name.startswith("chat ")]
     assert chat_spans
-    captured = False
+    saw_input = saw_output = saw_system = False
     for span in chat_spans:
         events = {event.name: event for event in span.events}
         if "gen_ai.input.messages" in events:
-            captured = True
+            saw_input = True
             raw = events["gen_ai.input.messages"].attributes["gen_ai.input.messages"]
             payload = json.loads(raw)
             assert isinstance(payload, list)
-            assert payload[0]["role"] == "system"
+            for message in payload:
+                assert set(message) == {"role", "parts"}
+                assert message["role"] != "system"  # the system prompt is its own event
+                for part in message["parts"]:
+                    assert part["type"] in {"text", "tool_call", "tool_call_response"}
         if "gen_ai.output.messages" in events:
+            saw_output = True
             raw = events["gen_ai.output.messages"].attributes["gen_ai.output.messages"]
             payload = json.loads(raw)
-            assert isinstance(payload, list)
-    assert captured
+            assert len(payload) == 1
+            assert payload[0]["role"] == "assistant"
+            assert "finish_reason" in payload[0]
+            for part in payload[0]["parts"]:
+                assert part["type"] in {"text", "tool_call"}
+        if "gen_ai.system_instructions" in events:
+            saw_system = True
+            raw = events["gen_ai.system_instructions"].attributes["gen_ai.system_instructions"]
+            payload = json.loads(raw)
+            assert len(payload) == 1
+            assert payload[0]["type"] == "text"
+            assert payload[0]["content"]
+    assert saw_input and saw_output and saw_system
 
 
 # --------------------------------------------------------------------------
@@ -373,11 +458,11 @@ async def test_the_traceparent_reaches_the_mcps_call_kwargs() -> None:
 
 
 # --------------------------------------------------------------------------
-# Tool failures set ERROR status and propagate it to the root span
+# Tool failures stay on their own span and count, without marking the root
 # --------------------------------------------------------------------------
 
 
-async def test_a_tool_not_allowed_sets_error_status_and_propagates_to_the_root() -> None:
+async def test_a_tool_not_allowed_marks_its_span_counts_and_leaves_the_root_unset() -> None:
     exporter = InMemorySpanExporter()
     telemetry = Telemetry(exporter=exporter)
     report, run_trace = await run_full_investigation(telemetry, mcp=NotAllowedMCP())
@@ -385,17 +470,20 @@ async def test_a_tool_not_allowed_sets_error_status_and_propagates_to_the_root()
     telemetry.flush()
 
     spans = exporter.get_finished_spans()
-    tool_span = next(s for s in spans if s.name.startswith("execute_tool "))
-    assert tool_span.status.status_code == StatusCode.ERROR
-    assert tool_span.attributes["error.type"] == "ToolNotAllowed"
+    failed = tool_spans(spans)
+    assert failed
+    for span in failed:
+        assert span.status.status_code == StatusCode.ERROR
+        assert span.attributes["error.type"] == "ToolNotAllowed"
 
     root = next(s for s in spans if s.name == "invoke_agent receipts-investigator")
-    assert root.status.status_code == StatusCode.ERROR
-    assert root.attributes["error.type"] == "ToolNotAllowed"
+    assert root.status.status_code == StatusCode.UNSET
+    assert "error.type" not in root.attributes
+    assert root.attributes["receipts.tool_errors"] == len(failed)
     assert report.validation_failed is True  # nothing was ever queried successfully
 
 
-async def test_a_server_side_tool_error_sets_error_status() -> None:
+async def test_a_server_side_tool_error_marks_its_span_counts_and_leaves_the_root_unset() -> None:
     exporter = InMemorySpanExporter()
     telemetry = Telemetry(exporter=exporter)
     _, run_trace = await run_full_investigation(telemetry, mcp=ServerErrorMCP())
@@ -403,10 +491,152 @@ async def test_a_server_side_tool_error_sets_error_status() -> None:
     telemetry.flush()
 
     spans = exporter.get_finished_spans()
-    tool_span = next(s for s in spans if s.name.startswith("execute_tool "))
-    assert tool_span.status.status_code == StatusCode.ERROR
-    assert tool_span.attributes["error.type"] == "tool_error"
-    assert tool_span.attributes["gen_ai.tool.call.result"] == "bad filter column"
+    failed = tool_spans(spans)
+    assert failed
+    for span in failed:
+        assert span.status.status_code == StatusCode.ERROR
+        assert span.attributes["error.type"] == "tool_error"
+        assert span.attributes["gen_ai.tool.call.result"] == "bad filter column"
+
+    root = next(s for s in spans if s.name == "invoke_agent receipts-investigator")
+    assert root.status.status_code == StatusCode.UNSET
+    assert root.attributes["receipts.tool_errors"] == len(failed)
+
+
+# --------------------------------------------------------------------------
+# A cancelled chat span (the loop's wall-clock timeout) is marked, not lost
+# --------------------------------------------------------------------------
+
+
+async def test_a_cancelled_chat_span_is_marked_timeout_and_still_reraises() -> None:
+    exporter = InMemorySpanExporter()
+    telemetry = Telemetry(exporter=exporter)
+    run_trace = start_test_run(telemetry, conversation_id=make_conversation_id("1"))
+
+    with pytest.raises(asyncio.CancelledError):
+        with run_trace.chat_span("claude-x", provider_name="anthropic", max_tokens=100):
+            raise asyncio.CancelledError()
+
+    run_trace.end()
+    telemetry.flush()
+
+    (chat_span,) = [s for s in exporter.get_finished_spans() if s.name.startswith("chat ")]
+    assert chat_span.status.status_code == StatusCode.ERROR
+    assert chat_span.attributes["error.type"] == "timeout"
+
+
+# --------------------------------------------------------------------------
+# submit_report gets its own span
+# --------------------------------------------------------------------------
+
+
+async def test_the_submit_report_span_records_acceptance() -> None:
+    exporter = InMemorySpanExporter()
+    telemetry = Telemetry(exporter=exporter)
+    _, run_trace = await run_full_investigation(telemetry)
+    run_trace.end()
+    telemetry.flush()
+
+    span = next(s for s in exporter.get_finished_spans() if s.name == "execute_tool submit_report")
+    assert span.attributes["gen_ai.tool.name"] == "submit_report"
+    assert span.attributes["gen_ai.tool.call.result"] == "accepted"
+    assert span.status.status_code == StatusCode.UNSET
+
+
+async def test_the_submit_report_span_records_a_rejection_before_the_acceptance() -> None:
+    exporter = InMemorySpanExporter()
+    telemetry = Telemetry(exporter=exporter)
+    run_trace = start_test_run(telemetry, conversation_id=make_conversation_id("1"))
+
+    bad = report_args(hypotheses=[dict(report_args()["hypotheses"][0], evidence=[])])
+    provider = FakeProvider(
+        [
+            completion(_query_use("b"), negation_use("c"), baseline_use("d")),
+            completion(use(SUBMIT_REPORT, bad, ident="d")),
+            completion(use(SUBMIT_REPORT, report_args(), ident="e")),
+        ]
+    )
+    report = await investigate(
+        RUN,
+        AgentConfig(),
+        settings=make_settings(),
+        mcp=FakeMCP(),
+        provider=provider,
+        trace=run_trace,
+    )
+    run_trace.end()
+    telemetry.flush()
+
+    assert report.validation_failed is False
+    submit_spans = [
+        s for s in exporter.get_finished_spans() if s.name == "execute_tool submit_report"
+    ]
+    assert len(submit_spans) == 2
+    rejected, accepted = submit_spans
+
+    assert rejected.status.status_code == StatusCode.ERROR
+    assert rejected.attributes["error.type"] == "validation_rejected"
+    assert rejected.attributes["receipts.validation.rejected"] is True
+    assert "carries no evidence" in rejected.attributes["gen_ai.tool.call.result"]
+
+    assert accepted.status.status_code == StatusCode.UNSET
+    assert accepted.attributes["gen_ai.tool.call.result"] == "accepted"
+    assert "receipts.validation.rejected" not in accepted.attributes
+
+
+# --------------------------------------------------------------------------
+# Token usage and the response id
+# --------------------------------------------------------------------------
+
+
+def test_chat_span_records_response_id_and_cache_inclusive_input_tokens() -> None:
+    exporter = InMemorySpanExporter()
+    telemetry = Telemetry(exporter=exporter)
+    run_trace = start_test_run(
+        telemetry, conversation_id=make_conversation_id("1"), provider="anthropic"
+    )
+
+    comp = Completion(
+        text="ok",
+        tool_uses=[],
+        usage=Usage(
+            input_tokens=1000, output_tokens=200, cache_read_tokens=50, cache_write_tokens=25
+        ),
+        stop_reason="end_turn",
+        response_model="claude-sonnet-4-5",
+        response_id="msg_abc",
+    )
+    with run_trace.chat_span(
+        "claude-sonnet-4-5", provider_name="anthropic", max_tokens=8192
+    ) as chat:
+        chat.record(comp, system="be careful", turns=[])
+    run_trace.end()
+    telemetry.flush()
+
+    (chat_span,) = [s for s in exporter.get_finished_spans() if s.name.startswith("chat ")]
+    assert chat_span.attributes["gen_ai.response.id"] == "msg_abc"
+    assert chat_span.attributes["gen_ai.response.model"] == "claude-sonnet-4-5"
+    assert chat_span.attributes["gen_ai.usage.input_tokens"] == 1000 + 50 + 25
+    assert chat_span.attributes["gen_ai.usage.output_tokens"] == 200
+    assert chat_span.attributes["gen_ai.usage.cache_read.input_tokens"] == 50
+    assert chat_span.attributes["gen_ai.usage.cache_write.input_tokens"] == 25
+
+
+def test_cache_attributes_are_absent_when_there_is_no_cache_usage() -> None:
+    exporter = InMemorySpanExporter()
+    telemetry = Telemetry(exporter=exporter)
+    run_trace = start_test_run(telemetry, conversation_id=make_conversation_id("1"))
+
+    comp = Completion(text="ok", tool_uses=[], usage=Usage(input_tokens=10, output_tokens=5))
+    with run_trace.chat_span("m", provider_name="anthropic", max_tokens=10) as chat:
+        chat.record(comp, system="s", turns=[])
+    run_trace.end()
+    telemetry.flush()
+
+    (chat_span,) = [s for s in exporter.get_finished_spans() if s.name.startswith("chat ")]
+    assert chat_span.attributes["gen_ai.usage.input_tokens"] == 10
+    assert "gen_ai.usage.cache_read.input_tokens" not in chat_span.attributes
+    assert "gen_ai.usage.cache_write.input_tokens" not in chat_span.attributes
 
 
 # --------------------------------------------------------------------------
@@ -417,13 +647,7 @@ async def test_a_server_side_tool_error_sets_error_status() -> None:
 def test_tool_call_arguments_are_truncated_at_2kb() -> None:
     exporter = InMemorySpanExporter()
     telemetry = Telemetry(exporter=exporter)
-    run_trace = telemetry.start_run(
-        RUN.run_id,
-        RUN.scenario_id,
-        conversation_id=make_conversation_id("1"),
-        config_label="full",
-        provider="fake",
-    )
+    run_trace = start_test_run(telemetry, conversation_id=make_conversation_id("1"))
     huge_args = {"filters": ["x" * 100 for _ in range(50)]}
     with run_trace.tool_span("run_query", "tu1", huge_args) as handle:
         handle.record_result("ok", is_error=False)
@@ -441,13 +665,7 @@ def test_tool_call_arguments_are_truncated_at_2kb() -> None:
 def test_tool_call_result_is_truncated_at_500_chars() -> None:
     exporter = InMemorySpanExporter()
     telemetry = Telemetry(exporter=exporter)
-    run_trace = telemetry.start_run(
-        RUN.run_id,
-        RUN.scenario_id,
-        conversation_id=make_conversation_id("1"),
-        config_label="full",
-        provider="fake",
-    )
+    run_trace = start_test_run(telemetry, conversation_id=make_conversation_id("1"))
     long_result = "y" * 900
     with run_trace.tool_span("run_query", "tu1", {}) as handle:
         handle.record_result(long_result, is_error=False)
@@ -463,13 +681,7 @@ def test_tool_call_result_is_truncated_at_500_chars() -> None:
 def test_short_arguments_and_results_are_not_truncated() -> None:
     exporter = InMemorySpanExporter()
     telemetry = Telemetry(exporter=exporter)
-    run_trace = telemetry.start_run(
-        RUN.run_id,
-        RUN.scenario_id,
-        conversation_id=make_conversation_id("1"),
-        config_label="full",
-        provider="fake",
-    )
+    run_trace = start_test_run(telemetry, conversation_id=make_conversation_id("1"))
     with run_trace.tool_span("run_query", "tu1", {"a": 1}) as handle:
         handle.record_result("short", is_error=False)
     run_trace.end()
@@ -487,13 +699,7 @@ def test_arguments_that_will_not_serialize_fall_back_to_str_instead_of_raising()
     not in encoding a value. tool_span must not let that reach the loop."""
     exporter = InMemorySpanExporter()
     telemetry = Telemetry(exporter=exporter)
-    run_trace = telemetry.start_run(
-        RUN.run_id,
-        RUN.scenario_id,
-        conversation_id=make_conversation_id("1"),
-        config_label="full",
-        provider="fake",
-    )
+    run_trace = start_test_run(telemetry, conversation_id=make_conversation_id("1"))
     bad_args = {1: "a", "b": 2}
     with run_trace.tool_span("run_query", "tu1", bad_args) as handle:
         handle.record_result("ok", is_error=False)

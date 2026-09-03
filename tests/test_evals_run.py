@@ -249,10 +249,13 @@ async def test_the_root_span_carries_the_same_total_as_grade_json(
     )
     assert root.attributes["gen_ai.evaluation.result"] == graded.total == results[0].total
     assert root.attributes["receipts.grade.dims"] == graded.grade.components.dims
-    assert root.attributes["gen_ai.conversation.id"] == f"{graded.run_id}/full/1"
+    assert root.attributes["gen_ai.conversation.id"] == f"{graded.run_id}.full.1"
     assert root.attributes["receipts.run_id"] == graded.run_id
     assert root.attributes["scenario.id"] == PAYMENTS
-    assert root.attributes["agent.config"] == "full"
+    assert root.attributes["receipts.config"] == "full"
+    assert root.attributes["receipts.stop_reason"] == "report"
+    assert root.attributes["receipts.tool_calls"] == graded.tool_calls
+    assert root.attributes["receipts.tool_errors"] == 0
 
 
 async def test_running_the_matrix_again_appends_repeats(

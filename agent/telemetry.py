@@ -6,100 +6,76 @@ and the OTel GenAI semantic conventions it links
 One root span per run, `invoke_agent receipts-investigator`, with `chat {model}`
 and `execute_tool {tool}` children.
 
-Two Honeycomb environments meet in this project: `receipts-shop` is the
-synthetic traffic the agent investigates, and this module's spans are the
-agent's own work investigating it. The resource here carries
-`service.name = receipts-investigator`, a different dataset from
-`receipts-shop`, on purpose. If the agent's own tool calls and chat turns
-landed in the dataset it queries, a BubbleUp over "all requests in the window"
-would count the agent's own MCP traffic as if it were shop traffic, and an
-investigation would very occasionally find itself as the incident.
+Two datasets share the `receipts-demo` environment: `receipts-shop` is the
+synthetic traffic under investigation, `receipts-investigator` (this
+module's `service.name`) is the agent's own work. Separating them keeps a
+BubbleUp over "all requests in the window" from counting the agent's own
+tool calls as shop traffic; `agent/mcp_client.py`'s dataset guard enforces
+the boundary on every query.
 
-Ownership of the root span. `agent/loop.py` never opens or closes it: the
-`RunTrace` is opened by whichever caller knows the scenario id and the
-config, before `investigate()` runs, and is passed in as `trace=`.
-`agent/__main__.py` calls `investigate()` and then `RunTrace.end()`, because a
-single CLI run is never graded. `evals/run.py` calls `investigate()`, grades
-the report, and only then calls `end_with_grade()` or `end_with_error()`, so
-the root span stays open across the gap between the investigation finishing
-and the grade landing. `agent/loop.py` only opens the `chat_span` and
-`tool_span` children on the `RunTrace` it is handed; `scenario.id` is set once,
-by `start_run`, and the loop never touches it, which is also why the model
-never sees it: nothing in `agent/loop.py` reads it back out of the trace to
-put in a message.
+`RunTrace` is opened by the caller that knows the scenario id and the
+config, before `investigate()` runs, and passed in as `trace=`.
+`agent/__main__.py` calls `end()`, since a CLI run is never graded;
+`evals/run.py` grades the report first, then calls `end_with_grade()` or
+`end_with_error()`, keeping the span open across that gap. `agent/loop.py`
+opens only the `chat_span` and `tool_span` children and sets no attribute
+on the root span itself, which is also why the scenario id cannot reach
+the model.
 
-`gen_ai.conversation.id` is not the emitted run id. Since R8, one emit
-serves every config and repeat, so the run id names the traffic under
-investigation, not the investigation itself: two investigations of the same
-run id (a CLI run and an eval repeat, or two eval repeats) are two separate
-conversations, and Honeycomb's Agent Timeline groups by this id, so giving
-it the run id merges them into one conversation with duplicated tool calls
-and chat turns. `Telemetry.start_run` takes a `conversation_id` the caller
-builds to be unique per investigation (`evals/run.py` uses
-`f"{run_id}/{config}/{repeat}"`, `agent/__main__.py` uses
-`f"{run_id}/cli/{timestamp}"`) and sets it as `gen_ai.conversation.id` on
-every span. The run id itself still lands on the root span, as
-`receipts.run_id`, so a reader can join the investigation back to the
-receipts-shop traffic it queried.
+`gen_ai.conversation.id` identifies one investigation. Since R8, one emit
+serves every config and repeat, and Honeycomb's Agent Timeline groups by
+this id, so two investigations sharing a run id would render as one
+conversation with duplicated turns. `Telemetry.start_run`
+takes a `conversation_id` the caller builds per investigation
+(`evals/run.py` uses `f"{run_id}.{config}.{repeat}"`, `agent/__main__.py`
+uses `f"{run_id}.cli.{timestamp}"`; a live check found a `/` broke the
+Timeline's Traces panel, hence the dots). The run id lands on the root span
+as `receipts.run_id`; `scenario.id` lands there too, but only once the span
+ends (`RunTrace.end`), so this investigation cannot query for its own answer.
 
-Disabled by construction, not by luck. `Telemetry()` with no settings and no
-exporter is inert: a genuine OTel no-op tracer, not a stub of this module's
-own. Every span operation it hands out is a true no-op at the SDK boundary,
-so a caller that forgets to wire telemetry gets silence, not a network call
-with a fake key. Tests that want to see spans pass `exporter=` explicitly
-(an in-memory exporter); tests that pass a `Settings` with a real-looking
-ingest key but no `exporter=` still get nothing, because a `Telemetry` is
-only ever built where the caller means it (`agent/__main__.py`,
-`evals/run.py`'s CLI), never as a silent default from a `settings` fixture.
+`Telemetry()`, or `Telemetry(settings)` with no ingest key, hands out a
+genuine OTel no-op tracer: its spans are `NonRecordingSpan` objects that
+accept every call and export nothing. `Telemetry(exporter=...)` is real
+regardless of settings, which is how tests see their own spans without
+touching the network. Production wires a `Telemetry` explicitly, in
+`agent/__main__.py` and `evals/run.py`'s CLI.
 
-Never raises. Every method that touches an OTel span catches its own
-exceptions and logs a warning instead: a broken exporter, an exporter that
-raises on flush, or a value that will not serialize must not turn a paid
-investigation into a crash row. OTel's own `Span.set_attribute` already
-degrades a bad value to a dropped attribute rather than raising; the extra
-care here is for the code in this module that builds JSON, truncates it, and
-walks the trace context, none of which OTel guards for us.
+Every method here catches its own exceptions and logs a warning. OTel's
+`Span.set_attribute` already drops a bad value instead of raising; the
+guard covers this module's own JSON building, truncation, and
+trace-context work.
 
-Content capture. `gen_ai.input.messages` and `gen_ai.output.messages` carry
-the full prompt and completion and are opt-in
-(`RECEIPTS_CAPTURE_CONTENT=1`), same as the semconv's own guidance for these
-two attributes. `gen_ai.tool.call.arguments` and `gen_ai.tool.call.result`
-are not gated the same way: the semconv marks them opt-in too, but here they
-are Honeycomb query specs and truncated result text, not user data, and
-seeing them is most of the point of the Agent Timeline, so they are always
-on, truncated rather than hidden.
+A failed tool span carries ERROR and `error.type`; the count lands on the
+root as `receipts.tool_errors` when the span ends. A child span's failure
+never marks the root, so a run that corrected one bad filter and went on
+to file a good report still reads as a success; the root's own ERROR
+status comes only from `end_with_error`.
 
-Recording content on span events. The semconv wants structured (nested)
-content recorded in structured form and allows a JSON string only as a
-fallback for signals that cannot carry structure. OTel span event attributes
-cannot carry nested objects at all (only strings, numbers, bools, and flat
-sequences of those), so the fallback is what this module uses: one string
-attribute on the event, holding the JSON.
+Content capture (`RECEIPTS_CAPTURE_CONTENT=1`) writes the chat history as
+`gen_ai.input.messages` and `gen_ai.output.messages` events and the system
+prompt as `gen_ai.system_instructions`, following the semconv's message
+schema: `{"role", "parts"}`, parts typed `text`, `tool_call`, or
+`tool_call_response`, each event a single JSON string attribute since span
+events cannot carry the semconv's nested form. `gen_ai.tool.call.arguments`
+and `.result` are always on, truncated at 2 KB and 500 characters, since
+seeing them is the point of the Agent Timeline.
 
-The evaluation result is written twice, on purpose. `end_with_grade` sets
-`gen_ai.evaluation.result` and `receipts.grade.<component>` as plain
-attributes on the root span, which is what a `run_query` breaks down on; it
-also adds one `gen_ai.evaluation.result` span event per score (the total and
-each component), with `gen_ai.evaluation.name`, `.score.value`,
-`.score.label`, and `.explanation`, because Honeycomb's guide reads events,
-not attributes, for the GenAI tab: "Attach gen_ai.evaluation.result events
-to the GenAI operation span to review evaluations in the GenAI tab." Both
-come from the same numbers, so they cannot disagree.
+`end_with_grade` writes `gen_ai.evaluation.result` and one
+`receipts.grade.<component>` attribute for `run_query` to break down on,
+and one `gen_ai.evaluation.result` span event per score, since Honeycomb's
+GenAI tab reads evaluation events.
 
-The Honeycomb MCP question, answered. A live check on 2026-09-03 found no
-spans from Honeycomb's hosted MCP in the `receipts-demo` environment for
-either run's trace: the hosted MCP does not link its own spans to ours
-today. `agent/mcp_client.py` keeps sending `traceparent` in `_meta` on every
-call regardless, because the OTel MCP semantic conventions say a client
-should, and a server that starts reading it later should not need a code
-change here.
+A live check on 2026-09-03 found no spans from Honeycomb's hosted MCP in
+`receipts-demo` for either run's trace. `agent/mcp_client.py` sends
+`traceparent` regardless, on the chance a server reads it later.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
@@ -119,6 +95,7 @@ from receipts.settings import Settings
 
 if TYPE_CHECKING:
     from agent.providers.base import Completion, Turn
+    from agent.report import Report
 
 logger = logging.getLogger(__name__)
 
@@ -126,9 +103,10 @@ SERVICE_NAME = "receipts-investigator"
 AGENT_NAME = "receipts-investigator"
 _TRACER_NAME = "receipts.agent"
 
-# The grader's own line between a right and a wrong top hypothesis, reused
-# here so the pass/fail label on an evaluation event agrees with the grader
-# by construction rather than by a second copy of the number.
+# Reused as the pass line for every evaluation event's score.label, not just
+# the top hypothesis it was defined for: it is the only threshold the
+# grader itself defines, and reusing it keeps the label from disagreeing
+# with the grader by carrying a second copy of the number.
 _PASS_LINE = WRONG_BELOW
 
 _TOTAL_EXPLANATION = "outcome-graded against scenario ground truth"
@@ -196,64 +174,72 @@ def build_tracer(
     return provider.get_tracer(_TRACER_NAME), provider
 
 
-def _mark_error(span: Span | None, root_span: Span | None, error_type: str) -> None:
-    """ERROR status and `error.type` on `span`, propagated to `root_span` too.
-
-    The Honeycomb agent guide asks that a tool failure's error status
-    propagate to the parent span. `chat_span` and `tool_span` are both
-    direct children of the root `invoke_agent` span rather than nested in
-    each other, so "the parent" here is the root span itself; marking it
-    from here, on every child failure, is what makes an error visible on the
-    run as a whole and not only on the one span that hit it.
-    """
+def _mark_span_error(span: Span | None, error_type: str) -> None:
+    """ERROR status and `error.type` on `span` only. Never the root: see the
+    module docstring's "Errors" paragraph for why a child's failure stays local."""
+    if span is None:
+        return
     try:
-        if span is not None:
-            span.set_status(Status(StatusCode.ERROR))
-            span.set_attribute("error.type", error_type)
-        if root_span is not None:
-            root_span.set_status(Status(StatusCode.ERROR))
-            root_span.set_attribute("error.type", error_type)
+        span.set_status(Status(StatusCode.ERROR))
+        span.set_attribute("error.type", error_type)
     except Exception:
         logger.warning("telemetry: could not mark an error on a span", exc_info=True)
 
 
-def _input_messages(system: str, turns: Sequence[Turn]) -> list[dict[str, Any]]:
-    messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
+def _text_part(text: str) -> dict[str, Any]:
+    return {"type": "text", "content": text}
+
+
+def _input_messages(turns: Sequence[Turn]) -> list[dict[str, Any]]:
+    """The transcript as the semconv's message schema: `{"role", "parts"}`,
+    parts typed `text`, `tool_call`, or `tool_call_response`. The system
+    prompt is not here; it is `gen_ai.system_instructions`, a separate
+    event. This codebase does not have a distinct "tool" role: a tool
+    result is a `tool_call_response` part on the user-role turn that
+    carries it, which is how `agent/providers/base.Turn` already models it.
+    """
+    messages: list[dict[str, Any]] = []
     for turn in turns:
-        entry: dict[str, Any] = {"role": turn.role}
+        parts: list[dict[str, Any]] = []
         if turn.text:
-            entry["content"] = turn.text
-        if turn.tool_uses:
-            entry["tool_uses"] = [
-                {"id": use.id, "name": use.name, "args": use.args} for use in turn.tool_uses
-            ]
-        if turn.tool_results:
-            entry["tool_results"] = [
-                {"tool_use_id": r.tool_use_id, "content": r.content, "is_error": r.is_error}
-                for r in turn.tool_results
-            ]
-        messages.append(entry)
+            parts.append(_text_part(turn.text))
+        for use in turn.tool_uses:
+            parts.append(
+                {"type": "tool_call", "id": use.id, "name": use.name, "arguments": use.args}
+            )
+        for result in turn.tool_results:
+            parts.append(
+                {
+                    "type": "tool_call_response",
+                    "id": result.tool_use_id,
+                    "result": result.content,
+                }
+            )
+        messages.append({"role": turn.role, "parts": parts})
     return messages
 
 
 def _output_messages(completion: Completion) -> list[dict[str, Any]]:
-    return [
-        {
-            "role": "assistant",
-            "content": completion.text,
-            "tool_uses": [
-                {"id": use.id, "name": use.name, "args": use.args} for use in completion.tool_uses
-            ],
-        }
-    ]
+    parts: list[dict[str, Any]] = []
+    if completion.text:
+        parts.append(_text_part(completion.text))
+    for use in completion.tool_uses:
+        parts.append({"type": "tool_call", "id": use.id, "name": use.name, "arguments": use.args})
+    message: dict[str, Any] = {"role": "assistant", "parts": parts}
+    if completion.stop_reason:
+        message["finish_reason"] = completion.stop_reason
+    return [message]
+
+
+def _system_instructions(system: str) -> list[dict[str, Any]]:
+    return [_text_part(system)]
 
 
 class _ChatSpan:
     """The handle `RunTrace.chat_span` yields, live for one `provider.complete` call."""
 
-    def __init__(self, span: Span | None, root_span: Span | None, *, capture_content: bool) -> None:
+    def __init__(self, span: Span | None, *, capture_content: bool) -> None:
         self._span = span
-        self._root_span = root_span
         self._capture_content = capture_content
 
     def record(self, completion: Completion, *, system: str, turns: Sequence[Turn]) -> None:
@@ -263,22 +249,43 @@ class _ChatSpan:
         try:
             if completion.response_model:
                 self._span.set_attribute("gen_ai.response.model", completion.response_model)
-            self._span.set_attribute("gen_ai.usage.input_tokens", completion.usage.input_tokens)
-            self._span.set_attribute("gen_ai.usage.output_tokens", completion.usage.output_tokens)
+            if completion.response_id:
+                self._span.set_attribute("gen_ai.response.id", completion.response_id)
+            usage = completion.usage
+            # gen_ai.usage.input_tokens SHOULD include cached tokens per the
+            # semconv; the cache reads and writes are broken out separately
+            # under their own attributes as well.
+            self._span.set_attribute(
+                "gen_ai.usage.input_tokens",
+                usage.input_tokens + usage.cache_read_tokens + usage.cache_write_tokens,
+            )
+            self._span.set_attribute("gen_ai.usage.output_tokens", usage.output_tokens)
+            if usage.cache_read_tokens:
+                self._span.set_attribute(
+                    "gen_ai.usage.cache_read.input_tokens", usage.cache_read_tokens
+                )
+            if usage.cache_write_tokens:
+                self._span.set_attribute(
+                    "gen_ai.usage.cache_write.input_tokens", usage.cache_write_tokens
+                )
             if completion.stop_reason:
                 self._span.set_attribute("gen_ai.response.finish_reasons", [completion.stop_reason])
             if self._capture_content:
-                input_json = json.dumps(_input_messages(system, turns), default=str)
+                input_json = json.dumps(_input_messages(turns), default=str)
                 self._span.add_event("gen_ai.input.messages", {"gen_ai.input.messages": input_json})
                 output_json = json.dumps(_output_messages(completion), default=str)
                 self._span.add_event(
                     "gen_ai.output.messages", {"gen_ai.output.messages": output_json}
                 )
+                system_json = json.dumps(_system_instructions(system), default=str)
+                self._span.add_event(
+                    "gen_ai.system_instructions", {"gen_ai.system_instructions": system_json}
+                )
         except Exception:
             logger.warning("telemetry: could not record a chat completion", exc_info=True)
 
     def _mark_error(self, error_type: str) -> None:
-        _mark_error(self._span, self._root_span, error_type)
+        _mark_span_error(self._span, error_type)
 
 
 class ToolSpanHandle:
@@ -292,44 +299,66 @@ class ToolSpanHandle:
     def __init__(
         self,
         span: Span | None,
-        root_span: Span | None,
         *,
         traceparent: str | None,
         tracestate: str | None,
+        on_error: Callable[[], None] | None,
     ) -> None:
         self._span = span
-        self._root_span = root_span
+        self._on_error = on_error
         self.traceparent = traceparent
         self.tracestate = tracestate
 
     def record_result(self, result_text: str, *, is_error: bool) -> None:
+        if self._span is not None:
+            try:
+                self._span.set_attribute(
+                    "gen_ai.tool.call.result", _truncate(result_text, RESULT_TRUNCATE_CHARS)
+                )
+            except Exception:
+                logger.warning("telemetry: could not record a tool result", exc_info=True)
+            if is_error:
+                _mark_span_error(self._span, "tool_error")
+        if is_error and self._on_error is not None:
+            self._on_error()
+
+    def record_exception(self, exc: BaseException) -> None:
+        if self._span is not None:
+            try:
+                self._span.record_exception(exc)
+            except Exception:
+                logger.warning("telemetry: could not record a tool exception", exc_info=True)
+            _mark_span_error(self._span, type(exc).__name__)
+        if self._on_error is not None:
+            self._on_error()
+
+    def record_validation_rejection(self, rejection_text: str) -> None:
+        """`submit_report` rejected by the validator: a distinct `error.type`
+        from a normal tool failure, since this is the model's own report
+        being handed back, not an MCP call going wrong, and it does not
+        count toward `receipts.tool_errors`.
+        """
         if self._span is None:
             return
         try:
             self._span.set_attribute(
-                "gen_ai.tool.call.result", _truncate(result_text, RESULT_TRUNCATE_CHARS)
+                "gen_ai.tool.call.result", _truncate(rejection_text, RESULT_TRUNCATE_CHARS)
             )
+            self._span.set_attribute("receipts.validation.rejected", True)
         except Exception:
-            logger.warning("telemetry: could not record a tool result", exc_info=True)
-        if is_error:
-            _mark_error(self._span, self._root_span, "tool_error")
-
-    def record_exception(self, exc: BaseException) -> None:
-        if self._span is None:
-            return
-        try:
-            self._span.record_exception(exc)
-        except Exception:
-            logger.warning("telemetry: could not record a tool exception", exc_info=True)
-        _mark_error(self._span, self._root_span, type(exc).__name__)
+            logger.warning("telemetry: could not record a validation rejection", exc_info=True)
+        _mark_span_error(self._span, "validation_rejected")
 
 
 class RunTrace:
     """The root span for one run, plus what its children need to attach to it.
 
     See the module docstring for who opens and closes this and why. Every
-    public method is safe to call when telemetry is disabled (spans are
-    None) and safe to call more than once (`end*` is idempotent).
+    public method is safe to call regardless of how telemetry got disabled:
+    `disabled_run_trace` leaves `_span` as `None`, while a disabled
+    `Telemetry` hands out `NonRecordingSpan` objects instead (a real OTel
+    no-op span, not `None`) that silently absorb every call on their own.
+    `end*` is idempotent, safe to call more than once.
     """
 
     def __init__(
@@ -337,6 +366,7 @@ class RunTrace:
         tracer: trace.Tracer,
         span: Span | None,
         conversation_id: str,
+        scenario_id: str,
         *,
         capture_content: bool,
     ) -> None:
@@ -344,7 +374,9 @@ class RunTrace:
         self._span = span
         self._context = trace.set_span_in_context(span) if span is not None else None
         self._conversation_id = conversation_id
+        self._scenario_id = scenario_id
         self._capture_content = capture_content
+        self._tool_errors = 0
         self._ended = False
 
     @property
@@ -378,16 +410,22 @@ class RunTrace:
         except Exception:
             logger.warning("telemetry: could not end a span", exc_info=True)
 
+    def _count_tool_error(self) -> None:
+        self._tool_errors += 1
+
     @contextmanager
     def chat_span(
         self, requested_model: str, *, provider_name: str, max_tokens: int
     ) -> Iterator[_ChatSpan]:
         """`chat {model}` around one `provider.complete` call.
 
-        `provider_name` is the same string `Telemetry.start_run` was given
-        for `agent.provider`, passed through by the loop's `AgentConfig`, so
-        Bedrock and Ollama get `gen_ai.provider.name` for free once they set
-        `config.provider` to their own name.
+        `provider_name` is the same string `Telemetry.start_run` was given,
+        passed through by the loop's `AgentConfig.provider`, so Bedrock and
+        Ollama get `gen_ai.provider.name` for free once they set it to their
+        own name. A cancellation from the loop's wall-clock timeout
+        (`asyncio.CancelledError`, a `BaseException`, not an `Exception`) is
+        caught here too and recorded as `error.type=timeout`, on this span
+        only; it is re-raised either way.
         """
         span = self._start_child(
             f"chat {requested_model}",
@@ -401,11 +439,12 @@ class RunTrace:
                 "gen_ai.request.max_tokens": max_tokens,
             },
         )
-        handle = _ChatSpan(span, self._span, capture_content=self._capture_content)
+        handle = _ChatSpan(span, capture_content=self._capture_content)
         try:
             yield handle
-        except Exception as exc:
-            handle._mark_error(type(exc).__name__)
+        except BaseException as exc:
+            is_cancelled = isinstance(exc, asyncio.CancelledError)
+            handle._mark_error("timeout" if is_cancelled else type(exc).__name__)
             raise
         finally:
             self._end_span(span)
@@ -450,18 +489,55 @@ class RunTrace:
             except Exception:
                 logger.warning("telemetry: could not build a traceparent", exc_info=True)
         try:
-            yield ToolSpanHandle(span, self._span, traceparent=traceparent, tracestate=tracestate)
+            yield ToolSpanHandle(
+                span,
+                traceparent=traceparent,
+                tracestate=tracestate,
+                on_error=self._count_tool_error,
+            )
         finally:
             self._end_span(span)
 
-    # -- ending the root span -------------------------------------------------
+    # -- the report's outcome, and ending the root span ----------------------
+
+    def record_outcome(self, report: Report) -> None:
+        """`receipts.stop_reason`, `.validation_failed`, `.tool_calls`,
+        `.cost_usd`, and `.wall_s` from the finished report.
+
+        Called once by the caller, before `end`, `end_with_grade`, or
+        `end_with_error`; `agent/loop.py` never calls this, since the loop
+        does not hold a finished `Report` at any point it is handed a trace.
+        """
+        if self._span is None:
+            return
+        try:
+            self._span.set_attribute("receipts.stop_reason", report.stop_reason)
+            self._span.set_attribute("receipts.validation_failed", report.validation_failed)
+            self._span.set_attribute("receipts.tool_calls", report.tool_calls)
+            self._span.set_attribute("receipts.cost_usd", report.cost_usd)
+            self._span.set_attribute("receipts.wall_s", report.wall_s)
+        except Exception:
+            logger.warning("telemetry: could not record the report's outcome", exc_info=True)
 
     def end(self) -> None:
-        """End the root span with no evaluation result: nothing graded it."""
+        """End the root span with no evaluation result: nothing graded it.
+
+        `scenario.id` and `receipts.tool_errors` are set here, when the span
+        ends, so the investigation this span belongs to is over before its
+        own answer becomes queryable. `agent/mcp_client.py`'s dataset guard
+        is what stops a later investigation reading an earlier one's
+        `scenario.id` or grade off the same `receipts.run_id`, and a reader
+        of the Agent Timeline still sees the value once the run is over.
+        """
         if self._ended or self._span is None:
             self._ended = True
             return
         self._ended = True
+        try:
+            self._span.set_attribute("scenario.id", self._scenario_id)
+            self._span.set_attribute("receipts.tool_errors", self._tool_errors)
+        except Exception:
+            logger.warning("telemetry: could not set the root span's closing attributes")
         try:
             self._span.end()
         except Exception:
@@ -474,13 +550,6 @@ class RunTrace:
         open since `start_run`, across the whole gap between `investigate()`
         returning and the grade being computed, so the evaluation lands on
         the same span the investigation ran on.
-
-        The attributes (`gen_ai.evaluation.result` and one
-        `receipts.grade.<component>` per component) are what a `run_query`
-        breaks down on. They are not what Honeycomb's GenAI tab reads, so
-        this also adds one `gen_ai.evaluation.result` span event per score,
-        the total and each component, with the semconv's event attributes.
-        Both are written from the same numbers.
         """
         if not self._ended and self._span is not None:
             try:
@@ -514,9 +583,11 @@ class RunTrace:
     def end_with_error(self, error_type: str, message: str) -> None:
         """A crash row: ERROR status and `error.type`, no evaluation result.
 
-        There is no `grade.json` for a crash, so nothing sets
-        `gen_ai.evaluation.result` here; a reader of the Agent Timeline sees
-        the error status instead of a grade.
+        This is the only path that marks the root span's own status ERROR:
+        a caller reaches it either because `investigate()` raised, or
+        because the report it returned has `stop_reason == "error"`. There
+        is no `grade.json` for a crash, so nothing sets
+        `gen_ai.evaluation.result` here.
         """
         if not self._ended and self._span is not None:
             try:
@@ -527,26 +598,25 @@ class RunTrace:
         self.end()
 
 
-def disabled_run_trace(conversation_id: str = "") -> RunTrace:
+def disabled_run_trace(conversation_id: str = "", scenario_id: str = "") -> RunTrace:
     """A `RunTrace` that does nothing, for a caller that never wired telemetry.
 
     Used by `agent/loop.py` when `investigate()` is called without a `trace`,
     which is every existing test and any script that only wants a report.
-    Genuinely inert: built from a no-op OTel tracer, not a hand-rolled stub,
-    so it degrades exactly the way a disabled `Telemetry` does. `conversation_id`
-    is never actually attached to anything here (there is no span to attach
-    it to); it exists only so the signature matches a real `RunTrace`.
+    Built from a genuine no-op OTel tracer, so it degrades exactly the way a
+    disabled `Telemetry` does; `conversation_id` and `scenario_id` are never
+    attached to anything here, since there is no span to attach them to.
     """
     tracer, _ = build_tracer()
-    return RunTrace(tracer, None, conversation_id, capture_content=False)
+    return RunTrace(tracer, None, conversation_id, scenario_id, capture_content=False)
 
 
 class Telemetry:
     """One tracer for a process, and the root span it opens per run.
 
     `Telemetry()` with no arguments is disabled: no `Settings`, no exporter,
-    no network, ever. `Telemetry(settings)` is real when `settings` carries
-    an ingest key; `Telemetry(exporter=...)` is real regardless of settings,
+    no network. `Telemetry(settings)` is real when `settings` carries an
+    ingest key; `Telemetry(exporter=...)` is real regardless of settings,
     which is how tests see their own spans without touching the network.
     Built once per process and shared across every run it opens, the way
     `agent/mcp_client.TokenBucket` is shared across the eval matrix: one
@@ -576,13 +646,15 @@ class Telemetry:
 
         `conversation_id` is what Honeycomb's Agent Timeline groups by, and
         the caller builds it to be unique per investigation, not per emitted
-        run (see the module docstring). `run_id` still lands here, as
-        `receipts.run_id`, so a reader can join this investigation back to
-        the receipts-shop traffic it queried. `scenario.id` is set here,
-        once, by the caller, and nowhere else: `agent/loop.py` never touches
-        this trace's attributes, only its `chat_span` and `tool_span`
-        methods, so there is no path from the model's context to either
-        value.
+        run (see the module docstring). `run_id` lands on the span now, as
+        `receipts.run_id`: it is bookkeeping the model is already told in
+        the prompt, not an answer. `scenario_id` is different: it is held by
+        the returned `RunTrace` and lands on the span only when it ends
+        (`RunTrace.end`), because this span's own investigation runs while
+        it is open and could otherwise read its own answer back.
+        `agent/loop.py` never touches this trace's attributes, only its
+        `chat_span` and `tool_span` methods, so there is no path from the
+        model's context to either value regardless.
         """
         try:
             span = self._tracer.start_span(
@@ -594,15 +666,19 @@ class Telemetry:
                     "gen_ai.conversation.id": conversation_id,
                     "gen_ai.provider.name": provider,
                     "receipts.run_id": run_id,
-                    "scenario.id": scenario_id,
-                    "agent.config": config_label,
-                    "agent.provider": provider,
+                    "receipts.config": config_label,
                 },
             )
         except Exception:
             logger.warning("telemetry: could not start the root span", exc_info=True)
             span = None
-        return RunTrace(self._tracer, span, conversation_id, capture_content=self.capture_content)
+        return RunTrace(
+            self._tracer,
+            span,
+            conversation_id,
+            scenario_id,
+            capture_content=self.capture_content,
+        )
 
     def flush(self, timeout_millis: int = 5000) -> None:
         """Force-flush pending spans.

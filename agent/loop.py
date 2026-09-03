@@ -133,6 +133,9 @@ class ScenarioRun:
 class AgentConfig:
     """The knobs. `require_negation` and `require_not_checked` are R10's ablations."""
 
+    # Passed through to agent/telemetry.py as gen_ai.provider.name, so it
+    # should be the OTel GenAI semconv value for whichever provider this is:
+    # "anthropic" here, and "aws.bedrock" once R11 wires Bedrock in.
     provider: str = "anthropic"
     model: str | None = None
     require_negation: bool = True
@@ -517,45 +520,55 @@ class _RunState:
     # -- the report -------------------------------------------------------
 
     def submit(self, use: ToolUse) -> Report | None:
-        """Validate a submitted report. Returns the report, or None to re-prompt."""
-        try:
-            draft = ReportDraft.model_validate(use.args)
-        except ValidationError as exc:
-            self.rejections += 1
-            self.last_rejection = (
-                "The report did not match the submit_report schema and was not filed:\n"
-                f"{exc}\nFix the fields and call submit_report again."
+        """Validate a submitted report. Returns the report, or None to re-prompt.
+
+        Wrapped in its own `execute_tool submit_report` span. No MCP call
+        happens here, so the traceparent `tool_span` builds goes unused, but
+        the span still puts every report-filing attempt on the Agent
+        Timeline next to the query calls it followed.
+        """
+        with self.trace.tool_span(SUBMIT_REPORT, use.id, use.args) as span:
+            try:
+                draft = ReportDraft.model_validate(use.args)
+            except ValidationError as exc:
+                self.rejections += 1
+                self.last_rejection = (
+                    "The report did not match the submit_report schema and was not filed:\n"
+                    f"{exc}\nFix the fields and call submit_report again."
+                )
+                span.record_validation_rejection(self.last_rejection)
+                if self.rejections > 1:
+                    return self.finish(
+                        stop_reason="report",
+                        validation_failed=True,
+                        messages=[self.last_rejection],
+                    )
+                return None
+
+            issues = validate.validate_draft(
+                draft,
+                self.tool_log,
+                run_id=self.run.run_id,
+                require_negation=self.config.require_negation,
+                require_not_checked=self.config.require_not_checked,
             )
+            if not issues:
+                span.record_result("accepted", is_error=False)
+                return self.finish(stop_reason="report", draft=draft)
+
+            self.rejections += 1
+            self.issues = issues
+            self.last_rejection = validate.rejection_message(issues)
+            span.record_validation_rejection(self.last_rejection)
             if self.rejections > 1:
+                # Kept and flagged rather than discarded. The grader punishes it.
                 return self.finish(
                     stop_reason="report",
+                    draft=draft,
                     validation_failed=True,
-                    messages=[self.last_rejection],
+                    messages=[str(issue) for issue in issues],
                 )
             return None
-
-        issues = validate.validate_draft(
-            draft,
-            self.tool_log,
-            run_id=self.run.run_id,
-            require_negation=self.config.require_negation,
-            require_not_checked=self.config.require_not_checked,
-        )
-        if not issues:
-            return self.finish(stop_reason="report", draft=draft)
-
-        self.rejections += 1
-        self.issues = issues
-        self.last_rejection = validate.rejection_message(issues)
-        if self.rejections > 1:
-            # Kept and flagged rather than discarded. The grader punishes it.
-            return self.finish(
-                stop_reason="report",
-                draft=draft,
-                validation_failed=True,
-                messages=[str(issue) for issue in issues],
-            )
-        return None
 
     def finish(
         self,

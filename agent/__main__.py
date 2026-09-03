@@ -169,11 +169,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     # `python -m agent` never grades, so the root span here never carries
     # gen_ai.evaluation.result; evals/run.py is the caller that does.
     #
-    # The conversation id is the run id plus a timestamp, not the run id
-    # alone: one emit serves every investigation of that run, and two CLI
-    # runs against the same run id are two separate conversations, not one.
+    # One emit serves every investigation of a run id, so the conversation
+    # id adds a timestamp: two CLI runs against the same run id are two
+    # separate conversations.
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    conversation_id = f"{run.run_id}/cli/{stamp}"
+    conversation_id = f"{run.run_id}.cli.{stamp}"
     telemetry = Telemetry(settings)
     run_trace = telemetry.start_run(
         run.run_id,
@@ -184,8 +184,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     try:
         report = asyncio.run(investigate(run, config, settings=settings, trace=run_trace))
+    except BaseException as exc:
+        # investigate() itself failed, so there is no Report to grade or to
+        # read a stop_reason from: this is a crash, and the root span should
+        # say so rather than export as if the run had simply ended quietly.
+        run_trace.end_with_error(type(exc).__name__, str(exc))
+        raise
+    else:
+        run_trace.record_outcome(report)
+        if report.error is not None or report.stop_reason == "error":
+            error_type = (report.error or "error").split(":", 1)[0].strip() or "error"
+            run_trace.end_with_error(error_type, report.error or "the loop stopped with an error")
+        else:
+            run_trace.end()
     finally:
-        run_trace.end()
         telemetry.flush()
         telemetry.shutdown()
 

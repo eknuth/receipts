@@ -81,10 +81,11 @@ class Turn:
 class Completion:
     """One model response.
 
-    `response_model` and `stop_reason` exist for `agent/telemetry.py`'s chat
-    span (`gen_ai.response.model`, `gen_ai.response.finish_reasons`) as much
-    as for the loop: the loop never reaches into a provider's raw response to
-    read them, so a new provider only has to fill in `Completion` to be fully
+    `response_model`, `response_id`, and `stop_reason` exist for
+    `agent/telemetry.py`'s chat span (`gen_ai.response.model`,
+    `gen_ai.response.id`, `gen_ai.response.finish_reasons`) as much as for
+    the loop: the loop never reaches into a provider's raw response to read
+    them, so a new provider only has to fill in `Completion` to be fully
     covered by the same span.
     """
 
@@ -93,6 +94,7 @@ class Completion:
     usage: Usage
     stop_reason: str | None = None
     response_model: str | None = None
+    response_id: str | None = None
     raw_content: Any = None
 
 
