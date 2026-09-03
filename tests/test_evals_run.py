@@ -33,6 +33,7 @@ from evals.run import (
     GradedRun,
     RunIndex,
     agent_config,
+    crashed_run,
     load_run,
     main,
     next_repeat,
@@ -208,6 +209,10 @@ async def test_each_run_writes_a_report_and_a_grade_by_config_scenario_and_repea
         assert graded.stop_reason == "report"
         assert graded.tool_calls == 4
         assert graded.cost_usd == graded.grade.process.cost_usd
+        assert graded.provider == "fake"
+        assert graded.model == "claude-sonnet-4-5"
+        assert graded.dims == graded.grade.components.dims
+        assert graded.notes == []
     # The report the runner writes is the loop's own, unchanged.
     report = Report.model_validate_json(
         (run_dir(results_dir, "full", PAYMENTS, 1) / "report.json").read_text()
@@ -273,7 +278,7 @@ def test_configs_map_to_agent_config_knobs_only() -> None:
 # --------------------------------------------------------------------------
 
 
-async def test_a_crash_is_a_zero_row_and_the_matrix_continues(
+async def test_a_run_that_raises_before_any_call_is_a_zero_row_and_the_matrix_continues(
     settings: Settings, results_dir: Path, runs_dir: Path
 ) -> None:
     """The second scenario's provider cannot even be built. The third still runs."""
@@ -308,6 +313,88 @@ async def test_a_crash_is_a_zero_row_and_the_matrix_continues(
     third = load_run(run_dir(results_dir, "full", DEPLOY, 1) / "grade.json")
     assert third.grade is not None
     assert third.error is None
+
+
+class ClosingFailsSession(FakeSession):
+    """A session whose close raises after the investigation finished."""
+
+    def __init__(self, calls_before: list[int]) -> None:
+        super().__init__()
+        self._calls_before = calls_before
+
+    async def __aexit__(self, *exc: object) -> None:
+        self._calls_before.append(len(self.mcp.calls))
+        raise RuntimeError("cancel scope exited in a different task")
+
+
+async def test_a_session_that_fails_to_close_after_the_report_is_still_graded(
+    settings: Settings, results_dir: Path, runs_dir: Path
+) -> None:
+    """The report was filed and paid for. A close error is a note, not a crash."""
+    from io import StringIO
+
+    from rich.console import Console
+
+    seen: list[int] = []
+    results = await run_matrix(
+        [PAYMENTS],
+        ["full"],
+        1,
+        settings=settings,
+        results_dir=results_dir,
+        runs_dir=runs_dir,
+        open_mcp=lambda settings: ClosingFailsSession(seen),
+        provider_factory=factory([lambda: FakeProvider(good_script())]),
+        console=Console(file=StringIO(), force_terminal=False),
+    )
+    graded = results[0]
+    assert seen == [4]
+    assert not graded.crashed
+    assert graded.stop_reason == "report"
+    assert graded.error is None
+    assert graded.total == graded.grade.total  # type: ignore[union-attr]
+    assert graded.notes == [
+        "session close failed after the report: RuntimeError: "
+        "cancel scope exited in a different task"
+    ]
+    assert load_run(run_dir(results_dir, "full", PAYMENTS, 1) / "grade.json").notes == graded.notes
+
+
+async def test_a_crash_after_calls_were_made_records_the_calls_and_the_wall(
+    settings: Settings, results_dir: Path, runs_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The exception escapes from inside the run after two MCP calls.
+
+    The loop guards the provider and every MCP call, so the escape here is
+    simulated at `investigate` itself, which is where a bug in the loop or a
+    cancelled task would surface.
+    """
+    import evals.run as module
+
+    async def dies_mid_run(*args: Any, **kwargs: Any) -> Any:
+        mcp = kwargs["mcp"]
+        await mcp.call("get_workspace_context", {})
+        await mcp.call("run_query", {})
+        raise RuntimeError("killed mid-run")
+
+    monkeypatch.setattr(module, "investigate", dies_mid_run)
+    results = await run(
+        [PAYMENTS],
+        ["full"],
+        1,
+        settings=settings,
+        results_dir=results_dir,
+        runs_dir=runs_dir,
+        provider_factory=factory([lambda: FakeProvider(good_script())]),
+    )
+    graded = results[0]
+    assert graded.crashed
+    assert graded.error == "RuntimeError: killed mid-run"
+    assert graded.tool_calls == 2
+    assert graded.wall_s >= 0
+    assert graded.stop_reason == "crash"
+    assert graded.tokens_in == 0 and graded.cost_usd == 0.0
+    assert not (run_dir(results_dir, "full", PAYMENTS, 1) / "report.json").exists()
 
 
 async def test_a_loop_that_ends_in_error_is_a_zero_row_with_the_loops_process_fields(
@@ -356,6 +443,34 @@ async def test_the_call_cap_ends_a_run_that_is_graded_normally(
     assert graded.grade is not None
     assert graded.tool_calls == 2
     assert graded.total == graded.grade.total
+
+
+async def test_a_cap_ended_run_on_a_control_grades_as_restraint_and_says_how_it_stopped(
+    settings: Settings, results_dir: Path, runs_dir: Path
+) -> None:
+    """A model that never files anything on a control scores 0.75 on the grader.
+
+    The runner does not change that: the grader is not touched here, and the
+    `stop_reason` in the row is what tells the reader nothing was filed.
+    """
+    results = await run(
+        [CONTROL],
+        ["full"],
+        1,
+        settings=settings,
+        results_dir=results_dir,
+        runs_dir=runs_dir,
+        provider_factory=factory([lambda: FakeProvider([completion(query_use("q"))])]),
+        max_calls=2,
+    )
+    graded = results[0]
+    assert graded.stop_reason == "call_cap"
+    assert not graded.crashed
+    assert graded.grade is not None
+    assert graded.total == pytest.approx(0.75)
+    assert graded.dims == 1.0
+    assert graded.top_right is True
+    assert graded.top_confidence is None
 
 
 async def test_the_wall_cap_ends_a_run_that_is_graded_normally(
@@ -408,6 +523,32 @@ async def test_a_grading_failure_is_a_row_too(
 # --------------------------------------------------------------------------
 # The run index
 # --------------------------------------------------------------------------
+
+
+async def test_with_emit_each_fresh_run_is_saved_before_the_next_emit(
+    settings: Settings, results_dir: Path, runs_dir: Path
+) -> None:
+    """A failing second emit must not orphan the spans the first one paid for."""
+
+    def fake_emit(scenario: Scenario, settings: Settings) -> EmitResult:
+        if scenario.id == CONTROL:
+            raise RuntimeError("ingest refused")
+        return manifest("run-new-pay", scenario.id, "2026-09-03T09:00:00Z")
+
+    with pytest.raises(RuntimeError, match="ingest refused"):
+        await run(
+            [PAYMENTS, CONTROL],
+            ["full"],
+            1,
+            settings=settings,
+            results_dir=results_dir,
+            runs_dir=runs_dir,
+            provider_factory=factory([]),
+            emit_first=True,
+            emitter=fake_emit,
+        )
+    saved = RunIndex.load(results_dir / "runs.json")
+    assert saved.latest(PAYMENTS).run_id == "run-new-pay"  # type: ignore[union-attr]
 
 
 def test_the_index_prefers_the_latest_entry_by_emitted_at(runs_dir: Path) -> None:
@@ -549,6 +690,42 @@ def _report(**fields: Any) -> Report:
     return Report(**base)
 
 
+def test_top_right_is_the_dims_component_against_the_graders_line() -> None:
+    def record(dims: float, top_wrong: bool, grade: Any = "x") -> GradedRun:
+        return GradedRun(
+            config="full",
+            scenario_id=PAYMENTS,
+            run_id="run-x",
+            repeat=1,
+            provider="fake",
+            model="m",
+            total=0.0,
+            outcome_score=0.0,
+            receipts_score=0.0,
+            dims=dims,
+            top_wrong=top_wrong,
+            top_confidence=None,
+            stop_reason="report",
+            error=None,
+            validation_failed=False,
+            permalink=None,
+            tool_calls=0,
+            tokens_in=0,
+            tokens_out=0,
+            cost_usd=0.0,
+            wall_s=0.0,
+            honeycomb_process_score=None,
+            honeycomb_process_passed=None,
+            grade=None,
+        )
+
+    # No hypothesis on an incident: the grader's flag says not wrong, dims says 0.
+    assert record(0.0, top_wrong=False).top_right is False
+    assert record(0.5, top_wrong=False).top_right is False  # crashed: grade is None
+    crash = crashed_run(config="full", scenario_id=PAYMENTS, run_id="run-x", repeat=1, error="boom")
+    assert crash.top_right is False and crash.dims == 0.0
+
+
 def test_the_permalink_is_the_top_hypothesis_first_evidence_then_the_baseline() -> None:
     hypothesis = Hypothesis(
         claim="c",
@@ -578,8 +755,12 @@ def test_the_permalink_is_the_top_hypothesis_first_evidence_then_the_baseline() 
 
 def test_results_are_ignored_except_runs_json() -> None:
     def ignored(relative: str) -> bool:
+        # --no-index, or a tracked file is never reported and the runs.json
+        # assertion would pass with the negation line deleted.
         proc = subprocess.run(
-            ["git", "check-ignore", "-q", relative], cwd=REPO_ROOT, capture_output=True
+            ["git", "check-ignore", "-q", "--no-index", relative],
+            cwd=REPO_ROOT,
+            capture_output=True,
         )
         return proc.returncode == 0
 
@@ -595,7 +776,10 @@ def test_results_are_ignored_except_runs_json() -> None:
 
 
 def test_usage_errors_exit_2_before_anything_runs(tmp_path: Path) -> None:
-    assert main(["--scenarios", "not-a-scenario"]) == 2
-    assert main(["--scenarios", CONTROL, "--configs", "not-a-config"]) == 2
-    assert main(["--scenarios", CONTROL, "--repeats", "0"]) == 2
-    assert main(["--scenarios", CONTROL, "--provider", "bedrock"]) == 2
+    # Pointed at empty directories so a guard that moves after Settings()
+    # fails on a missing manifest instead of starting a paid run.
+    safe = ["--results-dir", str(tmp_path / "results"), "--runs-dir", str(tmp_path / "runs")]
+    assert main(["--scenarios", "not-a-scenario", *safe]) == 2
+    assert main(["--scenarios", CONTROL, "--configs", "not-a-config", *safe]) == 2
+    assert main(["--scenarios", CONTROL, "--repeats", "0", *safe]) == 2
+    assert main(["--scenarios", CONTROL, "--provider", "bedrock", *safe]) == 2

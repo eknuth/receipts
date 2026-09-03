@@ -203,12 +203,15 @@ Runner: `uv run python -m evals.run --scenarios all --configs full,no-negation,n
 --repeats 3`. One emit per scenario serves every config and repeat; `--emit` makes a fresh one,
 otherwise the latest run id per scenario in `evals/results/runs.json` is reused (that file is an
 index over the manifests in `gen/runs/`, rebuilt from them when an entry is missing). A run that
-raises, or that the loop ends with an error, is recorded as `total=0` with the error and is not
-put through the grader (an empty report on a control would grade as right); a run the call cap
-or wall cap ended is graded normally. Output `evals/report.md` with a per-scenario table showing
-`total` next to `outcome_score` per config, mean and range, top-right count, a process table, the
-"passes Honeycomb's process eval, total under 0.5" column, and a permalink per run. Rendering is
-byte-identical from the same results directory, and a test pins it.
+raises, or that the loop ends with an error, is recorded as `total=0` with the error and skips
+the grader (an empty report on a control would grade as right). Every other stop reason is
+graded as filed: a run that filed inside the grace turns after a cap has `stop_reason=report`,
+and a `call_cap`, `wall_cap`, or `model_stopped` run filed nothing, so its empty report scores
+near zero on an incident and as restraint on a control; the `stopped by` column shows which.
+Output `evals/report.md` with a per-scenario table showing `total` next to `outcome_score` per
+config, mean and range, a top-right count (dims component at or above the grader's 0.5 line), a
+process table, the "passes Honeycomb's process eval, total under 0.5" column, and a permalink per
+run. Rendering is byte-identical from the same results directory, and a test pins it.
 
 ## Reuse
 

@@ -32,10 +32,16 @@ recorded, which is what makes the index rebuildable from the manifests.
 
 Crashes. A run that raises out of `investigate`, or that the loop ended with
 `stop_reason == "error"`, is a row with `total = 0`, the error text, and
-whatever process fields were measured. It is not put through the grader: an
-empty report on a control scenario grades as a correct "no incident", and a
-crash is not that. The two caps are different. A run the call cap or the wall
-cap ended filed what it had, and that report is graded like any other.
+whatever process fields were measured. It skips the grader, because an
+empty report on a control scenario grades as a correct "no incident" there.
+Every other stop reason is graded. A run that filed within the grace turns
+after a cap has `stop_reason == "report"`. A run with `call_cap`, `wall_cap`,
+or `model_stopped` filed nothing, and its empty report goes through the
+grader as it is: on an incident scenario that scores near zero, on a control
+it scores as restraint. The `stopped by` column in the report shows which
+runs those were; changing what they score is the grader's decision, not the
+runner's. If the MCP session fails to close after the report was filed, the
+report is graded and the close error is kept in the grade's notes.
 
 Honeycomb's harness, for the contrast the README draws. In
 `honeycombio/agent-skill` (read on 2026-09-03 from `main` at commit
@@ -56,6 +62,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import sys
 import time
 from collections.abc import Callable, Sequence
@@ -64,18 +71,21 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from rich.console import Console
+from rich.markup import escape
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 from agent.loop import DEFAULT_MAX_CALLS, DEFAULT_MAX_WALL_S, AgentConfig, ScenarioRun, investigate
 from agent.mcp_client import HoneycombMCP, TokenBucket
 from agent.providers.base import Provider
 from agent.report import Report
-from evals.grader import Grade, grade
+from evals.grader import WRONG_BELOW, Grade, grade
 from gen.emit import RUNS_DIR, EmitResult, emit, load_manifest
 from gen.scenario import Scenario, available_scenarios, load_scenario
 from receipts.settings import Settings
+
+logger = logging.getLogger(__name__)
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 RUNS_INDEX = RESULTS_DIR / "runs.json"
@@ -214,12 +224,16 @@ class GradedRun(BaseModel):
     scenario_id: str
     run_id: str
     repeat: int
+    provider: str
+    model: str
 
     total: float
     outcome_score: float
     receipts_score: float
+    dims: float
+    """The grader's dims component, 0 to 1. Zero for a crash."""
     top_wrong: bool
-    """The grader's flag, copied. True for a crash: it is not a right answer."""
+    """The grader's flag, copied. True for a crash."""
     top_confidence: str | None
 
     stop_reason: str
@@ -237,17 +251,31 @@ class GradedRun(BaseModel):
     honeycomb_process_passed: bool | None
 
     grade: Grade | None
+    notes: list[str] = Field(default_factory=list)
+    """Runner-side notes, such as a session that failed to close after the report."""
 
     @property
     def crashed(self) -> bool:
         return self.grade is None
+
+    @property
+    def top_right(self) -> bool:
+        """Whether the top hypothesis was right, by the grader's own line.
+
+        The grader calls a top hypothesis wrong when its dims component is
+        under `WRONG_BELOW`, and that flag is False when there is no
+        hypothesis at all. The dims component itself covers that case: on an
+        incident scenario an empty report scores 0 there, and on a control a
+        quiet report scores 1. A crash has no dims and is never right.
+        """
+        return not self.crashed and self.dims >= WRONG_BELOW
 
 
 def top_permalink(report: Report) -> str | None:
     """The permalink the eval report shows for a run.
 
     The first evidence query of the top hypothesis; with no hypothesis, the
-    first baseline query. A run with neither gets None, never an invented one.
+    first baseline query. A run with neither gets None.
     """
     if report.hypotheses:
         for item in report.hypotheses[0].evidence:
@@ -266,9 +294,12 @@ def graded_run(report: Report, result: Grade, *, config: str, repeat: int) -> Gr
         scenario_id=report.scenario_id,
         run_id=report.run_id,
         repeat=repeat,
+        provider=report.provider,
+        model=report.model,
         total=result.total,
         outcome_score=result.outcome_score,
         receipts_score=result.receipts_score,
+        dims=result.components.dims,
         top_wrong=result.top_wrong,
         top_confidence=result.top_confidence,
         stop_reason=report.stop_reason,
@@ -296,6 +327,8 @@ def crashed_run(
     report: Report | None = None,
     tool_calls: int = 0,
     wall_s: float = 0.0,
+    provider: str = "",
+    model: str = "",
 ) -> GradedRun:
     """The record for a run that did not produce a gradable report.
 
@@ -308,9 +341,12 @@ def crashed_run(
         scenario_id=scenario_id,
         run_id=run_id,
         repeat=repeat,
+        provider=report.provider if report else provider,
+        model=report.model if report else model,
         total=0.0,
         outcome_score=0.0,
         receipts_score=0.0,
+        dims=0.0,
         top_wrong=True,
         top_confidence=None,
         stop_reason=report.stop_reason if report else "crash",
@@ -397,11 +433,11 @@ class _CountingMCP:
     async def list_tools(self) -> Any:
         return await self._inner.list_tools()
 
-    async def call(self, name: str, args: dict[str, Any] | None = None) -> Any:
+    async def call(self, name: str, args: dict[str, Any] | None = None, **kwargs: Any) -> Any:
         self.calls += 1
         if self._on_call is not None:
             self._on_call(self.calls)
-        return await self._inner.call(name, args)
+        return await self._inner.call(name, args, **kwargs)
 
 
 class _SharedSessions:
@@ -440,22 +476,35 @@ async def run_one(
     started = time.monotonic()
     counter: _CountingMCP | None = None
     report: Report | None = None
+    notes: list[str] = []
     try:
-        async with open_mcp(settings) as session:
-            counter = _CountingMCP(session, on_call)
-            provider = provider_factory(config, settings) if provider_factory else None
-            report = await investigate(
-                run,
-                config,
-                settings=settings,
-                mcp=counter,
-                provider=provider,
-                clock=clock,
-            )
+        try:
+            async with open_mcp(settings) as session:
+                counter = _CountingMCP(session, on_call)
+                provider = provider_factory(config, settings) if provider_factory else None
+                report = await investigate(
+                    run,
+                    config,
+                    settings=settings,
+                    mcp=counter,
+                    provider=provider,
+                    clock=clock,
+                )
+        except Exception as exc:
+            if report is None:
+                raise
+            # The investigation finished and the session failed to close on
+            # the way out. The report is on hand and is graded; the close
+            # error is kept next to it rather than turning a paid-for answer
+            # into a crash row.
+            message = f"session close failed after the report: {type(exc).__name__}: {exc}"
+            logger.warning(message)
+            notes.append(message)
         if report.error is not None or report.stop_reason == "error":
             raise _LoopError(report.error or "the loop stopped with an error and no message")
         result = grade(report, scenario, window_start=window_start)
         graded = graded_run(report, result, config=config_name, repeat=repeat)
+        graded.notes = notes
     except _LoopError as exc:
         graded = crashed_run(
             config=config_name,
@@ -524,6 +573,9 @@ async def run_matrix(
             manifest = do_emit(scenarios[scenario_id], settings)
             manifest.write(runs_dir)
             index.add(manifest)
+            # Saved per scenario, so a failed emit later in the list cannot
+            # orphan the spans this one just paid for.
+            index.save(index_path)
             console.print(
                 f"  {manifest.run_id}: {manifest.exported} spans, "
                 f"{manifest.window_start} to {manifest.window_end}"
@@ -587,7 +639,9 @@ async def run_matrix(
 def _summary_line(graded: GradedRun) -> str:
     head = f"{graded.scenario_id} {graded.config} {graded.repeat}: "
     if graded.crashed:
-        return head + f"[red]crashed[/red] after {graded.tool_calls} calls: {graded.error}"
+        return head + (
+            f"[red]crashed[/red] after {graded.tool_calls} calls: {escape(graded.error or '')}"
+        )
     return head + (
         f"total {graded.total:.3f} (outcome {graded.outcome_score:.3f}), "
         f"{graded.tool_calls} calls, {graded.wall_s:.0f}s, ${graded.cost_usd:.2f}, "

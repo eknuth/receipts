@@ -155,6 +155,24 @@ def test_a_crash_is_a_zero_row_with_its_error_and_no_link(tmp_path: Path) -> Non
     assert process.endswith("| 0 of 1 |")
 
 
+def test_an_unreadable_grade_is_listed_and_the_rest_still_render(tmp_path: Path) -> None:
+    from evals.report import read_results
+
+    results_dir = tmp_path / "results"
+    build_live_results(results_dir)
+    stale = run_dir(results_dir, "full", "control-quiet", 9)
+    stale.mkdir(parents=True)
+    (stale / "grade.json").write_text('{"config": "full", "total": 0.5}\n')
+    runs, unreadable = read_results(results_dir)
+    assert len(runs) == 8
+    assert len(unreadable) == 1 and unreadable[0].startswith("full/control-quiet/9/grade.json: ")
+    text = render(runs, unreadable)
+    assert "## Unreadable" in text
+    assert "- `full/control-quiet/9/grade.json: " in text
+    # The table numbers are the eight live runs, untouched.
+    assert "| control-quiet | 0.69 (-0.25 to 1.00) |" in text
+
+
 def test_an_empty_results_directory_renders_a_report_that_says_so(tmp_path: Path) -> None:
     text = render(load_results(tmp_path))
     assert "No runs found." in text
@@ -185,6 +203,9 @@ def test_configs_are_ordered_full_first_then_the_ablations_then_the_rest() -> No
 def test_num_rounds_and_separates_thousands() -> None:
     assert num(0.2375, 2) == "0.24"
     assert num(-0.25, 2) == "-0.25"
+    # 0.05 receipts against a 0.05 hedge penalty: a reachable -0.0 total.
+    assert num(-0.0, 2) == "0.00"
+    assert num(-0.004, 2) == "0.00"
     assert num(1149836.5, 0) == "1,149,836"
     assert num(1149836.5, 1) == "1,149,836.5"
 
