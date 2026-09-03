@@ -69,8 +69,8 @@ Packages: `anthropic`, `boto3` (R11 only), `mcp` (streamable HTTP client), `open
   `mcp.client.streamable_http.streamable_http_client` (1.x called it `streamablehttp_client`);
   Honeycomb's published snippets use the 1.x name.
 - Send `traceparent` in MCP `params._meta` on every call. Honeycomb does not document this
-  field; R7 checks whether MCP-side spans link to ours in the Agent Timeline. Until then it is an
-  assumption, and the wire format is proven by test.
+  field; R9 (self-telemetry, EDW-1331) checks whether MCP-side spans link to ours in the Agent
+  Timeline. Until then it is an assumption, and the wire format is proven by test.
 - Agent Timeline groups spans by `gen_ai.conversation.id`. Free tier: 20M events/month.
 - Method to follow, from `honeycombio/agent-skill` (`honeycomb-investigator` agent and
   `production-investigation` skill): Orient, Characterize, BubbleUp, Traces, Verify by negation
@@ -83,7 +83,10 @@ Synthetic, deterministic, ground truth is a file. Root spans carry high-cardinal
 BubbleUp has something to find: `customer.id` (a few thousand values), `deployment.version`,
 `cloud.region`, `payment.provider`, `cart.size`, `http.route`, `db.statement` hash, `error`,
 `duration_ms`. Child spans per service so `get_trace` shows where time goes. Every span carries
-`scenario.run_id`; the agent is told the run id and scopes every query to it.
+`scenario.run_id`; the agent is told the run id and scopes every query to it. `scenario.id` is
+not on the wire: its values read as answers, so an agent that broke down on that column would be
+handed the root cause and whether there is an incident at all. The run manifest maps run id to
+scenario id, which is where the grader reads it.
 
 Timestamps: try backdated (Honeycomb accepts the recent past) so a 30-minute scenario emits in
 seconds; fall back to real time if rejected. Volume: 15 rps x 30 min x ~5 spans is about 135k
@@ -168,7 +171,7 @@ cheaper). The Anthropic key is identity-linked, so every request must carry the 
 `anthropic-workspace-id: $ANTHROPIC_WORKSPACE_ID` (pass `default_headers` to the SDK client). `bedrock.py` uses `boto3` `converse` with tool config (R11). Budget per run:
 under 40 MCP calls and 8 minutes.
 
-Self-telemetry (`agent/telemetry.py`), OTel GenAI semconv, exported to the same environment:
+Self-telemetry (`agent/telemetry.py`, R9), OTel GenAI semconv, exported to the same environment:
 one `invoke_agent receipts-investigator` root span per run with `gen_ai.conversation.id = run_id`
 and `gen_ai.agent.name = "receipts-investigator"`; `chat {model}` spans with `gen_ai.usage.*` and
 `gen_ai.request.model`; `execute_tool {tool}` spans with `gen_ai.tool.name` and
@@ -205,7 +208,9 @@ per-scenario table, mean and spread per config, and Honeycomb permalinks per run
 
 ## Build order
 
-Vertical slice first, then expand: R1, R2, R3, R4 (two scenarios: one latency spike, one
-control), R6, R7, R8 (2 x 1 x 3), R9. Then R5, R10, R13, R14. R15 (Ollama, `qwen3.8:27b` local, free dev runs
+Linear is authoritative for the numbering: R6 is the agent (EDW-1328), R7 the grader (EDW-1329),
+R8 the eval runner (EDW-1330), R9 self-telemetry (EDW-1331). Vertical slice first, then expand:
+R1, R2, R3, R4 (two scenarios: one latency spike, one control), R6, R7, R8 (2 x 1 x 3), R9.
+Then R5, R10, R13, R14. R15 (Ollama, `qwen3.8:27b` local, free dev runs
 and a third report column), then R11 (Bedrock) and R12 (Canvas) last and droppable. If the recruiter screen lands before the grader exists, the honest line is
 "generator and MCP loop work, grader is this week." Never present partial numbers.

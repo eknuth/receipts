@@ -1,0 +1,26 @@
+# USD per million tokens, from https://platform.claude.com/docs/en/about-claude/pricing
+# read on 2026-09-02. Cache reads are 0.1x the base input rate on every model
+# here; 5 minute cache writes are 1.25x. Those two multipliers live in
+# evals/pricing.py rather than being repeated per model.
+#
+# Bedrock (R11) and Ollama (R15) get their own entries when those providers land.
+# Ollama runs locally, so its price is zero and the eval report says so.
+models:
+  claude-sonnet-4-5:
+    input: 3.00
+    output: 15.00
+  claude-sonnet-4-6:
+    input: 3.00
+    output: 15.00
+  claude-sonnet-5:
+    input: 2.00
+    output: 10.00
+  claude-opus-4-5:
+    input: 5.00
+    output: 25.00
+  claude-opus-5:
+    input: 5.00
+    output: 25.00
+  claude-haiku-4-5:
+    input: 1.00
+    output: 5.00

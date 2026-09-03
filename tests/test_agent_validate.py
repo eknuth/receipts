@@ -1,0 +1,652 @@
+"""Tests for agent/validate.py: the receipts rule and the not-checked list.
+
+Every test here builds a synthetic tool log by hand. That is the point: the
+validator's job is to disagree with the model when the model's claims and the
+log disagree, so the log has to be something a test can lie about.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from agent.report import Evidence, Hypothesis, ReportDraft, ToolCall
+from agent.validate import (
+    queried_terms,
+    query_ids,
+    rejection_message,
+    validate_draft,
+)
+
+RUN_ID = "run-abc123"
+
+
+def query_call(
+    query_id: str,
+    *,
+    name: str = "run_query",
+    breakdowns: list[str] | None = None,
+    filters: list[dict[str, Any]] | None = None,
+    calculations: list[dict[str, Any]] | None = None,
+) -> ToolCall:
+    """One `run_query` in the log, with the shape the hosted MCP takes."""
+    spec: dict[str, Any] = {
+        "calculations": calculations or [{"op": "COUNT"}],
+        "filters": [{"column": "scenario.run_id", "op": "=", "value": RUN_ID}, *(filters or [])],
+    }
+    if breakdowns:
+        spec["breakdowns"] = breakdowns
+    return ToolCall(
+        name=name,
+        args={"dataset_slug": "receipts-shop", "query_spec": spec},
+        query_id=query_id,
+        permalink=f"https://ui.honeycomb.io/x/result/{query_id}",
+    )
+
+
+def hypothesis(**overrides: Any) -> Hypothesis:
+    base: dict[str, Any] = {
+        "claim": "one population got slow",
+        "dims": {"deployment.version": "9.9.9"},
+        "slow_or_failing_span": "some.span",
+        "confidence": "high",
+        "evidence": [Evidence(query_id="Q1", summary="P99 180ms to 1100ms")],
+        "negation": Evidence(query_id="Q2", summary="P99 flat outside"),
+    }
+    base.update(overrides)
+    return Hypothesis.model_validate(base)
+
+
+def draft(**overrides: Any) -> ReportDraft:
+    base: dict[str, Any] = {
+        "incident_present": True,
+        "hypotheses": [hypothesis()],
+        "affected_population": "12%",
+        "not_checked": ["customer.id", "http.route"],
+        "baseline_evidence": [Evidence(query_id="Q3", summary="flat before onset")],
+    }
+    base.update(overrides)
+    return ReportDraft.model_validate(base)
+
+
+def good_log() -> list[ToolCall]:
+    return [
+        ToolCall(name="get_workspace_context", args={}),
+        query_call("Q1", breakdowns=["deployment.version"]),
+        query_call("Q2", filters=[{"column": "deployment.version", "op": "!=", "value": "9.9.9"}]),
+        baseline_call("Q3"),
+    ]
+
+
+def baseline_call(query_id: str = "Q3") -> ToolCall:
+    """A plain measurement over the window, which is what a baseline cites.
+
+    No breakdowns, so adding it to a log does not change what counts as
+    covered for the not-checked list.
+    """
+    return query_call(query_id, calculations=[{"op": "P99", "column": "duration_ms"}])
+
+
+# --------------------------------------------------------------------------
+# The happy path
+# --------------------------------------------------------------------------
+
+
+def test_a_report_that_cites_queries_it_ran_is_accepted() -> None:
+    assert validate_draft(draft(), good_log(), run_id=RUN_ID) == []
+
+
+def test_query_ids_can_be_filtered_to_one_tool() -> None:
+    log = [*good_log(), ToolCall(name="run_bubbleup", args={}, query_id="B1")]
+    assert query_ids(log) == {"Q1", "Q2", "Q3", "B1"}
+    assert query_ids(log, tools=["run_query"]) == {"Q1", "Q2", "Q3"}
+
+
+# --------------------------------------------------------------------------
+# Receipts
+# --------------------------------------------------------------------------
+
+
+def test_a_hypothesis_with_no_evidence_is_rejected() -> None:
+    issues = validate_draft(draft(hypotheses=[hypothesis(evidence=[])]), good_log(), run_id=RUN_ID)
+    assert [issue.code for issue in issues] == ["unsupported"]
+    assert "carries no evidence" in issues[0].message
+
+
+def test_a_query_id_that_was_never_run_is_rejected() -> None:
+    made_up = hypothesis(evidence=[Evidence(query_id="Q-invented", summary="trust me")])
+    issues = validate_draft(draft(hypotheses=[made_up]), good_log(), run_id=RUN_ID)
+    codes = [issue.code for issue in issues]
+    assert "unsupported" in codes
+    assert any("Q-invented" in issue.message for issue in issues)
+
+
+def test_evidence_from_bubbleup_alone_does_not_carry_a_hypothesis() -> None:
+    """BubbleUp ranks; rows are what a claim rests on."""
+    log = [ToolCall(name="run_bubbleup", args={}, query_id="B1"), *good_log()]
+    only_bubbleup = hypothesis(evidence=[Evidence(query_id="B1", summary="version ranked first")])
+    issues = validate_draft(draft(hypotheses=[only_bubbleup]), log, run_id=RUN_ID)
+    assert [issue.code for issue in issues] == ["partial"]
+    assert "cites no run_query" in issues[0].message
+
+
+def test_a_missing_negation_is_rejected() -> None:
+    issues = validate_draft(
+        draft(hypotheses=[hypothesis(negation=None)]), good_log(), run_id=RUN_ID
+    )
+    assert [issue.code for issue in issues] == ["partial"]
+    assert "no negation" in issues[0].message
+
+
+def test_a_negation_citing_an_unrun_query_is_rejected() -> None:
+    bad = hypothesis(negation=Evidence(query_id="Q-nope", summary="I meant to run this"))
+    issues = validate_draft(draft(hypotheses=[bad]), good_log(), run_id=RUN_ID)
+    assert [issue.code for issue in issues] == ["unsupported"]
+
+
+def test_require_negation_off_accepts_a_hypothesis_without_one() -> None:
+    """The R10 ablation removes the rule rather than softening it."""
+    issues = validate_draft(
+        draft(hypotheses=[hypothesis(negation=None)]),
+        good_log(),
+        run_id=RUN_ID,
+        require_negation=False,
+    )
+    assert issues == []
+
+
+def test_an_incident_with_no_hypotheses_is_rejected() -> None:
+    issues = validate_draft(draft(hypotheses=[]), good_log(), run_id=RUN_ID)
+    assert any("no hypotheses" in issue.message for issue in issues)
+
+
+# --------------------------------------------------------------------------
+# The no-incident case
+# --------------------------------------------------------------------------
+
+
+def test_a_quiet_window_still_needs_a_query_behind_it() -> None:
+    quiet = ReportDraft(incident_present=False, not_checked=["customer.id"])
+    issues = validate_draft(quiet, good_log(), run_id=RUN_ID)
+    assert [issue.code for issue in issues] == ["unsupported"]
+    assert "baseline_evidence is empty" in issues[0].message
+
+
+def test_a_quiet_window_with_a_flat_query_is_accepted() -> None:
+    quiet = ReportDraft(
+        incident_present=False,
+        not_checked=["customer.id"],
+        baseline_evidence=[Evidence(query_id="Q1", summary="P99 316ms then 329ms, flat")],
+    )
+    assert validate_draft(quiet, good_log(), run_id=RUN_ID) == []
+
+
+# --------------------------------------------------------------------------
+# The not-checked list
+# --------------------------------------------------------------------------
+
+
+def test_an_empty_not_checked_list_is_rejected() -> None:
+    issues = validate_draft(draft(not_checked=[]), good_log(), run_id=RUN_ID)
+    assert [issue.code for issue in issues] == ["not_checked_empty"]
+
+
+def test_a_not_checked_entry_that_was_queried_is_rejected() -> None:
+    log = good_log()
+    draft_ = draft(not_checked=["deployment.version was never broken down on"])
+    issues = validate_draft(draft_, log, run_id=RUN_ID)
+    assert [issue.code for issue in issues] == ["not_checked_false"]
+    assert "deployment.version" in issues[0].message
+
+
+def test_a_not_checked_entry_that_names_a_filter_value_is_rejected() -> None:
+    log = [
+        *good_log(),
+        query_call("Q3", filters=[{"column": "name", "op": "=", "value": "payments.charge"}]),
+    ]
+    draft_ = draft(not_checked=["the payments.charge span was never looked at"])
+    issues = validate_draft(draft_, log, run_id=RUN_ID)
+    assert [issue.code for issue in issues] == ["not_checked_false"]
+
+
+def test_an_ordinary_english_word_is_not_read_as_a_column_name() -> None:
+    """A live run was rejected for the word "error" inside "error message text"."""
+    log = [
+        *good_log(),
+        query_call("Q4", filters=[{"column": "error", "op": "=", "value": True}]),
+        baseline_call(),
+    ]
+    entry = "status_message content, did not examine specific error message text"
+    assert validate_draft(draft(not_checked=[entry]), log, run_id=RUN_ID) == []
+
+
+def test_a_dotted_or_underscored_name_is_still_caught() -> None:
+    log = [*good_log(), query_call("Q4", calculations=[{"op": "P99", "column": "duration_ms"}])]
+    for entry in ("deployment.version was left alone", "duration_ms was never measured"):
+        issues = validate_draft(draft(not_checked=[entry]), log, run_id=RUN_ID)
+        assert [issue.code for issue in issues] == ["not_checked_false"], entry
+
+
+def test_the_run_id_filter_does_not_make_every_entry_false() -> None:
+    """Every query carries the run id, so it cannot count as coverage."""
+    terms = queried_terms(good_log(), run_id=RUN_ID)
+    assert RUN_ID not in terms
+    assert "scenario.run_id" not in terms
+    assert "deployment.version" in terms
+
+
+def test_discovery_calls_do_not_count_as_having_queried_a_column() -> None:
+    log = [
+        ToolCall(name="find_columns", args={"query": "cart.size"}),
+        ToolCall(name="get_dataset_columns", args={"column": "cart.size"}),
+        *good_log(),
+        baseline_call(),
+    ]
+    assert "cart.size" not in queried_terms(log, run_id=RUN_ID)
+    assert validate_draft(draft(not_checked=["cart.size"]), log, run_id=RUN_ID) == []
+
+
+def test_a_bubbleup_group_selection_counts_as_a_query() -> None:
+    log = [
+        *good_log(),
+        ToolCall(
+            name="run_bubbleup",
+            args={"query_pk": "Q1", "selection": {"type": "group", "group": {"http.route": "/x"}}},
+            query_id="B1",
+        ),
+        baseline_call(),
+    ]
+    terms = queried_terms(log, run_id=RUN_ID)
+    assert {"http.route", "/x"} <= terms
+
+
+def test_require_not_checked_off_skips_the_list_entirely() -> None:
+    issues = validate_draft(
+        draft(not_checked=[]), good_log(), run_id=RUN_ID, require_not_checked=False
+    )
+    assert issues == []
+
+
+# --------------------------------------------------------------------------
+# What the model is handed back
+# --------------------------------------------------------------------------
+
+
+def test_the_rejection_message_names_every_issue() -> None:
+    issues = validate_draft(
+        draft(hypotheses=[hypothesis(evidence=[], negation=None)], not_checked=[]),
+        good_log(),
+        run_id=RUN_ID,
+    )
+    message = rejection_message(issues)
+    assert len(issues) == 3
+    for issue in issues:
+        assert issue.message in message
+    assert "call submit_report again" in message
+
+
+# --------------------------------------------------------------------------
+# The negation has to be a negation
+#
+# Every case below was accepted before the semantic check existed. A model
+# that ran one query and cited it as its own negation passed both rules, which
+# made the receipts rule a formality. These are the adversarial cases from the
+# R6 review, kept as tests so the holes stay shut.
+# --------------------------------------------------------------------------
+
+
+def test_a_negation_that_cites_the_evidence_query_is_rejected() -> None:
+    """One query cannot be both the measurement and its own control."""
+    same = hypothesis(negation=Evidence(query_id="Q1", summary="same query, twice"))
+    issues = validate_draft(draft(hypotheses=[same]), good_log(), run_id=RUN_ID)
+    assert [issue.code for issue in issues] == ["partial"]
+    assert "the same query as its own" in issues[0].message
+
+
+def test_a_negation_that_selects_instead_of_excluding_is_rejected() -> None:
+    log = [
+        ToolCall(name="get_workspace_context", args={}),
+        query_call("Q1", breakdowns=["deployment.version"]),
+        query_call("Q2", filters=[{"column": "deployment.version", "op": "=", "value": "9.9.9"}]),
+        baseline_call(),
+    ]
+    issues = validate_draft(draft(), log, run_id=RUN_ID)
+    assert [issue.code for issue in issues] == ["partial"]
+    assert "!= or not-in" in issues[0].message
+
+
+def test_a_negation_that_excludes_an_unclaimed_dimension_is_rejected() -> None:
+    """Excluding a column the claim never rests on tests nothing."""
+    log = [
+        query_call("Q1", breakdowns=["deployment.version"]),
+        query_call("Q2", filters=[{"column": "cloud.region", "op": "!=", "value": "eu-west-1"}]),
+        baseline_call(),
+    ]
+    issues = validate_draft(draft(), log, run_id=RUN_ID)
+    assert [issue.code for issue in issues] == ["partial"]
+    assert "deployment.version" in issues[0].message
+
+
+def test_an_unrelated_second_query_does_not_count_as_a_negation() -> None:
+    log = [
+        query_call("Q1", breakdowns=["deployment.version"]),
+        query_call("Q2", breakdowns=["cart.size"]),
+        baseline_call(),
+    ]
+    issues = validate_draft(draft(), log, run_id=RUN_ID)
+    assert [issue.code for issue in issues] == ["partial"]
+    assert "!= or not-in" in issues[0].message
+
+
+def test_a_negation_citing_a_bubbleup_is_rejected_even_when_the_id_matches() -> None:
+    """The hosted MCP returns the source query's id from run_bubbleup too.
+
+    Matching on the identifier alone let a ranking stand in for a measurement,
+    so every check pairs the identifier with the tool that produced it.
+    """
+    log = [
+        query_call("Q1", breakdowns=["deployment.version"]),
+        ToolCall(
+            name="run_bubbleup",
+            args={"group": {"deployment.version": "9.9.9"}},
+            query_id="B1",
+        ),
+        baseline_call(),
+    ]
+    issues = validate_draft(
+        draft(hypotheses=[hypothesis(negation=Evidence(query_id="B1", summary="ranked"))]),
+        log,
+        run_id=RUN_ID,
+    )
+    assert [issue.code for issue in issues] == ["partial"]
+    assert "has to be a run_query" in issues[0].message
+
+
+def test_a_negation_in_a_per_calculation_filter_is_accepted() -> None:
+    """Measuring the population and its complement in one query is the shape
+    Honeycomb's own guidance asks for, so it has to count."""
+    log = [
+        query_call("Q1", breakdowns=["deployment.version"]),
+        query_call(
+            "Q2",
+            calculations=[
+                {
+                    "op": "P99",
+                    "column": "duration_ms",
+                    "name": "outside",
+                    "filters": [
+                        {"column": "deployment.version", "op": "!=", "value": "9.9.9"},
+                    ],
+                }
+            ],
+        ),
+        baseline_call(),
+    ]
+    assert validate_draft(draft(), log, run_id=RUN_ID) == []
+
+
+def test_not_in_counts_as_an_exclusion() -> None:
+    log = [
+        query_call("Q1", breakdowns=["deployment.version"]),
+        query_call(
+            "Q2",
+            filters=[{"column": "deployment.version", "op": "not-in", "value": ["9.9.9"]}],
+        ),
+        baseline_call(),
+    ]
+    assert validate_draft(draft(), log, run_id=RUN_ID) == []
+
+
+def test_one_claimed_dimension_is_enough_to_negate() -> None:
+    """A live run claimed three dimensions and negated the version alone. That
+    is a real test of the claim, so requiring all three would reject it."""
+    three = hypothesis(
+        dims={
+            "deployment.version": "9.9.9",
+            "cloud.region": "us-west-2",
+            "payment.provider": "stripe",
+        }
+    )
+    log = [
+        query_call("Q1", breakdowns=["deployment.version", "cloud.region", "payment.provider"]),
+        query_call("Q2", filters=[{"column": "deployment.version", "op": "!=", "value": "9.9.9"}]),
+        baseline_call(),
+    ]
+    assert validate_draft(draft(hypotheses=[three]), log, run_id=RUN_ID) == []
+
+
+def test_a_negation_with_no_dims_to_negate_is_rejected() -> None:
+    issues = validate_draft(draft(hypotheses=[hypothesis(dims={})]), good_log(), run_id=RUN_ID)
+    assert [issue.code for issue in issues] == ["partial"]
+    assert "nothing for it to" in issues[0].message
+
+
+def test_require_negation_off_still_rejects_a_negation_that_was_never_run() -> None:
+    """The ablation drops the requirement to negate, not the requirement that a
+    cited identifier be real."""
+    made_up = hypothesis(negation=Evidence(query_id="Q-invented", summary="trust me"))
+    issues = validate_draft(
+        draft(hypotheses=[made_up]), good_log(), run_id=RUN_ID, require_negation=False
+    )
+    assert [issue.code for issue in issues] == ["unsupported"]
+
+
+# --------------------------------------------------------------------------
+# Claimed dimensions have to have been measured
+# --------------------------------------------------------------------------
+
+
+def test_dims_naming_a_column_no_query_touched_are_rejected() -> None:
+    """`dims` is the field the grader scores, so it is the field most worth
+    checking. Before this, it carried no receipts at all."""
+    invented = hypothesis(dims={"never.queried": "mars-1"})
+    issues = validate_draft(draft(hypotheses=[invented]), good_log(), run_id=RUN_ID)
+    codes = [issue.code for issue in issues]
+    assert "unsupported" in codes
+    assert any("never.queried" in issue.message for issue in issues)
+
+
+def test_dims_measured_by_a_breakdown_are_accepted() -> None:
+    log = [
+        query_call("Q1", breakdowns=["cloud.region"]),
+        query_call("Q2", filters=[{"column": "cloud.region", "op": "!=", "value": "us-west-2"}]),
+        baseline_call(),
+    ]
+    only_region = hypothesis(dims={"cloud.region": "us-west-2"})
+    assert validate_draft(draft(hypotheses=[only_region]), log, run_id=RUN_ID) == []
+
+
+# --------------------------------------------------------------------------
+# A failed call is not a receipt
+# --------------------------------------------------------------------------
+
+
+def test_a_query_id_from_a_failed_call_is_not_a_receipt() -> None:
+    log = [
+        ToolCall(name="run_query", args={}, query_id="Q1", is_error=True),
+        ToolCall(name="run_query", args={}, query_id="Q2", is_error=True),
+        baseline_call(),
+    ]
+    issues = validate_draft(draft(), log, run_id=RUN_ID)
+    cited = [issue for issue in issues if "cites query_id" in issue.message]
+    assert [issue.code for issue in cited] == ["unsupported", "unsupported"]
+    assert any("Q1" in issue.message for issue in cited)
+    assert any("Q2" in issue.message for issue in cited)
+
+
+def test_query_ids_leaves_out_failed_calls() -> None:
+    log = [*good_log(), ToolCall(name="run_query", args={}, query_id="Q9", is_error=True)]
+    assert query_ids(log) == {"Q1", "Q2", "Q3"}
+
+
+# --------------------------------------------------------------------------
+# The not-checked matcher
+# --------------------------------------------------------------------------
+
+
+def test_a_not_checked_entry_in_a_different_case_is_still_caught() -> None:
+    issues = validate_draft(
+        draft(not_checked=["Deployment.Version was never examined"]), good_log(), run_id=RUN_ID
+    )
+    assert [issue.code for issue in issues] == ["not_checked_false"]
+
+
+def test_a_backticked_single_word_column_is_caught() -> None:
+    log = [
+        query_call("Q1", breakdowns=["deployment.version"], filters=[{"column": "error"}]),
+        query_call("Q2", filters=[{"column": "deployment.version", "op": "!=", "value": "9.9.9"}]),
+        baseline_call(),
+    ]
+    issues = validate_draft(draft(not_checked=["`error`"]), log, run_id=RUN_ID)
+    assert [issue.code for issue in issues] == ["not_checked_false"]
+
+
+def test_a_bare_single_word_column_as_the_whole_entry_is_caught() -> None:
+    log = [
+        query_call("Q1", breakdowns=["error"]),
+        query_call("Q2", filters=[{"column": "deployment.version", "op": "!=", "value": "9.9.9"}]),
+        baseline_call(),
+    ]
+    issues = validate_draft(draft(not_checked=["error"]), log, run_id=RUN_ID)
+    assert [issue.code for issue in issues] == ["not_checked_false"]
+
+
+def test_the_same_word_inside_ordinary_prose_is_still_allowed() -> None:
+    """The live false positive that prompted the separator rule. An entry about
+    error message text does not claim the `error` column was unexamined."""
+    log = [
+        query_call("Q1", breakdowns=["error", "deployment.version"]),
+        query_call("Q2", filters=[{"column": "deployment.version", "op": "!=", "value": "9.9.9"}]),
+        baseline_call(),
+    ]
+    entry = "did not examine specific error message text"
+    assert validate_draft(draft(not_checked=[entry]), log, run_id=RUN_ID) == []
+
+
+def test_an_entry_naming_a_queried_column_in_its_explanation_is_allowed() -> None:
+    """The live false positive that prompted the subject rule.
+
+    The run never queried `deployment.version`, so the claim is true. The
+    explanation mentions `payments.charge`, which the run did query, as
+    context for what the breakdown would have been.
+    """
+    log = [
+        query_call("Q1", filters=[{"column": "name", "op": "=", "value": "payments.charge"}]),
+        query_call("Q2", filters=[{"column": "cloud.region", "op": "!=", "value": "us-west-2"}]),
+        baseline_call(),
+    ]
+    entry = "deployment.version - did not break down payments.charge by deployment version"
+    only_region = hypothesis(dims={"cloud.region": "us-west-2"})
+    assert (
+        validate_draft(draft(hypotheses=[only_region], not_checked=[entry]), log, run_id=RUN_ID)
+        == []
+    )
+
+
+def test_the_subject_of_an_entry_is_still_checked() -> None:
+    log = [
+        query_call("Q1", breakdowns=["deployment.version"]),
+        query_call("Q2", filters=[{"column": "deployment.version", "op": "!=", "value": "9.9.9"}]),
+        baseline_call(),
+    ]
+    entry = "deployment.version - never broken down"
+    issues = validate_draft(draft(not_checked=[entry]), log, run_id=RUN_ID)
+    assert [issue.code for issue in issues] == ["not_checked_false"]
+
+
+def test_a_colon_separates_the_subject_too() -> None:
+    log = [
+        query_call("Q1", breakdowns=["http.route"]),
+        query_call("Q2", filters=[{"column": "deployment.version", "op": "!=", "value": "9.9.9"}]),
+        baseline_call(),
+    ]
+    issues = validate_draft(draft(not_checked=["http.route: not broken down"]), log, run_id=RUN_ID)
+    assert [issue.code for issue in issues] == ["not_checked_false"]
+
+
+# --------------------------------------------------------------------------
+# The baseline is asked of both answers
+#
+# Requiring it only when a report denied an incident made the code cheaper to
+# pass in one direction than the other, which is the code choosing an answer.
+# --------------------------------------------------------------------------
+
+
+def test_an_incident_with_no_baseline_evidence_is_rejected() -> None:
+    issues = validate_draft(draft(baseline_evidence=[]), good_log(), run_id=RUN_ID)
+    assert [issue.code for issue in issues] == ["unsupported"]
+    assert "An incident is a change" in issues[0].message
+
+
+def test_a_quiet_window_with_no_baseline_evidence_is_still_rejected() -> None:
+    quiet = draft(incident_present=False, hypotheses=[], baseline_evidence=[])
+    issues = validate_draft(quiet, good_log(), run_id=RUN_ID)
+    assert [issue.code for issue in issues] == ["unsupported"]
+    assert "flat across the window" in issues[0].message
+
+
+def test_both_answers_are_accepted_once_they_cite_a_baseline() -> None:
+    log = good_log()
+    incident = draft()
+    quiet = draft(
+        incident_present=False,
+        hypotheses=[],
+        baseline_evidence=[Evidence(query_id="Q3", summary="flat")],
+    )
+    assert validate_draft(incident, log, run_id=RUN_ID) == []
+    assert validate_draft(quiet, log, run_id=RUN_ID) == []
+
+
+def test_a_baseline_citing_a_query_that_was_never_run_is_rejected() -> None:
+    made_up = draft(baseline_evidence=[Evidence(query_id="Q-invented", summary="trust me")])
+    issues = validate_draft(made_up, good_log(), run_id=RUN_ID)
+    # Two things are wrong with it: the identifier is not in the log, and what
+    # is left cites no run_query.
+    assert [issue.code for issue in issues] == ["unsupported", "partial"]
+    assert "Q-invented" in issues[0].message
+
+
+# --------------------------------------------------------------------------
+# A candidate that was ruled out
+# --------------------------------------------------------------------------
+
+
+def test_a_rejected_candidate_is_accepted_with_the_query_that_ruled_it_out() -> None:
+    """There was nowhere to record this before. A model that measured a
+    suspicious number, checked it, and decided against it could only drop the
+    finding or report it as an incident."""
+    ruled_out = draft(
+        rejected_candidates=[
+            {
+                "claim": "one region looked slow on the database span",
+                "dims": {"cloud.region": "eu-west-1"},
+                "reason": "it was already at that level before anything changed",
+                "evidence": [{"query_id": "Q3", "summary": "flat across the whole window"}],
+            }
+        ]
+    )
+    assert validate_draft(ruled_out, good_log(), run_id=RUN_ID) == []
+
+
+def test_a_rejected_candidate_citing_an_unrun_query_is_rejected() -> None:
+    """A citation is a citation wherever it appears in the report."""
+    ruled_out = draft(
+        rejected_candidates=[
+            {
+                "claim": "one region looked slow",
+                "reason": "pre-existing",
+                "evidence": [{"query_id": "Q-invented", "summary": "trust me"}],
+            }
+        ]
+    )
+    issues = validate_draft(ruled_out, good_log(), run_id=RUN_ID)
+    assert [issue.code for issue in issues] == ["unsupported"]
+    assert "Q-invented" in issues[0].message
+
+
+def test_a_rejected_candidate_needs_no_negation() -> None:
+    """Ruling something out is not a claim about a population, so the negation
+    rule does not apply to it."""
+    ruled_out = draft(
+        rejected_candidates=[{"claim": "cart size looked correlated", "reason": "it was not"}]
+    )
+    assert validate_draft(ruled_out, good_log(), run_id=RUN_ID) == []

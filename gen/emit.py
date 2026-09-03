@@ -390,8 +390,8 @@ def emit(
     provider.add_span_processor(processor)
     tracer = provider.get_tracer("gen.emit")
 
-    # scenario.id is already on every span from gen/topology.py; the run id is
-    # the one attribute only this run knows.
+    # The run id is the only attribute that identifies this run on the wire.
+    # The scenario id stays out of the data on purpose, see gen/topology.py.
     common: dict[str, object] = {"scenario.run_id": run_id}
 
     try:

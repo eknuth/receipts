@@ -85,7 +85,6 @@ query for one child span has to be able to filter on them:
 | `cloud.region` | `us-west-2` 50%, `us-east-1` 30%, `eu-west-1` 20% |
 | `payment.provider` | `stripe` 60%, `adyen` 25%, `paypal` 15% |
 | `service.component` | `gateway`, `checkout`, `payments`, `inventory-db` |
-| `scenario.id` | the scenario's id |
 | `scenario.run_id` | the run id, fresh per run. Every query scopes to it. |
 | `error` | true on a failing span and on every ancestor above it |
 
@@ -98,6 +97,12 @@ On the root span, plus the child spans where they belong:
 | `http.route` | `/checkout` 80%, `/checkout/express` 15%, `/checkout/gift` 5% |
 | `http.status_code` | 200, or 500 when the request failed |
 | `db.statement.hash` | eight hashes, weighted. Also on `db.query`. |
+
+`scenario.id` is not on the wire. Its values read as answers, such as
+`payments-stripe-v251-uswest` and `control-quiet`, so an agent that broke down on that column
+would be handed the root cause and whether there is an incident at all. `scenario.run_id` is the
+only run identifier the data carries, and the manifest in `gen/runs/` maps a run id back to its
+scenario for the grader.
 
 `duration_ms` is not set here. Honeycomb derives it from the OTLP span, and writing our own would
 collide with it.
