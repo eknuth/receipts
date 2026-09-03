@@ -133,7 +133,6 @@ def test_the_selectable_dimensions_ride_on_every_span(
             for name in topology.PROPAGATED_DIMS:
                 assert span.attributes[name] == request.dims[name]
             assert span.attributes["service.component"] == span.service
-            assert span.attributes["scenario.id"] == PAYMENTS
 
 
 def test_root_only_attributes_stay_on_the_root(
@@ -144,7 +143,6 @@ def test_root_only_attributes_stay_on_the_root(
     assert 1 <= root.attributes["cart.size"] <= 12
     assert root.attributes["customer.id"].startswith("cust-")
     assert root.attributes["http.status_code"] in (200, 500)
-    assert root.attributes["scenario.id"] == PAYMENTS
     charge = root.children[0].children[0]
     assert "http.route" not in charge.attributes
     assert "http.status_code" not in charge.attributes

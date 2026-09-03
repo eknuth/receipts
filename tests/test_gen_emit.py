@@ -112,12 +112,13 @@ def test_the_manifest_counts_match_the_generated_stream(
     assert result.run_id == "run-fixed"
 
 
-def test_every_span_carries_the_run_id_and_the_scenario_id(
+def test_every_span_carries_the_run_id_and_never_the_scenario_id(
     emitted: tuple[E.EmitResult, list],
 ) -> None:
+    """The run id scopes every query. The scenario id would give the answer away."""
     _, spans = emitted
     assert all(s.attributes["scenario.run_id"] == "run-fixed" for s in spans)
-    assert all(s.attributes["scenario.id"] == "payments-stripe-v251-uswest" for s in spans)
+    assert all("scenario.id" not in s.attributes for s in spans)
 
 
 def test_every_span_lands_inside_the_declared_window(

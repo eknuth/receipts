@@ -18,12 +18,18 @@ its own work plus the sum of its children. A fault that adds time to
 `payments.charge` therefore shows up on the root span too, which is what makes
 a heatmap of root duration the right first query.
 
-Every span carries `service.component`, the scenario id, and the run id. The
-three dimensions a fault can select on (`deployment.version`, `cloud.region`,
-`payment.provider`) are on every span as well, because in a real system they
-come from the resource and the request context rather than from one span.
-The rest (`customer.id`, `cart.size`, `http.route`, `http.status_code`,
-`db.statement.hash`) sit where they belong, mostly on the root.
+Every span carries `service.component` and the run id. The three dimensions a
+fault can select on (`deployment.version`, `cloud.region`, `payment.provider`)
+are on every span as well, because in a real system they come from the resource
+and the request context rather than from one span. The rest (`customer.id`,
+`cart.size`, `http.route`, `http.status_code`, `db.statement.hash`) sit where
+they belong, mostly on the root.
+
+The scenario id is not on the wire. Its values read as answers, such as
+`payments-stripe-v251-uswest` and `control-quiet`, so an agent that broke down
+on that column would be handed the root cause and whether there is an incident
+at all. The run manifest in `gen/runs/` maps a run id back to its scenario, and
+that is where the grader reads it.
 
 Latencies are log-normal around a median. Base error rate is 0.5%, spread
 across the four services. A fault adds latency to one named span, or makes it
@@ -157,8 +163,9 @@ DIMENSION_WEIGHTS: dict[str, dict[str, float]] = {
 PROPAGATED_DIMS: tuple[str, ...] = tuple(DIMENSION_WEIGHTS)
 
 # Everything copied onto every span. `scenario.run_id` is added by gen/emit.py,
-# which is where a run id exists.
-SPAN_COMMON_ATTRIBUTES: tuple[str, ...] = (*PROPAGATED_DIMS, "scenario.id")
+# which is where a run id exists. The scenario id is deliberately absent; see
+# the module docstring.
+SPAN_COMMON_ATTRIBUTES: tuple[str, ...] = PROPAGATED_DIMS
 
 CUSTOMER_COUNT = 2000
 CUSTOMER_ZIPF_EXPONENT = 0.9
@@ -421,7 +428,6 @@ def generate_requests(scenario: Scenario, seed: int = 0) -> list[Request]:
         attributes["cart.size"] = int(sampler.cart_size.pick(rng))
         attributes["http.route"] = sampler.route.pick(rng)
         attributes["db.statement.hash"] = sampler.db_statement.pick(rng)
-        attributes["scenario.id"] = scenario.id
 
         effects, in_population, faulted = _effects_for(scenario, dims, offset_s)
 
