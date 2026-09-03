@@ -1,4 +1,5 @@
-"""Scenario files: the schema, the loader, and the checks that keep them honest.
+"""Scenario files: the schema, the loader, and the checks that reject a file that disagrees
+with itself.
 
 A scenario is the ground truth for one incident. It says how much baseline
 traffic to emit, which requests get the fault and when, what the fault does,
@@ -27,6 +28,10 @@ from gen import topology
 
 SCENARIO_DIR = Path(__file__).resolve().parent / "scenarios"
 
+# How far ground_truth.affected_share may sit from the share the weights give.
+# Files write three decimals, so 0.0005 is one rounding step.
+AFFECTED_SHARE_TOLERANCE = 0.0005
+
 
 class Baseline(BaseModel):
     """How much ordinary traffic the run emits, before any fault."""
@@ -39,6 +44,12 @@ class Baseline(BaseModel):
     @property
     def request_count(self) -> int:
         return int(round(self.rps * self.minutes * 60.0))
+
+    @model_validator(mode="after")
+    def _check(self) -> Baseline:
+        if self.request_count < 1:
+            raise ValueError(f"rps {self.rps} over {self.minutes} minutes rounds to zero requests")
+        return self
 
 
 class Effect(BaseModel):
@@ -114,8 +125,36 @@ class Scenario(BaseModel):
     def _check(self) -> Scenario:
         self._check_dimension_overrides()
         self._check_where_clauses()
+        self._check_timing()
+        self._check_red_herrings()
         self._check_ground_truth()
         return self
+
+    def _check_timing(self) -> None:
+        if self.fault is None:
+            return
+        onset = self.fault.onset_min
+        if not 0 < onset < self.baseline.minutes:
+            raise ValueError(
+                f"fault.onset_min must fall strictly inside the window, got {onset} "
+                f"in a {self.baseline.minutes} minute run; the verifier needs traffic "
+                "on both sides of onset"
+            )
+
+    def _check_red_herrings(self) -> None:
+        for i, herring in enumerate(self.red_herrings):
+            label = f"red_herrings[{i}]"
+            if herring.onset_min >= self.baseline.minutes:
+                raise ValueError(f"{label}.onset_min is past the end of the window")
+            if self.fault is None:
+                continue
+            if herring.onset_min >= self.fault.onset_min:
+                raise ValueError(
+                    f"{label} starts at minute {herring.onset_min}, at or after the fault's "
+                    f"{self.fault.onset_min}; a red herring has to be older than the incident"
+                )
+            if herring.where == self.fault.where and herring.effect.span == self.fault.effect.span:
+                raise ValueError(f"{label} hits the same population and span as the fault")
 
     def _check_dimension_overrides(self) -> None:
         for name, weights in self.dimensions.items():
@@ -161,11 +200,19 @@ class Scenario(BaseModel):
                 )
             if truth.affected_share is None:
                 raise ValueError("a scenario with an incident needs ground_truth.affected_share")
+            expected = self.expected_affected_share()
+            if abs(truth.affected_share - expected) > AFFECTED_SHARE_TOLERANCE:
+                raise ValueError(
+                    f"ground_truth.affected_share is {truth.affected_share} but the dimension "
+                    f"weights give {expected:.4f} for {self.fault.where}"
+                )
         else:
             if self.fault is not None:
                 raise ValueError("ground_truth.incident_present is false but a fault is defined")
             if truth.root_cause_dims or truth.slow_or_failing_span:
                 raise ValueError("a control scenario must not name a root cause or a span")
+            if truth.affected_share is not None:
+                raise ValueError("a control scenario has no affected_share")
 
     @property
     def onset_min(self) -> float | None:

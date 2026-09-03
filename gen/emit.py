@@ -17,7 +17,7 @@ Two timing modes:
 
   realtime sleeps between requests so the window plays out at wall speed. It
   is the fallback if backdated spans ever land in the wrong place, and it is
-  the honest way to run a scenario against a live trigger.
+  the mode to use against a live trigger, which fires on wall-clock time.
 
 Spans are handed to the OpenTelemetry SDK with explicit start and end times
 and exported in chunks by a small span processor. The stock BatchSpanProcessor
@@ -26,13 +26,15 @@ under a second fills it immediately, so the chunked processor here exports
 synchronously against a bounded pool of workers and reports any batch that
 failed instead of losing it quietly.
 
-Ingest is paced, and that is not a nicety. Pushing the same 90,000 span run at
-about 6,800 spans per second (four concurrent posters) landed 57,500 of them;
-the same run at about 3,300 spans per second landed all 90,000. Every request
-came back HTTP 200 with an empty body, no OTLP `partial_success`, and no 429,
-so nothing in the client could tell the difference. The default is therefore
-one poster and a cap of 2,500 spans per second, and `gen/verify.py` counts what
-actually arrived against this manifest before a run is used as ground truth.
+Ingest is paced because of one experiment. The same 90,000 span run was
+pushed twice: four concurrent posters at about 6,800 spans per second landed
+57,500 of them, and one poster at about 3,300 spans per second landed all
+90,000. Every request in both runs came back HTTP 200 with an empty body and
+an empty OTLP `partial_success`. Rate and connection count changed together,
+so the experiment does not say which one Honeycomb objects to, only that the
+one-poster rate is safe. The default is one poster and a cap of 2,500 spans
+per second, and `gen/verify.py` counts what arrived against this manifest
+before a run is used as ground truth.
 
 The run writes a manifest to `gen/runs/<run_id>.json` with the time window and
 the counts. `gen/verify.py` reads it so a verification does not have to be
@@ -44,6 +46,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import sys
 import threading
 import time
@@ -62,6 +65,7 @@ from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import ReadableSpan, SpanProcessor, TracerProvider
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 from opentelemetry.trace import SpanKind, Status, StatusCode
+from pydantic import ValidationError
 
 from gen import topology
 from gen.scenario import Scenario, available_scenarios, load_scenario
@@ -113,12 +117,19 @@ def window_bounds(
     Backdated runs end `lag_s` before now, so the last span is comfortably in
     the past and no clock skew between here and Honeycomb pushes a timestamp
     into the future. Real-time runs start now and end when the run ends.
+
+    Both edges sit on a whole second. The hosted MCP truncates `start_time`
+    and `end_time` to whole seconds, so a window that starts at 01:26:33.845
+    and is queried from 01:26:33 picks up spans it should not, and a window
+    that ends at 01:46:33.845 and is queried to 01:46:33 loses the last
+    0.845 s of traffic, which at 15 rps is about a dozen requests.
     """
     span_s = minutes * 60.0
     if backdate:
-        end = now_s - lag_s
+        end = float(math.floor(now_s - lag_s))
         return Window(start_s=end - span_s, end_s=end, mode="backdate")
-    return Window(start_s=now_s, end_s=now_s + span_s, mode="realtime")
+    start = float(math.floor(now_s))
+    return Window(start_s=start, end_s=start + span_s, mode="realtime")
 
 
 def span_time_ns(window_start_s: float, offset_ms: float) -> int:
@@ -473,7 +484,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    settings = Settings()
+    try:
+        settings = Settings()
+    except ValidationError as exc:
+        missing = ", ".join(str(err["loc"][0]) for err in exc.errors())
+        print(f"error: missing or invalid in .env: {missing}", file=sys.stderr)
+        return 2
     started = time.time()
     result = emit(
         scenario,

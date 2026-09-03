@@ -8,6 +8,7 @@ the wire.
 from __future__ import annotations
 
 import json
+import time
 from concurrent.futures import Future
 from pathlib import Path
 
@@ -187,18 +188,39 @@ def test_the_resource_names_the_dataset_not_the_service(
 
 
 def test_a_realtime_run_sleeps_between_requests(settings_module: Settings) -> None:
+    """With the window starting in the future, every request waits its turn."""
     slept: list[float] = []
     scenario = shrink("control-quiet", minutes=1, rps=2)
+    start = time.time() + 30.0
     E.emit(
         scenario,
+        settings_module,
+        dry_run=True,
+        backdate=False,
+        now_s=start,
+        sleep=slept.append,
+    )
+    # 120 requests over 60 s; the injected sleep never actually waits, so each
+    # delay is measured from the same real clock and the last one is about 90 s.
+    assert len(slept) == scenario.baseline.request_count
+    assert all(delay > 0 for delay in slept)
+    assert slept == sorted(slept)
+    assert slept[-1] == pytest.approx(30.0 + 60.0, abs=2.0)
+    assert slept[0] == pytest.approx(30.0, abs=2.0)
+
+
+def test_a_realtime_run_does_not_sleep_for_requests_already_due(
+    settings_module: Settings,
+) -> None:
+    slept: list[float] = []
+    E.emit(
+        shrink("control-quiet", minutes=1, rps=2),
         settings_module,
         dry_run=True,
         backdate=False,
         now_s=NOW,
         sleep=slept.append,
     )
-    # now_s is far in the past, so no request is due later than the real clock
-    # and nothing sleeps. The call still has to accept the injected sleep.
     assert slept == []
 
 

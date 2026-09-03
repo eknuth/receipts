@@ -8,7 +8,7 @@ generator is the ground truth and everything here exists to keep it trustworthy.
 ```
 gen/
   topology.py     services, span tree, attributes, fault injection. No network, no clock.
-  scenario.py     the scenario schema, the loader, and the checks that keep a file honest.
+  scenario.py     the scenario schema, the loader, and the checks that reject a file that disagrees with itself.
   scenarios/*.yml one file per scripted incident.
   emit.py         gives spans real timestamps and ships them over OTLP/HTTP.
   verify.py       asserts the fault is visible in Honeycomb before a run is used.
@@ -65,7 +65,7 @@ Everything lands in `receipts-shop`. In a Honeycomb environment that is not clas
 taken from the resource's `service.name`, so the resource carries `service.name = receipts-shop`
 and each span names its real service in `service.component`.
 
-The consequence, both halves of it:
+Two consequences:
 
 - One schema and one BubbleUp across all four services, and one `run_query` can compare them. That
   is what this project needs: the agent's job is to find which service and which dimensions moved,
@@ -114,8 +114,6 @@ narrative: >-
   v2.5.1 rolled to us-west-2; stripe calls in payments gained about 800ms at the
   ten minute mark.
 baseline: {rps: 15, minutes: 20}
-dimensions:
-  deployment.version: {"2.5.0": 0.35, "2.5.1": 0.30, "2.6.0": 0.35}
 fault:
   onset_min: 10
   where: {deployment.version: "2.5.1", cloud.region: "us-west-2", payment.provider: "stripe"}
@@ -143,7 +141,7 @@ red_herrings:
 | `fault.onset_min` | yes | Minutes into the window at which the fault starts. Before this, the run is baseline. |
 | `fault.where` | yes | Which requests the fault hits, as an AND over dimension values. Every name must be a dimension the generator emits and every value must be one the scenario emits. |
 | `fault.effect.span` | yes | Which span the fault acts on. Must be one of the five in the topology. |
-| `fault.effect.latency_add_ms` | one of the two | Milliseconds added to that span's own work, jittered by about 12% so the slow band is a band and not a line. |
+| `fault.effect.latency_add_ms` | one of the two | Milliseconds added to that span's own work, jittered by about 12% so the slow requests spread across a band of the heatmap instead of stacking on one value. |
 | `fault.effect.error_rate` | one of the two | Probability that span fails, per matching request, after onset. |
 | `ground_truth.incident_present` | yes | What the agent has to get right. False means a control, and a control may not carry a fault. |
 | `ground_truth.root_cause_dims` | when there is an incident | Must repeat `fault.where` exactly. |
@@ -181,30 +179,40 @@ sixty seconds before now lands in that window and can be queried there straight 
 default, and it means a twenty minute scenario emits in about forty seconds instead of twenty
 minutes.
 
-Real-time emission also works and is kept as the fallback, and as the honest way to run a scenario
-against a live trigger in R5. It sleeps between requests so the window plays out at wall speed.
+Real-time emission also works and is kept as the fallback, and as the mode to use against a live
+trigger in R5, which fires on wall-clock time. It sleeps between requests so the window plays out at wall speed.
 Both modes are recorded in the manifest as `mode`.
 
 ## Ingest
 
-Honeycomb sheds spans somewhere between 3,300 and 6,800 spans per second, and does not say so.
-
-The same 90,000 span run, emitted twice:
+One experiment, two conditions. The same deterministic 90,000 span run was emitted twice:
 
 | Posters | Rate | Spans that arrived |
 |---|---|---|
 | 4 | about 6,800/s | 57,500 of 90,000 |
 | 1 | about 3,300/s | 90,000 of 90,000 |
 
-Every request in both runs came back HTTP 200 with an empty body. No OTLP `partial_success`, no
-429, nothing in the client that could tell the difference. The loss was not random: the first two
-minutes of the window arrived complete and acceptance decayed from there, which is what a shedding
-ingest pipeline looks like from the outside.
+Spans were counted with a `COUNT` per span name over the run id through the MCP. In the partial run
+every span name was short by the same amount, so whole batches were lost rather than single spans,
+and a per-minute count showed the first two minutes complete with acceptance falling after that.
+
+Every request in both runs came back HTTP 200 with an empty body. Decoding the body as
+`ExportTraceServiceResponse` gives an empty `partial_success`. The Python OTLP exporter returns
+success on any 2xx without reading that field, so it would report nothing even if it were set.
+
+Rate and connection count changed together, so the experiment shows that four posters at 6,800
+spans per second lose data and one poster at 3,300 does not. It does not say where between those the
+limit sits, or whether it is a rate limit or a concurrency limit.
 
 Two things follow. The emitter defaults to one poster and a cap of 2,500 spans per second. And
-`gen/verify.py` counts the root spans that actually arrived against the manifest before it believes
-any other number, with a floor of 98%. A partial run fails verification instead of quietly halving
-the population and moving the percentiles.
+`gen/verify.py` counts the root spans that arrived against the manifest before it believes any
+other number, and the count has to be exact. A partial run fails verification instead of quietly
+halving the population and moving the percentiles.
+
+The count can be exact because the window edges sit on whole seconds. The hosted MCP truncates
+`start_time` and `end_time` to whole seconds, so a window that ended at 01:46:33.845 and was
+queried to 01:46:33 came back a dozen requests short on every run until the emitter started
+flooring the edges.
 
 ## What verification checks
 

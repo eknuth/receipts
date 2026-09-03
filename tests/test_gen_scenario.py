@@ -67,7 +67,7 @@ def test_scenario_dir_has_no_stray_yaml_extension() -> None:
     assert list(SCENARIO_DIR.glob("*.yaml")) == []
 
 
-@pytest.mark.parametrize("scenario_id", sorted(REQUIRED_SCENARIOS))
+@pytest.mark.parametrize("scenario_id", sorted(available_scenarios()))
 def test_ground_truth_affected_share_matches_the_weights(scenario_id: str) -> None:
     """The share written in the file is the share the dimension weights produce."""
     scenario = load_scenario(scenario_id)
@@ -221,3 +221,49 @@ def test_an_unknown_key_is_rejected(tmp_path: Path) -> None:
 def test_a_scenario_file_must_be_a_mapping(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="YAML mapping"):
         load_scenario_file(write(tmp_path, "- one\n- two\n"))
+
+
+# --------------------------------------------------------------------------
+# Files that load but could not be verified are rejected
+# --------------------------------------------------------------------------
+
+
+def _payments_dict() -> dict:
+    import yaml
+
+    return yaml.safe_load((SCENARIO_DIR / "payments-stripe-v251-uswest.yml").read_text())
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda d: d["ground_truth"].__setitem__("affected_share", 0.5), "weights give"),
+        (lambda d: d["ground_truth"].__setitem__("affected_share", 0.0), "weights give"),
+        (lambda d: d["fault"].__setitem__("onset_min", 0), "strictly inside"),
+        (lambda d: d["fault"].__setitem__("onset_min", 20), "strictly inside"),
+        (lambda d: d["fault"].__setitem__("onset_min", 25), "strictly inside"),
+        (lambda d: d["red_herrings"][0].__setitem__("onset_min", 10), "older than"),
+        (lambda d: d["red_herrings"][0].__setitem__("onset_min", 99), "past the end"),
+        (lambda d: d["baseline"].update({"rps": 0.001, "minutes": 1}), "zero requests"),
+        (
+            lambda d: d["red_herrings"].append(
+                {"where": d["fault"]["where"], "effect": dict(d["fault"]["effect"])}
+            ),
+            "same population and span",
+        ),
+    ],
+)
+def test_a_scenario_the_verifier_could_not_judge_is_rejected(mutate, message: str) -> None:
+    data = _payments_dict()
+    mutate(data)
+    with pytest.raises(ValueError, match=message):
+        Scenario.model_validate(data)
+
+
+def test_a_control_may_not_carry_an_affected_share() -> None:
+    import yaml
+
+    data = yaml.safe_load((SCENARIO_DIR / "control-quiet.yml").read_text())
+    data["ground_truth"]["affected_share"] = 0.4
+    with pytest.raises(ValueError, match="no affected_share"):
+        Scenario.model_validate(data)

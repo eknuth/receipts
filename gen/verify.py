@@ -73,7 +73,6 @@ SHARE_TOLERANCE = 0.02
 # Below this many rows in a window, the numbers are not worth believing.
 MIN_ROWS = 100
 # How much of the manifest's root spans must be queryable.
-MIN_INGEST_FRACTION = 0.98
 
 
 @dataclass(frozen=True)
@@ -298,7 +297,9 @@ def _result_text(result: ToolResult) -> str:
 
 
 def _ratio(after: float, before: float) -> float:
-    return after / before if before else float("inf")
+    if before:
+        return after / before
+    return float("inf") if after else 0.0
 
 
 def decide(scenario: Scenario, manifest: EmitResult, measurement: Measurement) -> list[Check]:
@@ -319,16 +320,18 @@ def decide(scenario: Scenario, manifest: EmitResult, measurement: Measurement) -
 
 
 def _check_ingest(manifest: EmitResult, measurement: Measurement) -> Check:
+    """Every root span the manifest says was sent is queryable.
+
+    Exact, on purpose. The window edges sit on whole seconds, so a shortfall
+    of even one request means Honeycomb dropped it, and a run with dropped
+    spans is not ground truth.
+    """
     expected = float(manifest.requests)
     seen = measurement.total_root_spans
-    fraction = seen / expected if expected else 0.0
     return Check(
         name="ingest",
-        ok=fraction >= MIN_INGEST_FRACTION,
-        detail=(
-            f"{seen:.0f} of {expected:.0f} root spans queryable "
-            f"({fraction:.1%}, floor {MIN_INGEST_FRACTION:.0%})"
-        ),
+        ok=seen == expected,
+        detail=f"{seen:.0f} of {expected:.0f} root spans queryable",
     )
 
 
@@ -467,13 +470,24 @@ def split_points(scenario: Scenario, manifest: EmitResult) -> tuple[str, str, st
     A scenario with a fault splits at onset. A control has no onset, so it
     splits down the middle, which is the comparison an investigator would make
     when told to look for a change.
+
+    The hosted MCP truncates query time bounds to whole seconds. The start is
+    floored and the end is ceilinged so the queried window covers every span
+    the manifest says was emitted, and the split is floored so the two halves
+    meet where the MCP will actually cut them.
     """
+    import math
+
     from gen.emit import iso
 
     split = manifest.onset_s
     if split is None:
         split = (manifest.window_start_s + manifest.window_end_s) / 2.0
-    return iso(manifest.window_start_s), iso(split), iso(manifest.window_end_s)
+    return (
+        iso(math.floor(manifest.window_start_s)),
+        iso(math.floor(split)),
+        iso(math.ceil(manifest.window_end_s)),
+    )
 
 
 async def _run(mcp: HoneycombMCP, settings: Settings, spec: dict[str, Any]) -> ToolResult:

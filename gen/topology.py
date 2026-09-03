@@ -28,8 +28,8 @@ The rest (`customer.id`, `cart.size`, `http.route`, `http.status_code`,
 Latencies are log-normal around a median. Base error rate is 0.5%, spread
 across the four services. A fault adds latency to one named span, or makes it
 fail, for the requests that match its `where` clause after its onset minute.
-The added latency is jittered by about 12% so the slow band is a band and not
-a line, which keeps BubbleUp honest work rather than a lookup.
+The added latency is jittered by about 12% so the slow requests spread across
+a band of the heatmap instead of stacking on one value.
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ BASELINE_ERROR_RATE = 0.005
 
 # Where an ordinary failure originates. Weighted so most failures come from
 # the payment provider, which is also where two of the scenarios put a fault:
-# a control that looks nothing like the incident would be too easy.
+# a control whose failures come from elsewhere would give the answer away.
 BASELINE_ERROR_SOURCE: dict[str, float] = {
     "payments.charge": 0.50,
     "db.query": 0.20,

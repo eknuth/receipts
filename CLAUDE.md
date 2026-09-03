@@ -113,9 +113,11 @@ red_herrings:
 
 Field-by-field documentation is in `gen/README.md`. One dataset (`receipts-shop`), so the resource
 carries `service.name = receipts-shop` and each span names its real service in `service.component`.
-Backdating works. Honeycomb sheds spans above roughly 3,300 per second while returning HTTP 200, so
-`gen/emit.py` posts from one connection at a cap of 2,500 spans per second and `gen/verify.py`
-counts what arrived before it believes any other number.
+Backdating works. In one experiment, four posters at about 6,800 spans per second lost a third of
+a run with HTTP 200 on every request, and one poster at about 3,300 lost nothing, so `gen/emit.py`
+posts from one connection at a cap of 2,500 spans per second and `gen/verify.py` counts what
+arrived before it believes any other number. The hosted MCP truncates query time bounds to whole
+seconds, so window edges sit on whole seconds.
 
 Scenario classes: latency spike, error surge, deployment regression, dependency failure, trigger
 fired, two controls (no incident, the agent should say so), two where a red herring is stronger

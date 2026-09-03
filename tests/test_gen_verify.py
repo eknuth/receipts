@@ -1,9 +1,11 @@
 """The verifier: query shapes, reading numbers back, and the decisions.
 
 The queries in `tests/fixtures/gen/` were captured from live `run_query` calls
-against the runs listed in the R4 report, with the signed download URLs
-redacted. Reading them here means the parsing is tested against what the hosted
-MCP actually returns, not against what it is assumed to return.
+with any signed download URLs redacted. The payments fixtures are from
+`run-2c818aeb7fbb`, the control fixture from `run-74772e9d3207`, and the error-surge
+fixture from `run-a9e5027cb1a5`. Reading them here means the parsing is tested
+against what the hosted MCP actually returns, not against what it is assumed
+to return.
 
 No test in this file opens a session. The live path is
 `uv run python -m gen.verify --scenario <id> --run-id <id>`.
@@ -198,12 +200,12 @@ def test_read_row_ignores_the_trailing_other_and_total_rows() -> None:
 def test_read_row_on_the_before_window() -> None:
     row = V.read_row(fixture_text("payments-stripe-v251-uswest_window_before"))
     assert row["inside_p99"] == pytest.approx(182.69)
-    assert row["outside_p99"] == pytest.approx(198.06)
+    assert row["outside_p99"] == pytest.approx(198.05)
 
 
 def test_read_row_on_a_population_query() -> None:
     row = V.read_row(fixture_text("payments-stripe-v251-uswest_population"))
-    assert row["total_count"] == 17997
+    assert row["total_count"] == 18000
     assert row["inside_count"] == 2221
 
 
