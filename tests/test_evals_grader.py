@@ -571,6 +571,7 @@ def test_live_reports_carry_no_team_slug() -> None:
         text = path.read_text()
         assert "ui.honeycomb.io/team/" in text
         assert "joymath" not in text
+        assert "edwin-knuth" not in text
 
 
 def test_live_reports_still_load_as_reports() -> None:
