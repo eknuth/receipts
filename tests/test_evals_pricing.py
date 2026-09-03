@@ -52,11 +52,21 @@ def test_cost_is_tokens_times_rate_over_a_million() -> None:
 
 
 def test_cache_reads_and_writes_are_priced_off_the_input_rate() -> None:
+    """The rates are written out rather than derived from the constants.
+
+    Cache reads were 1.15M of the 1.18M input tokens on a live run, so the
+    read multiplier is most of the reported cost. Asserting against the
+    imported constant passed whatever the constant said: setting it to 0.5
+    left every pricing test green while doubling the published number.
+    """
     read = cost_usd("claude-sonnet-4-5", 0, 0, cache_read_tokens=1_000_000)
     write = cost_usd("claude-sonnet-4-5", 0, 0, cache_write_tokens=1_000_000)
-    assert read == pytest.approx(3.0 * CACHE_READ_MULTIPLIER)
-    assert write == pytest.approx(3.0 * CACHE_WRITE_MULTIPLIER)
-    assert read is not None and write is not None and read < write
+    # Sonnet 4.5 input is $3/M. Cache read is a tenth of it, cache write is
+    # 1.25 times it, per Anthropic's prompt caching page.
+    assert read == pytest.approx(0.30)
+    assert write == pytest.approx(3.75)
+    assert CACHE_READ_MULTIPLIER == pytest.approx(0.1)
+    assert CACHE_WRITE_MULTIPLIER == pytest.approx(1.25)
 
 
 def test_a_dated_snapshot_costs_the_same_as_its_alias() -> None:

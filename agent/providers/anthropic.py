@@ -20,12 +20,15 @@ conversation so far is read from cache instead of re-sent at full price. The
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import anthropic
 
 from agent.providers.base import Completion, ToolSchema, ToolUse, Turn, Usage
 from receipts.settings import Settings
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_TOKENS = 8192
 
@@ -138,17 +141,22 @@ def _to_completion(response: Any) -> Completion:
     """One Anthropic response as a `Completion`."""
     text_parts: list[str] = []
     tool_uses: list[ToolUse] = []
+    dropped: list[str] = []
     for block in response.content:
         block_type = getattr(block, "type", None)
         if block_type == "text":
             text_parts.append(block.text)
         elif block_type == "tool_use":
-            # Tool inputs come back as parsed objects; a stray string is
-            # re-parsed rather than string-matched.
-            args = block.input
-            if isinstance(args, str):
-                args = json.loads(args)
-            tool_uses.append(ToolUse(id=block.id, name=block.name, args=dict(args or {})))
+            # A block that will not parse is dropped rather than raised. A
+            # response truncated mid tool_use used to take the whole run down
+            # with it, including every good query already made. The loop sees
+            # a turn with fewer tool uses and nudges, which is recoverable.
+            try:
+                tool_uses.append(_to_tool_use(block))
+            except (TypeError, ValueError, AttributeError) as exc:
+                dropped.append(f"{type(exc).__name__}: {exc}")
+    if dropped:
+        logger.warning("dropped %d unparseable tool_use block(s): %s", len(dropped), dropped)
 
     usage = getattr(response, "usage", None)
     return Completion(
@@ -163,3 +171,20 @@ def _to_completion(response: Any) -> Completion:
         stop_reason=getattr(response, "stop_reason", None),
         raw_content=list(response.content),
     )
+
+
+def _to_tool_use(block: Any) -> ToolUse:
+    """One `tool_use` block, or an exception the caller drops it on."""
+    args = block.input
+    # Tool inputs come back as parsed objects; a stray string is re-parsed
+    # rather than string-matched.
+    if isinstance(args, str):
+        args = json.loads(args)
+    if args is None:
+        args = {}
+    if not isinstance(args, dict):
+        raise TypeError(f"tool_use input is {type(args).__name__}, not an object")
+    identifier = block.id
+    if not isinstance(identifier, str) or not identifier:
+        raise ValueError("tool_use block has no id")
+    return ToolUse(id=identifier, name=block.name, args=dict(args))

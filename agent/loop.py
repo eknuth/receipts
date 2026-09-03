@@ -28,6 +28,7 @@ result, and the grader should see it and mark it down.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -173,6 +174,10 @@ class _Budget:
     def spent(self) -> bool:
         return self.calls_spent or self.wall_spent
 
+    def wall_left(self) -> float:
+        """Seconds of wall budget left, floored at zero."""
+        return max(0.0, self.max_wall_s - self.wall_s)
+
     def reason(self) -> str:
         return "call_cap" if self.calls_spent else "wall_cap"
 
@@ -297,8 +302,21 @@ async def _investigate(
     nudges = 0
 
     while True:
+        # The wall is checked around the model call as well as after it. Before
+        # this the budget was advisory: it was only read between turns, so a
+        # provider that hung or retried could run for an hour against a stated
+        # eight minute budget.
+        remaining = budget.wall_left()
+        if remaining <= 0:
+            return state.finish(stop_reason=budget.reason())
         try:
-            completion = await provider.complete(system, turns, tools, max_tokens=config.max_tokens)
+            async with asyncio.timeout(remaining):
+                completion = await provider.complete(
+                    system, turns, tools, max_tokens=config.max_tokens
+                )
+        except TimeoutError:
+            logger.warning("provider call ran past the wall budget")
+            return state.finish(stop_reason="wall_cap")
         except Exception as exc:
             logger.exception("provider call failed")
             return state.finish(stop_reason="error", error=f"{type(exc).__name__}: {exc}")
@@ -382,6 +400,7 @@ class _RunState:
         self.cache_read = 0
         self.cache_write = 0
         self.model_turns = 0
+        self.model_stop_reason: str | None = None
         self.rejections = 0
         self.last_rejection = ""
         self.issues: list[validate.Issue] = []
@@ -390,6 +409,7 @@ class _RunState:
 
     def record_usage(self, completion: Completion) -> None:
         self.model_turns += 1
+        self.model_stop_reason = completion.stop_reason
         self.tokens_in += completion.usage.input_tokens
         self.tokens_out += completion.usage.output_tokens
         self.cache_read += completion.usage.cache_read_tokens
@@ -530,6 +550,7 @@ class _RunState:
             "cost_usd": round(cost or 0.0, 6),
             "tool_log": list(self.tool_log),
             "stop_reason": stop_reason,
+            "model_stop_reason": self.model_stop_reason,
             "validation_failed": validation_failed,
             "validation_messages": list(messages or []),
             "error": error,

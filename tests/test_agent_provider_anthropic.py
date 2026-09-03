@@ -183,3 +183,71 @@ def test_the_provider_satisfies_the_interface(settings: Settings) -> None:
 @pytest.mark.parametrize("field", ["name", "model"])
 def test_the_provider_names_itself_for_the_report(settings: Settings, field: str) -> None:
     assert getattr(provider(settings), field)
+
+
+# --------------------------------------------------------------------------
+# A malformed tool_use block must not throw away the run
+#
+# Before this, an exception out of the block conversion propagated to the
+# loop, which recorded stop_reason "error" with no findings. One truncated
+# block mid tool_use discarded the whole investigation, including every good
+# query already made.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("block", "note"),
+    [
+        (Block(type="tool_use", id="t", name="run_query", input="{not json"), "unparseable"),
+        (Block(type="tool_use", id="t", name="run_query", input=["a", "b"]), "a list"),
+        (Block(type="tool_use", id="", name="run_query", input={"a": 1}), "no id"),
+    ],
+)
+async def test_a_malformed_tool_use_block_is_dropped_not_raised(
+    settings: Settings, block: Block, note: str
+) -> None:
+    response = ResponseStub(
+        content=[
+            Block(type="text", text="here is what I found"),
+            Block(type="tool_use", id="good", name="run_query", input={"dataset_slug": "x"}),
+            block,
+        ],
+        usage=UsageStub(),
+    )
+    completion = await provider(settings, response).complete("sys", [], TOOLS, max_tokens=100)
+    assert [use.id for use in completion.tool_uses] == ["good"], note
+    assert completion.text == "here is what I found"
+
+
+async def test_a_tool_use_with_no_input_is_an_empty_object(settings: Settings) -> None:
+    response = ResponseStub(
+        content=[Block(type="tool_use", id="t", name="get_workspace_context", input=None)],
+        usage=UsageStub(),
+    )
+    completion = await provider(settings, response).complete("sys", [], TOOLS, max_tokens=100)
+    assert completion.tool_uses[0].args == {}
+
+
+async def test_a_response_with_no_usage_counts_zero_rather_than_failing(
+    settings: Settings,
+) -> None:
+    @dataclass
+    class NoUsage:
+        content: list[Block]
+        stop_reason: str = "end_turn"
+
+    response = NoUsage(content=[Block(type="text", text="done")])
+    completion = await provider(settings, response).complete(  # type: ignore[arg-type]
+        "sys", [], TOOLS, max_tokens=100
+    )
+    assert completion.usage.input_tokens == 0
+    assert completion.usage.output_tokens == 0
+
+
+async def test_the_stop_reason_survives_onto_the_completion(settings: Settings) -> None:
+    response = ResponseStub(
+        content=[Block(type="text", text="I will not")], usage=UsageStub(), stop_reason="refusal"
+    )
+    completion = await provider(settings, response).complete("sys", [], TOOLS, max_tokens=100)
+    assert completion.stop_reason == "refusal"
+    assert completion.tool_uses == []

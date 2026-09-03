@@ -7,7 +7,9 @@ condition can be reached on purpose.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -548,3 +550,58 @@ async def test_the_report_writes_to_results_run_id_report_json(
     assert written["scenario_id"] == RUN.scenario_id
     assert written["tool_log"][0]["query_id"] == "Q1"
     assert written["cost_usd"] > 0
+
+
+# --------------------------------------------------------------------------
+# The wall budget has to bind during a model call, not only between turns
+# --------------------------------------------------------------------------
+
+
+async def test_a_provider_that_hangs_is_cut_off_at_the_wall(settings: Settings) -> None:
+    """Before the timeout the wall was advisory: it was read between turns, so
+    a provider that hung ran as long as it liked against a stated budget."""
+
+    class Hanging(FakeProvider):
+        async def complete(self, *args: Any, **kwargs: Any) -> Completion:
+            await asyncio.sleep(30)
+            raise AssertionError("the wall should have cut this off")
+
+    started = time.monotonic()
+    report = await investigate(
+        RUN,
+        AgentConfig(max_wall_s=0.2),
+        provider=Hanging([completion(query_use("q"))]),
+        mcp=FakeMCP(),
+        settings=settings,
+    )
+    assert report.stop_reason == "wall_cap"
+    assert time.monotonic() - started < 5.0
+
+
+async def test_the_wall_stops_the_run_before_another_model_call(settings: Settings) -> None:
+    provider = FakeProvider([completion(query_use("q"))])
+    report = await investigate(
+        RUN,
+        AgentConfig(max_wall_s=0.0),
+        provider=provider,
+        mcp=FakeMCP(),
+        settings=settings,
+    )
+    assert report.stop_reason == "wall_cap"
+    assert provider.seen == []
+
+
+async def test_the_model_stop_reason_is_recorded_next_to_the_loop_reason(
+    settings: Settings,
+) -> None:
+    """A refusal and a model that just stopped calling tools both end the loop
+    the same way, so the record has to keep the provider's own word for it."""
+    refusal = Completion(
+        text="I will not do that.",
+        tool_uses=[],
+        usage=Usage(input_tokens=10, output_tokens=5),
+        stop_reason="refusal",
+    )
+    report = await run_loop(FakeProvider([refusal]), settings=settings)
+    assert report.stop_reason == "model_stopped"
+    assert report.model_stop_reason == "refusal"

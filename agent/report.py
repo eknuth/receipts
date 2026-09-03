@@ -188,6 +188,12 @@ class Report(BaseModel):
     stop_reason: str = "unknown"
     """Why the loop ended: report, call_cap, wall_cap, model_stopped, or error."""
 
+    model_stop_reason: str | None = None
+    """What the provider said about the last turn, such as `refusal` or
+    `max_tokens`. Kept separate from `stop_reason`: a refusal and a model that
+    simply stopped calling tools both end the loop the same way, and the
+    record should still tell them apart."""
+
     validation_failed: bool = False
     validation_messages: list[str] = Field(default_factory=list)
     error: str | None = None
@@ -197,11 +203,22 @@ class Report(BaseModel):
         """A report carrying a draft's findings plus the process fields."""
         return cls(**draft.model_dump(), **fields)
 
-    def write(self, results_dir: Path) -> Path:
-        """Write `<results_dir>/<run_id>/report.json` and return the path."""
+    def write(self, results_dir: Path, *, overwrite: bool = False) -> Path:
+        """Write the report under `<results_dir>/<run_id>/` and return the path.
+
+        The first run of a run id writes `report.json`. A second writes
+        `report-2.json`, and so on, because repeats of the same scenario share
+        a run id and silently overwriting them loses the spread that repeats
+        exist to measure. Pass `overwrite` to keep the plain name.
+        """
         directory = results_dir / self.run_id
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / "report.json"
+        if not overwrite:
+            attempt = 2
+            while path.exists():
+                path = directory / f"report-{attempt}.json"
+                attempt += 1
         path.write_text(self.model_dump_json(indent=2) + "\n")
         return path
 

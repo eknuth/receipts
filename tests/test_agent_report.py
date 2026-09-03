@@ -108,3 +108,25 @@ def test_write_lands_at_run_id_report_json_and_reads_back(tmp_path: Path) -> Non
 def test_onset_estimate_accepts_the_iso_string_a_model_would_send() -> None:
     parsed = draft(onset_estimate="2026-09-03T02:47:20Z")
     assert parsed.onset_estimate == datetime(2026, 9, 3, 2, 47, 20, tzinfo=UTC)
+
+
+def test_a_second_report_for_the_same_run_does_not_overwrite_the_first(tmp_path: Path) -> None:
+    """Repeats of one scenario share a run id. Overwriting them loses the
+    spread that repeats exist to measure."""
+    first = Report(run_id="run-abc123", scenario_id="s", provider="fake", model="m")
+    second = Report(run_id="run-abc123", scenario_id="s", provider="fake", model="m", tool_calls=7)
+
+    first_path = first.write(tmp_path)
+    second_path = second.write(tmp_path)
+
+    assert first_path.name == "report.json"
+    assert second_path.name == "report-2.json"
+    assert json.loads(first_path.read_text())["tool_calls"] == 0
+    assert json.loads(second_path.read_text())["tool_calls"] == 7
+
+
+def test_overwrite_keeps_the_plain_name(tmp_path: Path) -> None:
+    report = Report(run_id="run-abc123", scenario_id="s", provider="fake", model="m")
+    assert report.write(tmp_path).name == "report.json"
+    assert report.write(tmp_path, overwrite=True).name == "report.json"
+    assert not (tmp_path / "run-abc123" / "report-2.json").exists()
