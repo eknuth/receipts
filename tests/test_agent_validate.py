@@ -494,3 +494,41 @@ def test_the_same_word_inside_ordinary_prose_is_still_allowed() -> None:
     ]
     entry = "did not examine specific error message text"
     assert validate_draft(draft(not_checked=[entry]), log, run_id=RUN_ID) == []
+
+
+def test_an_entry_naming_a_queried_column_in_its_explanation_is_allowed() -> None:
+    """The live false positive that prompted the subject rule.
+
+    The run never queried `deployment.version`, so the claim is true. The
+    explanation mentions `payments.charge`, which the run did query, as
+    context for what the breakdown would have been.
+    """
+    log = [
+        query_call("Q1", filters=[{"column": "name", "op": "=", "value": "payments.charge"}]),
+        query_call("Q2", filters=[{"column": "cloud.region", "op": "!=", "value": "us-west-2"}]),
+    ]
+    entry = "deployment.version - did not break down payments.charge by deployment version"
+    only_region = hypothesis(dims={"cloud.region": "us-west-2"})
+    assert (
+        validate_draft(draft(hypotheses=[only_region], not_checked=[entry]), log, run_id=RUN_ID)
+        == []
+    )
+
+
+def test_the_subject_of_an_entry_is_still_checked() -> None:
+    log = [
+        query_call("Q1", breakdowns=["deployment.version"]),
+        query_call("Q2", filters=[{"column": "deployment.version", "op": "!=", "value": "9.9.9"}]),
+    ]
+    entry = "deployment.version - never broken down"
+    issues = validate_draft(draft(not_checked=[entry]), log, run_id=RUN_ID)
+    assert [issue.code for issue in issues] == ["not_checked_false"]
+
+
+def test_a_colon_separates_the_subject_too() -> None:
+    log = [
+        query_call("Q1", breakdowns=["http.route"]),
+        query_call("Q2", filters=[{"column": "deployment.version", "op": "!=", "value": "9.9.9"}]),
+    ]
+    issues = validate_draft(draft(not_checked=["http.route: not broken down"]), log, run_id=RUN_ID)
+    assert [issue.code for issue in issues] == ["not_checked_false"]

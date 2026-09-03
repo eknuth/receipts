@@ -80,6 +80,15 @@ _TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:[.\-][A-Za-z0-9_]+)+|[A-Za-z]+_[A
 # from getting through while leaving "specific error message text" alone.
 _QUOTED = re.compile(r"[`\"']\s*([A-Za-z_][A-Za-z0-9_.\-]*)\s*[`\"']")
 
+# Models write entries as "column - why it was not checked". The claim is the
+# subject, and the explanation after the separator names other columns as
+# context. A live run listed "deployment.version - did not break down
+# payments.charge by deployment version", which was true: the run never
+# queried the version. Reading every word of it flagged the entry for naming
+# `payments.charge`, a column the run did query but the entry never claimed
+# was unchecked. So the check reads the subject when there is one.
+_SUBJECT = re.compile(r"^(.*?)(?:\s+[-:]\s+|\s*:\s+)")
+
 
 @dataclass(frozen=True)
 class Issue:
@@ -431,14 +440,23 @@ def _check_not_checked(draft: ReportDraft, terms: set[str]) -> list[Issue]:
 
 
 def _candidates(entry: str) -> set[str]:
-    """The words in one entry that could be naming a column.
+    """The columns one entry claims were not checked.
 
-    Identifier-shaped words anywhere in the entry, plus anything quoted or
-    backticked, plus the entry itself when it is a bare name.
+    When the entry has the shape "subject - explanation", only the subject is
+    the claim; identifiers in the explanation are context. Otherwise every
+    identifier-shaped word counts, plus anything quoted, plus the entry itself
+    when it is a bare name.
+
+    The cost is that a false claim buried in the explanation of a true one
+    gets through. That is the cheaper mistake: the subject is what the list is
+    for, and a false rejection burns a turn and reads as the validator being
+    wrong about a report that was honest.
     """
-    found = set(_TOKEN.findall(entry))
-    found |= set(_QUOTED.findall(entry))
-    stripped = entry.strip().strip("`\"'").strip()
+    subject = _SUBJECT.match(entry)
+    text = subject.group(1) if subject and subject.group(1).strip() else entry
+    found = set(_TOKEN.findall(text))
+    found |= set(_QUOTED.findall(text))
+    stripped = text.strip().strip("`\"'").strip()
     if stripped and " " not in stripped:
         found.add(stripped)
     return found
