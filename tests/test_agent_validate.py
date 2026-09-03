@@ -197,6 +197,23 @@ def test_a_not_checked_entry_that_names_a_filter_value_is_rejected() -> None:
     assert [issue.code for issue in issues] == ["not_checked_false"]
 
 
+def test_an_ordinary_english_word_is_not_read_as_a_column_name() -> None:
+    """A live run was rejected for the word "error" inside "error message text"."""
+    log = [
+        *good_log(),
+        query_call("Q4", filters=[{"column": "error", "op": "=", "value": True}]),
+    ]
+    entry = "status_message content, did not examine specific error message text"
+    assert validate_draft(draft(not_checked=[entry]), log, run_id=RUN_ID) == []
+
+
+def test_a_dotted_or_underscored_name_is_still_caught() -> None:
+    log = [*good_log(), query_call("Q4", calculations=[{"op": "P99", "column": "duration_ms"}])]
+    for entry in ("deployment.version was left alone", "duration_ms was never measured"):
+        issues = validate_draft(draft(not_checked=[entry]), log, run_id=RUN_ID)
+        assert [issue.code for issue in issues] == ["not_checked_false"], entry
+
+
 def test_the_run_id_filter_does_not_make_every_entry_false() -> None:
     """Every query carries the run id, so it cannot count as coverage."""
     terms = queried_terms(good_log(), run_id=RUN_ID)

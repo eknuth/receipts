@@ -43,8 +43,17 @@ QUERY_TOOLS: frozenset[str] = frozenset({"run_query", "run_bubbleup", "list_span
 _COLUMN_KEYS: frozenset[str] = frozenset({"column", "columns", "breakdowns", "group_by"})
 _VALUE_KEYS: frozenset[str] = frozenset({"value", "values"})
 
-# Identifier-shaped words inside a free-text `not_checked` entry.
-_TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:[.\-][A-Za-z0-9_]+)*")
+# Identifier-shaped words inside a free-text `not_checked` entry. A match has
+# to carry a dot, an underscore, or a hyphen, which is what separates
+# `payments.charge`, `duration_ms`, and `us-west-2` from ordinary prose. A
+# live run showed why: an entry reading "did not examine specific error
+# message text" was rejected for naming the `error` column, which it was not.
+# The cost of the rule is that an entry naming a single-word column, such as
+# `error` on its own, gets through. That is the cheaper mistake: a false
+# rejection burns a turn and reads as the validator being wrong, and the
+# single-word columns in this dataset are the ones a reader is least likely to
+# care about.
+_TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:[.\-][A-Za-z0-9_]+)+|[A-Za-z]+_[A-Za-z0-9_]+")
 
 
 @dataclass(frozen=True)
