@@ -20,10 +20,13 @@ wait. A lock serializes concurrent waiters so the limit holds under
 `traceparent` and `tracestate` (W3C trace context) are injected into
 `params._meta` on every `tools/call`. The pinned `mcp` package (2.x) puts
 this on the wire via `CallToolRequestParams.meta`, aliased to `_meta`, and
-the test suite proves it end to end with an in-process server. Whether the
-hosted Honeycomb MCP reads that field and links its own spans to ours is an
-assumption until R7 checks for linked spans in the Agent Timeline; the
-Honeycomb MCP docs do not document `_meta`.
+the test suite proves it end to end with an in-process server. The OTel MCP
+semantic conventions (SEP-414) say a client SHOULD write `traceparent` and
+`tracestate` unprefixed into `params._meta` and a server SHOULD use it as
+the remote parent; a live check on 2026-09-03 found no spans from
+Honeycomb's hosted MCP in `receipts-demo` for either trace, so the hosted
+MCP does not act on it today. The field goes out regardless, because it is
+the standard.
 """
 
 from __future__ import annotations

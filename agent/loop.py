@@ -337,7 +337,9 @@ async def _investigate(
             return state.finish(stop_reason=budget.reason())
         try:
             async with asyncio.timeout(remaining):
-                with trace.chat_span(provider.model) as chat:
+                with trace.chat_span(
+                    provider.model, provider_name=config.provider, max_tokens=config.max_tokens
+                ) as chat:
                     completion = await provider.complete(
                         system, turns, tools, max_tokens=config.max_tokens
                     )

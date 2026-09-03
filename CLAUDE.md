@@ -73,9 +73,11 @@ Packages: `anthropic`, `boto3` (R11 only), `mcp` (streamable HTTP client), `open
 - `mcp` is pinned to 2.x. The 2.x client entrypoint is
   `mcp.client.streamable_http.streamable_http_client` (1.x called it `streamablehttp_client`);
   Honeycomb's published snippets use the 1.x name.
-- Send `traceparent` in MCP `params._meta` on every call. Honeycomb does not document this
-  field; R9 (self-telemetry, EDW-1331) checks whether MCP-side spans link to ours in the Agent
-  Timeline. Until then it is an assumption, and the wire format is proven by test.
+- Send `traceparent` in MCP `params._meta` on every call: the OTel MCP semantic conventions
+  (SEP-414) say a client SHOULD write `traceparent` and `tracestate` unprefixed into `params._meta`
+  and a server SHOULD use it as the remote parent. A live check on 2026-09-03 found no spans from
+  Honeycomb's hosted MCP in `receipts-demo` for either trace, so the hosted MCP does not act on it
+  today; the client keeps sending it because it is the standard, proven onto the wire by test.
 - Agent Timeline groups spans by `gen_ai.conversation.id`. Free tier: 20M events/month.
 - Method to follow, from `honeycombio/agent-skill` (`honeycomb-investigator` agent and
   `production-investigation` skill): Orient, Characterize, BubbleUp, Traces, Verify by negation

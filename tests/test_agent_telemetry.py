@@ -156,6 +156,15 @@ async def test_every_span_carries_the_three_required_attributes() -> None:
 
     root = next(s for s in spans if s.name == "invoke_agent receipts-investigator")
     assert root.attributes["receipts.run_id"] == RUN.run_id
+    assert root.attributes["gen_ai.provider.name"] == "fake"
+
+    chat_spans = [s for s in spans if s.name.startswith("chat ")]
+    for span in chat_spans:
+        # AgentConfig() defaults provider to "anthropic"; run_full_investigation
+        # swaps in a FakeProvider instance but leaves the config's provider
+        # label alone, which is what the loop passes to chat_span.
+        assert span.attributes["gen_ai.provider.name"] == "anthropic"
+        assert span.attributes["gen_ai.request.max_tokens"] > 0
 
 
 def test_the_root_span_names_and_operation() -> None:
@@ -180,6 +189,7 @@ def test_the_root_span_names_and_operation() -> None:
     assert span.attributes["scenario.id"] == RUN.scenario_id
     assert span.attributes["agent.config"] == "full"
     assert span.attributes["agent.provider"] == "anthropic"
+    assert span.attributes["gen_ai.provider.name"] == "anthropic"
 
 
 # --------------------------------------------------------------------------
@@ -210,6 +220,27 @@ async def test_the_root_span_outlives_investigate_and_takes_the_evaluation_resul
     assert root.attributes["receipts.grade.span"] == 0.0
     assert root.attributes["receipts.grade.receipts"] == 1.0
     assert report.run_id == RUN.run_id  # the report itself is untouched by any of this
+
+    # Honeycomb's GenAI tab reads events, not attributes, for evaluations:
+    # one gen_ai.evaluation.result event per score, total plus components.
+    events = [e for e in root.events if e.name == "gen_ai.evaluation.result"]
+    assert len(events) == 1 + 3  # total, dims, span, receipts
+    by_name = {e.attributes["gen_ai.evaluation.name"]: e for e in events}
+    assert set(by_name) == {"receipts.total", "receipts.dims", "receipts.span", "receipts.receipts"}
+
+    total_event = by_name["receipts.total"]
+    assert total_event.attributes["gen_ai.evaluation.score.value"] == 0.735
+    assert total_event.attributes["gen_ai.evaluation.score.label"] == "pass"
+    assert total_event.attributes["gen_ai.evaluation.explanation"]
+
+    span_event = by_name["receipts.span"]  # 0.0, below the 0.5 pass line
+    assert span_event.attributes["gen_ai.evaluation.score.value"] == 0.0
+    assert span_event.attributes["gen_ai.evaluation.score.label"] == "fail"
+    assert span_event.attributes["gen_ai.evaluation.explanation"]
+
+    dims_event = by_name["receipts.dims"]  # 1.0, at or above the pass line
+    assert dims_event.attributes["gen_ai.evaluation.score.value"] == 1.0
+    assert dims_event.attributes["gen_ai.evaluation.score.label"] == "pass"
 
 
 async def test_a_crash_ends_the_root_span_with_an_error_and_no_evaluation_result() -> None:
@@ -448,6 +479,29 @@ def test_short_arguments_and_results_are_not_truncated() -> None:
     expected_args = json.dumps({"a": 1}, sort_keys=True)
     assert tool_span.attributes["gen_ai.tool.call.arguments"] == expected_args
     assert tool_span.attributes["gen_ai.tool.call.result"] == "short"
+
+
+def test_arguments_that_will_not_serialize_fall_back_to_str_instead_of_raising() -> None:
+    """Mixed-type dict keys make json.dumps(..., sort_keys=True) raise even
+    with default=str, since the failure is in comparing keys to sort them,
+    not in encoding a value. tool_span must not let that reach the loop."""
+    exporter = InMemorySpanExporter()
+    telemetry = Telemetry(exporter=exporter)
+    run_trace = telemetry.start_run(
+        RUN.run_id,
+        RUN.scenario_id,
+        conversation_id=make_conversation_id("1"),
+        config_label="full",
+        provider="fake",
+    )
+    bad_args = {1: "a", "b": 2}
+    with run_trace.tool_span("run_query", "tu1", bad_args) as handle:
+        handle.record_result("ok", is_error=False)
+    run_trace.end()
+    telemetry.flush()
+
+    tool_span = next(s for s in exporter.get_finished_spans() if s.name.startswith("execute_tool "))
+    assert tool_span.attributes["gen_ai.tool.call.arguments"] == str(bad_args)
 
 
 # --------------------------------------------------------------------------

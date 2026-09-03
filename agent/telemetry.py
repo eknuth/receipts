@@ -76,11 +76,23 @@ cannot carry nested objects at all (only strings, numbers, bools, and flat
 sequences of those), so the fallback is what this module uses: one string
 attribute on the event, holding the JSON.
 
-What this cannot answer. Whether the hosted Honeycomb MCP reads the
-`traceparent` this module injects into `_meta` and links its own spans to
-ours in the Agent Timeline is a question for a live run, not a unit test;
-`agent/mcp_client.py` already proves the field goes out on the wire, and the
-orchestrator's live check is what settles whether the other side reads it.
+The evaluation result is written twice, on purpose. `end_with_grade` sets
+`gen_ai.evaluation.result` and `receipts.grade.<component>` as plain
+attributes on the root span, which is what a `run_query` breaks down on; it
+also adds one `gen_ai.evaluation.result` span event per score (the total and
+each component), with `gen_ai.evaluation.name`, `.score.value`,
+`.score.label`, and `.explanation`, because Honeycomb's guide reads events,
+not attributes, for the GenAI tab: "Attach gen_ai.evaluation.result events
+to the GenAI operation span to review evaluations in the GenAI tab." Both
+come from the same numbers, so they cannot disagree.
+
+The Honeycomb MCP question, answered. A live check on 2026-09-03 found no
+spans from Honeycomb's hosted MCP in the `receipts-demo` environment for
+either run's trace: the hosted MCP does not link its own spans to ours
+today. `agent/mcp_client.py` keeps sending `traceparent` in `_meta` on every
+call regardless, because the OTel MCP semantic conventions say a client
+should, and a server that starts reading it later should not need a code
+change here.
 """
 
 from __future__ import annotations
@@ -102,6 +114,7 @@ from opentelemetry.sdk.trace.export import (
 )
 from opentelemetry.trace import SpanKind, Status, StatusCode
 
+from evals.grader import WRONG_BELOW
 from receipts.settings import Settings
 
 if TYPE_CHECKING:
@@ -112,6 +125,21 @@ logger = logging.getLogger(__name__)
 SERVICE_NAME = "receipts-investigator"
 AGENT_NAME = "receipts-investigator"
 _TRACER_NAME = "receipts.agent"
+
+# The grader's own line between a right and a wrong top hypothesis, reused
+# here so the pass/fail label on an evaluation event agrees with the grader
+# by construction rather than by a second copy of the number.
+_PASS_LINE = WRONG_BELOW
+
+_TOTAL_EXPLANATION = "outcome-graded against scenario ground truth"
+_COMPONENT_EXPLANATIONS: dict[str, str] = {
+    "dims": "how closely the top hypothesis's dimensions match the ground truth",
+    "span": "whether the reported slow or failing span matches the ground truth",
+    "incident": "whether the incident_present verdict matches the ground truth",
+    "onset": "whether the onset estimate is within tolerance of the true onset",
+    "receipts": "whether every reported hypothesis carries evidence and a negation",
+    "not_checked": "whether the not_checked list is non-empty and truthful against the tool log",
+}
 
 # "JSON, truncated 2 KB" is read as characters here, not exact byte
 # accounting: query specs are ASCII JSON, so the two are the same in
@@ -351,8 +379,16 @@ class RunTrace:
             logger.warning("telemetry: could not end a span", exc_info=True)
 
     @contextmanager
-    def chat_span(self, requested_model: str) -> Iterator[_ChatSpan]:
-        """`chat {model}` around one `provider.complete` call."""
+    def chat_span(
+        self, requested_model: str, *, provider_name: str, max_tokens: int
+    ) -> Iterator[_ChatSpan]:
+        """`chat {model}` around one `provider.complete` call.
+
+        `provider_name` is the same string `Telemetry.start_run` was given
+        for `agent.provider`, passed through by the loop's `AgentConfig`, so
+        Bedrock and Ollama get `gen_ai.provider.name` for free once they set
+        `config.provider` to their own name.
+        """
         span = self._start_child(
             f"chat {requested_model}",
             kind=SpanKind.CLIENT,
@@ -360,7 +396,9 @@ class RunTrace:
                 "gen_ai.operation.name": "chat",
                 "gen_ai.agent.name": AGENT_NAME,
                 "gen_ai.conversation.id": self._conversation_id,
+                "gen_ai.provider.name": provider_name,
                 "gen_ai.request.model": requested_model,
+                "gen_ai.request.max_tokens": max_tokens,
             },
         )
         handle = _ChatSpan(span, self._span, capture_content=self._capture_content)
@@ -383,9 +421,13 @@ class RunTrace:
         `ToolResultBlock`) and call `record_exception` or `record_result`
         itself; this context manager only starts and ends the span.
         """
-        arguments_json = _truncate(
-            json.dumps(args, default=str, sort_keys=True), ARGUMENTS_TRUNCATE_CHARS
-        )
+        try:
+            arguments_json = _truncate(
+                json.dumps(args, default=str, sort_keys=True), ARGUMENTS_TRUNCATE_CHARS
+            )
+        except Exception:
+            logger.warning("telemetry: could not serialize tool call arguments", exc_info=True)
+            arguments_json = _truncate(str(args), ARGUMENTS_TRUNCATE_CHARS)
         span = self._start_child(
             f"execute_tool {tool_name}",
             kind=SpanKind.INTERNAL,
@@ -426,12 +468,19 @@ class RunTrace:
             logger.warning("telemetry: could not end the root span", exc_info=True)
 
     def end_with_grade(self, total: float, components: Mapping[str, float]) -> None:
-        """`gen_ai.evaluation.result` plus one `receipts.grade.<component>`, then end.
+        """`gen_ai.evaluation.result` attributes, plus one evaluation event per score, then end.
 
         Called by `evals/run.py` once grading finishes. The span has stayed
         open since `start_run`, across the whole gap between `investigate()`
         returning and the grade being computed, so the evaluation lands on
         the same span the investigation ran on.
+
+        The attributes (`gen_ai.evaluation.result` and one
+        `receipts.grade.<component>` per component) are what a `run_query`
+        breaks down on. They are not what Honeycomb's GenAI tab reads, so
+        this also adds one `gen_ai.evaluation.result` span event per score,
+        the total and each component, with the semconv's event attributes.
+        Both are written from the same numbers.
         """
         if not self._ended and self._span is not None:
             try:
@@ -440,7 +489,27 @@ class RunTrace:
                     self._span.set_attribute(f"receipts.grade.{name}", value)
             except Exception:
                 logger.warning("telemetry: could not record the evaluation result", exc_info=True)
+            self._record_evaluation_event("receipts.total", total, _TOTAL_EXPLANATION)
+            for name, value in components.items():
+                explanation = _COMPONENT_EXPLANATIONS.get(name, name)
+                self._record_evaluation_event(f"receipts.{name}", value, explanation)
         self.end()
+
+    def _record_evaluation_event(self, name: str, value: float, explanation: str) -> None:
+        if self._span is None:
+            return
+        try:
+            self._span.add_event(
+                "gen_ai.evaluation.result",
+                {
+                    "gen_ai.evaluation.name": name,
+                    "gen_ai.evaluation.score.value": value,
+                    "gen_ai.evaluation.score.label": "pass" if value >= _PASS_LINE else "fail",
+                    "gen_ai.evaluation.explanation": explanation,
+                },
+            )
+        except Exception:
+            logger.warning("telemetry: could not record an evaluation event", exc_info=True)
 
     def end_with_error(self, error_type: str, message: str) -> None:
         """A crash row: ERROR status and `error.type`, no evaluation result.
@@ -523,6 +592,7 @@ class Telemetry:
                     "gen_ai.operation.name": "invoke_agent",
                     "gen_ai.agent.name": AGENT_NAME,
                     "gen_ai.conversation.id": conversation_id,
+                    "gen_ai.provider.name": provider,
                     "receipts.run_id": run_id,
                     "scenario.id": scenario_id,
                     "agent.config": config_label,
