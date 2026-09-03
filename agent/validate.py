@@ -9,6 +9,10 @@ against the tool log. Nothing in this module trusts a field the model wrote.
   `query_id` in the report has to appear in the log against the tool that
   returned it.
 
+  Baseline. Both answers cite what the window looked like beforehand. Asking
+  it of only one of them made the code cheaper to pass in one direction than
+  the other, which is the code choosing an answer.
+
   Not checked. Every entry in `not_checked` names something that is absent from
   the arguments of the queries that were run. An entry naming a column the run
   broke down on is a false claim about the run's own coverage, which is worse
@@ -378,24 +382,48 @@ def _check_negation(
 
 
 def _check_baseline(draft: ReportDraft, index: LogIndex) -> list[Issue]:
-    """A report that says nothing happened has to show the window that was flat."""
+    """Both answers need the baseline, and for the same reason.
+
+    This used to be asked only of a report that said nothing happened, which
+    made denying an incident cost a query that asserting one did not. The
+    cheaper path was the one the code enforced. An incident is a claim that
+    something changed, so it rests on what the level was beforehand exactly as
+    a quiet window rests on the level holding steady.
+
+    What the baseline query has to show is not prescribed here. The phases
+    live in the prompt and the model picks its own queries, so a check that
+    demanded a particular shape would be this module writing the method.
+    """
     issues = _check_ids(draft.baseline_evidence, index, "baseline_evidence")
-    if draft.incident_present:
-        return issues
+    for candidate in draft.rejected_candidates:
+        issues += _check_ids(
+            candidate.evidence, index, f"rejected candidate {candidate.claim[:40]!r}"
+        )
+
     from_queries = index.ids_from(PRIMARY_EVIDENCE_TOOL)
     if not draft.baseline_evidence:
-        issues.append(
-            Issue(
-                "unsupported",
-                "incident_present is false and baseline_evidence is empty. Cite at least one "
-                "run_query whose rows show the measurement flat across the window.",
+        if draft.incident_present:
+            issues.append(
+                Issue(
+                    "unsupported",
+                    "baseline_evidence is empty. An incident is a change, so cite at least one "
+                    "run_query whose rows show what the measurement was before it.",
+                )
             )
-        )
+        else:
+            issues.append(
+                Issue(
+                    "unsupported",
+                    "incident_present is false and baseline_evidence is empty. Cite at least one "
+                    "run_query whose rows show the measurement flat across the window.",
+                )
+            )
     elif not any(item.query_id in from_queries for item in draft.baseline_evidence):
         issues.append(
             Issue(
                 "partial",
-                "baseline_evidence cites no run_query. A quiet window is a claim about rows.",
+                "baseline_evidence cites no run_query. What the window looked like beforehand "
+                "is a claim about rows.",
             )
         )
     return issues

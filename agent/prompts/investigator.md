@@ -106,7 +106,14 @@ If there was an incident, set `incident_present` to true and list your `hypothes
 each one carrying its evidence. Fill in `affected_population` with the share of traffic you
 measured and `onset_estimate` with the time the change started.
 
-If there was no incident, set `incident_present` to false and leave `hypotheses` empty. Put the
-queries that show the window is flat into `baseline_evidence`: at least one `run_query` whose rows
-show the measurement holding steady from the start of the window to the end. A claim that nothing
-happened needs receipts in the same way a claim that something did.
+If there was no incident, set `incident_present` to false and leave `hypotheses` empty.
+
+Either way, fill in `baseline_evidence` with at least one `run_query` establishing what the
+measurement was before whatever you are reporting. Saying something changed rests on the level it
+was at beforehand, and saying nothing changed rests on the level holding steady, so both answers
+need it. A report with an empty `baseline_evidence` is rejected whichever way it went.
+
+If you looked at something that turned out not to be the incident, put it in
+`rejected_candidates` with the reason and the query that ruled it out. That is the place for a
+number you measured and decided against, which is not the same as `not_checked`: one is what you
+examined and rejected, the other is what you never examined at all.

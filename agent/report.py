@@ -109,6 +109,34 @@ class Hypothesis(BaseModel):
     )
 
 
+class RejectedCandidate(BaseModel):
+    """Something that looked like the cause and was ruled out.
+
+    Without this there is no place to put a candidate that was examined and
+    found not to be the incident. A model that measures a suspicious number,
+    checks it, and concludes it was already there had two options: drop the
+    finding, or report it as an incident. Neither is the truth.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    claim: str = Field(description="What you considered and did not report, in one sentence.")
+    dims: dict[str, str] = Field(
+        default_factory=dict,
+        description="The dimensions that selected it, as column to value, if it had any.",
+    )
+    reason: str = Field(
+        description=(
+            "Why it is not the incident. For example that it was already at that level "
+            "before anything changed."
+        )
+    )
+    evidence: list[Evidence] = Field(
+        default_factory=list,
+        description="The query that ruled it out. Same rules as any other citation.",
+    )
+
+
 class ReportDraft(BaseModel):
     """What the model submits. The process fields are not its to write."""
 
@@ -137,9 +165,18 @@ class ReportDraft(BaseModel):
     baseline_evidence: list[Evidence] = Field(
         default_factory=list,
         description=(
-            "Queries that show the window is what you say it is. Required when "
-            "incident_present is false: at least one run_query whose rows show the "
-            "measurement flat from the start of the window to the end."
+            "Queries that establish what the window looked like before whatever you are "
+            "reporting. Required either way: at least one run_query. When there is no "
+            "incident, rows showing the measurement flat from the start of the window to "
+            "the end. When there is one, rows showing the level it was at beforehand, "
+            "which is what makes the incident a change rather than a level."
+        ),
+    )
+    rejected_candidates: list[RejectedCandidate] = Field(
+        default_factory=list,
+        description=(
+            "Things you looked at and ruled out. Not required, and not a place for "
+            "everything you did not check, which is what not_checked is for."
         ),
     )
 
@@ -174,6 +211,7 @@ class Report(BaseModel):
     onset_estimate: datetime | None = None
     not_checked: list[str] = Field(default_factory=list)
     baseline_evidence: list[Evidence] = Field(default_factory=list)
+    rejected_candidates: list[RejectedCandidate] = Field(default_factory=list)
 
     tool_calls: int = 0
     model_turns: int = 0
