@@ -8,6 +8,7 @@ from pathlib import Path
 
 from agent.format import (
     MAX_JSON_BYTES,
+    extract_bubbleup_result_id,
     extract_ids,
     format_error,
     format_tool_result,
@@ -56,6 +57,31 @@ def test_extract_ids_absent_for_workspace_context() -> None:
     query_id, permalink = extract_ids(text_of(fixture))
     assert query_id is None
     assert permalink is None
+
+
+def test_extract_bubbleup_result_id_from_live_fixture() -> None:
+    """The live server's Metadata block has no `bubbleup_result_id:` line
+    (see the raw fixture): the id is the `bubbleup_result` query parameter
+    on `bubble_up_url` instead."""
+    fixture = load("run_bubbleup")
+    result_id = extract_bubbleup_result_id(text_of(fixture))
+    assert result_id == "ujVTPWn4uyd"
+
+    # Distinct from the query it was built on, which is what query_id (via
+    # extract_ids) reports for a run_bubbleup result.
+    query_id, _ = extract_ids(text_of(fixture))
+    assert query_id == "ig2gXHFcbfm"
+    assert result_id != query_id
+
+
+def test_extract_bubbleup_result_id_falls_back_to_a_literal_metadata_key() -> None:
+    text = "# BubbleUp Analysis\n\n---\nMetadata:\n  bubbleup_result_id: legacy-id\n"
+    assert extract_bubbleup_result_id(text) == "legacy-id"
+
+
+def test_extract_bubbleup_result_id_absent_when_neither_source_is_present() -> None:
+    fixture = load("run_query")
+    assert extract_bubbleup_result_id(text_of(fixture)) is None
 
 
 def test_format_run_query_live_fixture() -> None:

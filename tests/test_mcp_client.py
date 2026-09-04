@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 
@@ -88,6 +88,18 @@ def test_run_bubbleup_is_not_dataset_scoped() -> None:
     scoped by provenance instead (see the wire-level tests below)."""
     assert "run_bubbleup" not in DATASET_SCOPED_TOOLS
     assert "run_bubbleup" in READ_TOOLS
+
+
+async def test_run_query_with_environment_wide_query_is_refused(settings: Settings) -> None:
+    """`environment_wide_query=true` makes the server query every dataset in
+    the environment regardless of `dataset_slug`, so a correct `dataset_slug`
+    alongside it does not save the call."""
+    mcp = HoneycombMCP(settings=settings)  # never entered: refused before any session is needed
+    with pytest.raises(ToolNotAllowed, match="environment_wide_query"):
+        await mcp.call(
+            "run_query",
+            {"dataset_slug": settings.honeycomb_dataset, "environment_wide_query": True},
+        )
 
 
 # --------------------------------------------------------------------------
@@ -247,14 +259,21 @@ class _RecordingServer:
             result_id = f"bu-{len(self.bubbleup_result_ids) + 1}"
             self.bubbleup_result_ids.append(result_id)
             source_pk = query_pk or bubbleup_result_id or "unknown"
+            # The live shape (tests/fixtures/mcp/run_bubbleup.json): the
+            # result's own id is a query parameter on bubble_up_url, not a
+            # plain `bubbleup_result_id:` Metadata line.
+            url = (
+                "https://ui.honeycomb.io/acme-team/environments/receipts-demo/datasets/"
+                f"receipts-shop/result/{source_pk}?tab=bubbleup&bubbleup_result={result_id}"
+            )
             return (
                 "# BubbleUp Analysis\n\n**1 significant columns**\n\n"
                 "## Dimensions\n\n"
                 "**duration_ms** (100% baseline / 100% selection populated)\n"
                 "- 5: 0.0% → 100.0% (↑ 100.0%)\n\n\n"
                 "---\nMetadata:\n"
+                f'  bubble_up_url: "{url}"\n'
                 f"  query_run_pk: {source_pk}\n"
-                f"  bubbleup_result_id: {result_id}\n"
             )
 
         lowlevel = server._lowlevel_server
@@ -271,9 +290,17 @@ class _RecordingServer:
 
 @asynccontextmanager
 async def in_process_mcp(
-    settings: Settings, **kwargs: Any
+    settings: Settings,
+    *,
+    pre_enter: Callable[[HoneycombMCP], None] | None = None,
+    **kwargs: Any,
 ) -> AsyncIterator[tuple[HoneycombMCP, _RecordingServer]]:
-    """A HoneycombMCP entered against an in-process server, no network."""
+    """A HoneycombMCP entered against an in-process server, no network.
+
+    `pre_enter`, when given, runs on the constructed-but-not-yet-entered
+    client, so a test can seed state (e.g. `_produced_ids`) and assert on
+    what `__aenter__` does to it.
+    """
     recording = _RecordingServer()
     lowlevel = recording.server._lowlevel_server
 
@@ -297,7 +324,10 @@ async def in_process_mcp(
             bucket = kwargs.pop(
                 "bucket", TokenBucket(min_interval=0, clock=fake.clock, sleep=fake.sleep)
             )
-            async with InProcessMCP(settings=settings, bucket=bucket, **kwargs) as mcp:
+            unentered = InProcessMCP(settings=settings, bucket=bucket, **kwargs)
+            if pre_enter is not None:
+                pre_enter(unentered)
+            async with unentered as mcp:
                 yield mcp, recording
             tg.cancel_scope.cancel()
 
@@ -397,6 +427,53 @@ async def test_bubbleup_on_a_bubbleup_result_id_from_an_earlier_bubbleup_passes(
     assert server.bubbleup_calls[-1]["query_pk"] is None
 
 
+async def test_bubbleup_on_an_unknown_bubbleup_result_id_is_refused(settings: Settings) -> None:
+    async with in_process_mcp(settings) as (mcp, server):
+        with pytest.raises(ToolNotAllowed, match="was not produced by a BubbleUp"):
+            await mcp.call("run_bubbleup", {"bubbleup_result_id": "not-a-real-result-id"})
+
+    assert server.bubbleup_calls == []
+
+
+async def test_bubbleup_known_query_pk_with_a_foreign_bubbleup_result_id_is_refused(
+    settings: Settings,
+) -> None:
+    """The live schema gives `bubbleup_result_id` precedence: when both are
+    present the server pages the named result and ignores `query_pk`. A
+    known `query_pk` must not vouch for a `bubbleup_result_id` this session
+    never produced."""
+    async with in_process_mcp(settings) as (mcp, server):
+        rq = await mcp.call("run_query", {"dataset_slug": settings.honeycomb_dataset})
+        with pytest.raises(ToolNotAllowed, match="was not produced by a BubbleUp"):
+            await mcp.call(
+                "run_bubbleup",
+                {"query_pk": rq.query_id, "bubbleup_result_id": "a-foreign-result-id"},
+            )
+
+    assert server.bubbleup_calls == []
+
+
+async def test_bubbleup_known_result_id_with_a_foreign_query_pk_passes(
+    settings: Settings,
+) -> None:
+    """The other side of the same precedence rule: a known
+    `bubbleup_result_id` is enough on its own, even paired with a `query_pk`
+    this session never produced, because the server ignores that `query_pk`."""
+    async with in_process_mcp(settings) as (mcp, server):
+        rq = await mcp.call("run_query", {"dataset_slug": settings.honeycomb_dataset})
+        await mcp.call("run_bubbleup", {"query_pk": rq.query_id})
+        known_result_id = server.bubbleup_result_ids[0]
+
+        result = await mcp.call(
+            "run_bubbleup",
+            {"query_pk": "a-foreign-query-pk", "bubbleup_result_id": known_result_id},
+        )
+
+    assert result.is_error is False
+    assert server.bubbleup_calls[-1]["bubbleup_result_id"] == known_result_id
+    assert server.bubbleup_calls[-1]["query_pk"] == "a-foreign-query-pk"
+
+
 async def test_bubbleup_stray_dataset_slug_is_stripped_not_forwarded(settings: Settings) -> None:
     async with in_process_mcp(settings) as (mcp, server):
         rq = await mcp.call("run_query", {"dataset_slug": settings.honeycomb_dataset})
@@ -420,6 +497,35 @@ async def test_ids_from_a_refused_run_query_are_not_recorded(settings: Settings)
             await mcp.call("run_bubbleup", {"query_pk": "anything"})
 
     assert server.query_run_pks == []
+    assert server.bubbleup_calls == []
+
+
+async def test_ids_from_an_environment_wide_run_query_are_not_recorded(settings: Settings) -> None:
+    async with in_process_mcp(settings) as (mcp, server):
+        with pytest.raises(ToolNotAllowed, match="environment_wide_query"):
+            await mcp.call(
+                "run_query",
+                {"dataset_slug": settings.honeycomb_dataset, "environment_wide_query": True},
+            )
+
+        assert mcp._produced_ids == set()
+
+    assert server.query_run_pks == []
+
+
+async def test_produced_ids_are_cleared_on_enter(settings: Settings) -> None:
+    """A re-entered client (a fresh `async with` on the same instance) must
+    not carry `run_bubbleup` provenance over from a prior session."""
+
+    def seed_with_a_leftover_id(mcp: HoneycombMCP) -> None:
+        mcp._produced_ids.add("leftover-from-a-prior-session")
+
+    async with in_process_mcp(settings, pre_enter=seed_with_a_leftover_id) as (mcp, server):
+        assert mcp._produced_ids == set()
+
+        with pytest.raises(ToolNotAllowed, match="was not produced by a run_query"):
+            await mcp.call("run_bubbleup", {"query_pk": "leftover-from-a-prior-session"})
+
     assert server.bubbleup_calls == []
 
 
