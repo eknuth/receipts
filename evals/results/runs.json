@@ -1,6 +1,20 @@
 {
   "runs": [
     {
+      "run_id": "run-974f4e6bd0ed",
+      "scenario_id": "checkout-error-surge-adyen",
+      "emitted_at": "2026-09-04T06:49:41.230009Z",
+      "window_start": "2026-09-04T06:28:04Z",
+      "window_end": "2026-09-04T06:48:04Z"
+    },
+    {
+      "run_id": "run-ae8e20c5f076",
+      "scenario_id": "control-noisy",
+      "emitted_at": "2026-09-04T06:52:07.183678Z",
+      "window_start": "2026-09-04T06:30:30Z",
+      "window_end": "2026-09-04T06:50:30Z"
+    },
+    {
       "run_id": "run-ebc9c1e4be3d",
       "scenario_id": "control-quiet",
       "emitted_at": "2026-09-03T02:59:37.190645Z",
@@ -8,11 +22,67 @@
       "window_end": "2026-09-03T02:58:00Z"
     },
     {
+      "run_id": "run-a265adf6e322",
+      "scenario_id": "control-quiet",
+      "emitted_at": "2026-09-04T06:50:54.217921Z",
+      "window_start": "2026-09-04T06:29:17Z",
+      "window_end": "2026-09-04T06:49:17Z"
+    },
+    {
+      "run_id": "run-e10b6c1bf2dc",
+      "scenario_id": "dependency-inventory-db-timeouts",
+      "emitted_at": "2026-09-04T06:51:30.716413Z",
+      "window_start": "2026-09-04T06:29:54Z",
+      "window_end": "2026-09-04T06:49:54Z"
+    },
+    {
+      "run_id": "run-2ef344b96d57",
+      "scenario_id": "deploy-regression-v260",
+      "emitted_at": "2026-09-04T06:50:17.721730Z",
+      "window_start": "2026-09-04T06:28:41Z",
+      "window_end": "2026-09-04T06:48:41Z"
+    },
+    {
+      "run_id": "run-a6353e4f46f8",
+      "scenario_id": "error-surge-exceptions",
+      "emitted_at": "2026-09-04T06:53:56.675790Z",
+      "window_start": "2026-09-04T06:32:20Z",
+      "window_end": "2026-09-04T06:52:20Z"
+    },
+    {
+      "run_id": "run-29580981edf1",
+      "scenario_id": "herring-customer-whale",
+      "emitted_at": "2026-09-04T06:53:20.180845Z",
+      "window_start": "2026-09-04T06:31:43Z",
+      "window_end": "2026-09-04T06:51:43Z"
+    },
+    {
+      "run_id": "run-cd1ec0dcfc51",
+      "scenario_id": "herring-region-vs-version",
+      "emitted_at": "2026-09-04T06:52:43.678972Z",
+      "window_start": "2026-09-04T06:31:07Z",
+      "window_end": "2026-09-04T06:51:07Z"
+    },
+    {
       "run_id": "run-4155490e2a44",
       "scenario_id": "payments-stripe-v251-uswest",
       "emitted_at": "2026-09-03T02:58:56.842350Z",
       "window_start": "2026-09-03T02:37:20Z",
       "window_end": "2026-09-03T02:57:20Z"
+    },
+    {
+      "run_id": "run-f0d47eec0615",
+      "scenario_id": "payments-stripe-v251-uswest",
+      "emitted_at": "2026-09-04T06:49:04.698725Z",
+      "window_start": "2026-09-04T06:27:28Z",
+      "window_end": "2026-09-04T06:47:28Z"
+    },
+    {
+      "run_id": "run-79b76551ad21",
+      "scenario_id": "trigger-checkout-latency",
+      "emitted_at": "2026-09-04T06:44:43.489787Z",
+      "window_start": "2026-09-04T06:23:06Z",
+      "window_end": "2026-09-04T06:43:06Z"
     }
   ]
 }
