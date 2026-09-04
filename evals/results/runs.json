@@ -97,6 +97,13 @@
       "emitted_at": "2026-09-04T14:44:44.865897Z",
       "window_start": "2026-09-04T14:23:08Z",
       "window_end": "2026-09-04T14:43:08Z"
+    },
+    {
+      "run_id": "run-a232e6fc98b6",
+      "scenario_id": "trigger-checkout-latency",
+      "emitted_at": "2026-09-04T15:37:19.845848Z",
+      "window_start": "2026-09-04T15:15:43Z",
+      "window_end": "2026-09-04T15:35:43Z"
     }
   ]
 }
