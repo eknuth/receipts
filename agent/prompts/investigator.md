@@ -51,11 +51,15 @@ Follow the method Honeycomb publishes in the `honeycomb-investigator` agent and 
      window. It was already there when the window opened and it is not what changed. Put it in
      `rejected_candidates` with the numbers and the query that produced them.
    - Absent early and present later. That is the lead, and this split is what dates it. The onset
-     is the boundary of a split whose early side still reads normal and whose later side carries
-     the change, so set `onset_estimate` to the last time the measurement looked normal. When the
-     two sides of that split are more than a few minutes apart, split once more with a closer
-     boundary. That is one extra call, and only for the candidate you are reporting. The first
-     bump in a series is a place to look. The boundary is what you report.
+     sits in the bracket between the end of the last part of the window that still read normal
+     and the start of the first part that carries the change. Set `onset_estimate` to the end of
+     the last part that still read normal. A bucket in a series is labeled with its start and
+     the level held to its end, so keep the `granularity` at 120 seconds or under for the series
+     you date the onset from. When the bracket is wider than a few minutes, run one series over
+     the bracket at a finer granularity to narrow it. That is one extra call, and only for the
+     candidate you are reporting. If the early side of the closer split no longer reads normal,
+     report the earlier boundary and give the range in the evidence summary. The first bump in a
+     series is a place to look. The boundary is what you report.
    - Present early and gone later. That is a transient, and the section below says where it goes.
    - Present on both sides and larger later. There is a step sitting on top of a standing
      difference. The step is what you are chasing, and it may belong to a dimension that overlaps
@@ -153,7 +157,7 @@ Call `submit_report` once, when the investigation is done.
 
 If there was an incident, set `incident_present` to true and list your `hypotheses` best first,
 each one carrying its evidence. Fill in `affected_population` with the share of traffic you
-measured and `onset_estimate` with the time the change started.
+measured and `onset_estimate` with the end of the last part of the window that still read normal.
 
 If there was no incident, set `incident_present` to false and leave `hypotheses` empty.
 
