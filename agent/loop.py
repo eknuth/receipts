@@ -36,6 +36,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from string import Template
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -528,8 +529,9 @@ class _RunState:
         Timeline next to the query calls it followed.
         """
         with self.trace.tool_span(SUBMIT_REPORT, use.id, use.args) as span:
+            coercion_context: dict[str, Any] = {}
             try:
-                draft = ReportDraft.model_validate(use.args)
+                draft = ReportDraft.model_validate(use.args, context=coercion_context)
             except ValidationError as exc:
                 self.rejections += 1
                 self.last_rejection = (
@@ -545,6 +547,8 @@ class _RunState:
                     )
                 return None
 
+            coerced = self._coerced_fields_message(coercion_context)
+
             issues = validate.validate_draft(
                 draft,
                 self.tool_log,
@@ -554,7 +558,11 @@ class _RunState:
             )
             if not issues:
                 span.record_result("accepted", is_error=False)
-                return self.finish(stop_reason="report", draft=draft)
+                return self.finish(
+                    stop_reason="report",
+                    draft=draft,
+                    messages=coerced,
+                )
 
             self.rejections += 1
             self.issues = issues
@@ -566,9 +574,23 @@ class _RunState:
                     stop_reason="report",
                     draft=draft,
                     validation_failed=True,
-                    messages=[str(issue) for issue in issues],
+                    messages=[*coerced, *(str(issue) for issue in issues)],
                 )
             return None
+
+    @staticmethod
+    def _coerced_fields_message(context: dict[str, Any]) -> list[str]:
+        """A `coerced_fields: [...]` note when `submit_report` sent a field as a
+        JSON-encoded string instead of the list or dict it should have been.
+
+        `agent/report.py`'s field validators accept that string and decode it,
+        so the run is not lost, but the coercion is recorded here rather than
+        happening silently, since a model reliably needing it is a finding.
+        """
+        fields = context.get("coerced_fields")
+        if not fields:
+            return []
+        return [f"coerced_fields: {sorted(set(fields))}"]
 
     def finish(
         self,

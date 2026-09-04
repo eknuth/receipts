@@ -130,3 +130,91 @@ def test_overwrite_keeps_the_plain_name(tmp_path: Path) -> None:
     assert report.write(tmp_path).name == "report.json"
     assert report.write(tmp_path, overwrite=True).name == "report.json"
     assert not (tmp_path / "run-abc123" / "report-2.json").exists()
+
+
+# --------------------------------------------------------------------------
+# A JSON-encoded list or object in place of the list or dict submit_report wants
+# --------------------------------------------------------------------------
+
+
+def test_hypotheses_as_a_json_string_validates_to_the_same_report_as_the_list_form() -> None:
+    hypotheses = [
+        {
+            "claim": "the checkout path got slow",
+            "dims": {"a.b": "1"},
+            "slow_or_failing_span": "some.span",
+            "confidence": "high",
+            "evidence": [{"query_id": "Q1", "summary": "P99 went from 180ms to 1100ms"}],
+            "negation": {"query_id": "Q2", "summary": "P99 flat outside the population"},
+        }
+    ]
+    as_list = draft(hypotheses=hypotheses)
+    as_json_string = draft(hypotheses=json.dumps(hypotheses))
+    assert as_list == as_json_string
+
+
+def test_a_non_json_string_for_hypotheses_still_fails_with_the_original_error() -> None:
+    with pytest.raises(ValidationError, match="hypotheses"):
+        draft(hypotheses="not json at all")
+
+
+def test_a_json_string_of_the_wrong_container_type_still_fails() -> None:
+    """A JSON object where a list is wanted is not coerced; it falls through
+    to pydantic's normal type error."""
+    with pytest.raises(ValidationError, match="hypotheses"):
+        draft(hypotheses=json.dumps({"claim": "not a list"}))
+
+
+def test_dims_and_evidence_and_negation_as_json_strings_coerce() -> None:
+    hypothesis = Hypothesis.model_validate(
+        {
+            "claim": "x",
+            "dims": json.dumps({"a.b": "1"}),
+            "confidence": "low",
+            "evidence": json.dumps([{"query_id": "Q1", "summary": "rows"}]),
+            "negation": json.dumps({"query_id": "Q2", "summary": "flat outside"}),
+        }
+    )
+    assert hypothesis.dims == {"a.b": "1"}
+    assert hypothesis.evidence == [Evidence(query_id="Q1", summary="rows")]
+    assert hypothesis.negation == Evidence(query_id="Q2", summary="flat outside")
+
+
+def test_a_json_string_evidence_of_the_wrong_container_type_still_fails() -> None:
+    with pytest.raises(ValidationError):
+        Hypothesis.model_validate(
+            {
+                "claim": "x",
+                "dims": {},
+                "confidence": "low",
+                "evidence": json.dumps({"query_id": "Q1", "summary": "not a list"}),
+            }
+        )
+
+
+def test_the_coercion_is_recorded_in_the_validation_context() -> None:
+    context: dict[str, object] = {}
+    ReportDraft.model_validate(
+        {
+            "incident_present": True,
+            "hypotheses": json.dumps(
+                [
+                    {
+                        "claim": "x",
+                        "dims": json.dumps({"a.b": "1"}),
+                        "confidence": "low",
+                        "evidence": [{"query_id": "Q1", "summary": "rows"}],
+                    }
+                ]
+            ),
+        },
+        context=context,
+    )
+    assert "hypotheses" in context["coerced_fields"]  # type: ignore[operator]
+    assert "dims" in context["coerced_fields"]  # type: ignore[operator]
+
+
+def test_no_coercion_recorded_when_the_fields_were_already_the_right_shape() -> None:
+    context: dict[str, object] = {}
+    ReportDraft.model_validate({"incident_present": False}, context=context)
+    assert "coerced_fields" not in context

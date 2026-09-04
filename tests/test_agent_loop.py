@@ -486,6 +486,29 @@ async def test_a_not_checked_entry_that_was_queried_fails_validation(
     assert any("not_checked_false" in message for message in report.validation_messages)
 
 
+async def test_a_json_encoded_hypotheses_list_is_accepted_and_the_coercion_is_recorded(
+    settings: Settings,
+) -> None:
+    """A live run once sent `hypotheses` as the JSON text of a list rather than
+    a list. Before agent/report.py's coercion this burned the call budget on
+    a validation error and filed nothing; now it is accepted and the
+    coercion is recorded rather than silent."""
+    encoded = report_args(hypotheses=json.dumps(report_args()["hypotheses"]))
+    provider = FakeProvider(
+        [
+            completion(query_use("b"), negation_use("c"), baseline_use("d")),
+            completion(use(SUBMIT_REPORT, encoded, ident="d")),
+        ]
+    )
+    report = await run_loop(provider, settings=settings)
+
+    assert report.stop_reason == "report"
+    assert report.validation_failed is False
+    assert report.hypotheses[0].dims == {"deployment.version": "9.9.9"}
+    assert any("coerced_fields" in message for message in report.validation_messages)
+    assert any("hypotheses" in message for message in report.validation_messages)
+
+
 async def test_a_report_that_does_not_match_the_schema_is_handed_back(
     settings: Settings,
 ) -> None:

@@ -34,7 +34,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 Confidence = Literal["high", "medium", "low"]
 
@@ -44,6 +44,34 @@ EVIDENCE_TOOLS: frozenset[str] = frozenset({"run_query", "run_bubbleup", "get_tr
 
 # The tool a piece of evidence has to come from to count as rows on the record.
 PRIMARY_EVIDENCE_TOOL = "run_query"
+
+
+def _coerce_json_container(value: Any, expected: type, info: ValidationInfo) -> Any:
+    """Accept a JSON-encoded string in place of a list or a dict.
+
+    A live run had a model call `submit_report` with `hypotheses` as the
+    JSON text of a list (`'[{"claim": ...}]'`) rather than a list. The call
+    budget was already spent by the time that was rejected, so an
+    investigation that had found the answer filed nothing. This decodes a
+    string field before pydantic's own type check runs, but only when it
+    parses as JSON and the result is the container the field expects; any
+    other string, or JSON that decodes to the wrong shape (an object where a
+    list was wanted), falls through unchanged and fails validation the
+    normal way. When `model_validate` is called with a `context` dict, the
+    field name is appended to `context["coerced_fields"]` so a run that
+    needed this is visible on the report rather than silent.
+    """
+    if not isinstance(value, str):
+        return value
+    try:
+        decoded = json.loads(value)
+    except ValueError:
+        return value
+    if not isinstance(decoded, expected):
+        return value
+    if info.context is not None:
+        info.context.setdefault("coerced_fields", []).append(info.field_name)
+    return decoded
 
 
 class Evidence(BaseModel):
@@ -107,6 +135,21 @@ class Hypothesis(BaseModel):
             "WHERE NOT the claimed dimensions. It must have been run."
         ),
     )
+
+    @field_validator("dims", mode="before")
+    @classmethod
+    def _coerce_dims(cls, value: Any, info: ValidationInfo) -> Any:
+        return _coerce_json_container(value, dict, info)
+
+    @field_validator("evidence", mode="before")
+    @classmethod
+    def _coerce_evidence(cls, value: Any, info: ValidationInfo) -> Any:
+        return _coerce_json_container(value, list, info)
+
+    @field_validator("negation", mode="before")
+    @classmethod
+    def _coerce_negation(cls, value: Any, info: ValidationInfo) -> Any:
+        return _coerce_json_container(value, dict, info)
 
 
 class RejectedCandidate(BaseModel):
@@ -179,6 +222,13 @@ class ReportDraft(BaseModel):
             "everything you did not check, which is what not_checked is for."
         ),
     )
+
+    @field_validator(
+        "hypotheses", "not_checked", "baseline_evidence", "rejected_candidates", mode="before"
+    )
+    @classmethod
+    def _coerce_lists(cls, value: Any, info: ValidationInfo) -> Any:
+        return _coerce_json_container(value, list, info)
 
 
 class ToolCall(BaseModel):
