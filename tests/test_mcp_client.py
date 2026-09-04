@@ -65,18 +65,29 @@ def test_dataset_scoped_tools_are_all_read_tools() -> None:
     assert DATASET_SCOPED_TOOLS <= READ_TOOLS
 
 
-async def test_a_dataset_scoped_tool_without_dataset_slug_is_refused(settings: Settings) -> None:
+@pytest.mark.parametrize("tool", sorted(DATASET_SCOPED_TOOLS))
+async def test_a_dataset_scoped_tool_without_dataset_slug_is_refused(
+    tool: str, settings: Settings
+) -> None:
     mcp = HoneycombMCP(settings=settings)  # never entered: refused before any session is needed
     with pytest.raises(ToolNotAllowed, match=settings.honeycomb_dataset):
-        await mcp.call("run_query", {})
+        await mcp.call(tool, {})
 
 
+@pytest.mark.parametrize("tool", sorted(DATASET_SCOPED_TOOLS))
 async def test_a_dataset_scoped_tool_naming_a_different_dataset_is_refused(
-    settings: Settings,
+    tool: str, settings: Settings
 ) -> None:
     mcp = HoneycombMCP(settings=settings)
     with pytest.raises(ToolNotAllowed, match=settings.honeycomb_dataset):
-        await mcp.call("run_query", {"dataset_slug": "receipts-investigator"})
+        await mcp.call(tool, {"dataset_slug": "receipts-investigator"})
+
+
+def test_run_bubbleup_is_not_dataset_scoped() -> None:
+    """The hosted schema has no `dataset_slug` parameter for it; it is
+    scoped by provenance instead (see the wire-level tests below)."""
+    assert "run_bubbleup" not in DATASET_SCOPED_TOOLS
+    assert "run_bubbleup" in READ_TOOLS
 
 
 # --------------------------------------------------------------------------
@@ -186,6 +197,9 @@ class _RecordingServer:
         self.server = MCPServer("fake-honeycomb")
         self.metas: list[Any] = []
         self.list_tools_calls = 0
+        self.query_run_pks: list[str] = []
+        self.bubbleup_calls: list[dict[str, Any]] = []
+        self.bubbleup_result_ids: list[str] = []
         self._install_tools()
 
     def _install_tools(self) -> None:
@@ -206,7 +220,42 @@ class _RecordingServer:
             # different way here: a marker in the query spec.
             if (query_spec or {}).get("force_error"):
                 raise ToolError("Invalid or missing dataset: does-not-exist")
-            return "# Results\n\n| COUNT |\n| --- |\n| 1 |\n"
+            pk = f"qp-{len(self.query_run_pks) + 1}"
+            self.query_run_pks.append(pk)
+            return (
+                f"# Results\n\n| COUNT |\n| --- |\n| 1 |\n\n---\nMetadata:\n  query_run_pk: {pk}\n"
+            )
+
+        @server.tool()
+        async def run_bubbleup(
+            ctx: Context,
+            query_pk: str | None = None,
+            bubbleup_result_id: str | None = None,
+            dataset_slug: str | None = None,
+            selection: dict[str, Any] | None = None,
+        ) -> str:
+            """No `dataset_slug` on the real schema; kept here, defaulted to
+            None, only so a test can prove the client never sends one."""
+            self.metas.append(ctx.request_context.meta)
+            self.bubbleup_calls.append(
+                {
+                    "query_pk": query_pk,
+                    "bubbleup_result_id": bubbleup_result_id,
+                    "dataset_slug": dataset_slug,
+                }
+            )
+            result_id = f"bu-{len(self.bubbleup_result_ids) + 1}"
+            self.bubbleup_result_ids.append(result_id)
+            source_pk = query_pk or bubbleup_result_id or "unknown"
+            return (
+                "# BubbleUp Analysis\n\n**1 significant columns**\n\n"
+                "## Dimensions\n\n"
+                "**duration_ms** (100% baseline / 100% selection populated)\n"
+                "- 5: 0.0% → 100.0% (↑ 100.0%)\n\n\n"
+                "---\nMetadata:\n"
+                f"  query_run_pk: {source_pk}\n"
+                f"  bubbleup_result_id: {result_id}\n"
+            )
 
         lowlevel = server._lowlevel_server
         original = lowlevel.get_request_handler("tools/list")
@@ -307,6 +356,71 @@ async def test_tools_list_is_fetched_once_on_enter_and_paced(settings: Settings)
 
     assert server.list_tools_calls == 1
     assert len(bucket._call_times) == 3
+
+
+# --------------------------------------------------------------------------
+# run_bubbleup: scoped by provenance, not dataset_slug
+# --------------------------------------------------------------------------
+
+
+async def test_bubbleup_on_a_query_pk_from_run_query_passes(settings: Settings) -> None:
+    async with in_process_mcp(settings) as (mcp, server):
+        rq = await mcp.call("run_query", {"dataset_slug": settings.honeycomb_dataset})
+        result = await mcp.call("run_bubbleup", {"query_pk": rq.query_id})
+
+    assert result.is_error is False
+    assert server.bubbleup_calls[-1]["query_pk"] == rq.query_id
+
+
+async def test_bubbleup_on_an_unknown_query_pk_is_refused(settings: Settings) -> None:
+    async with in_process_mcp(settings) as (mcp, server):
+        with pytest.raises(ToolNotAllowed, match="was not produced by a run_query"):
+            await mcp.call("run_bubbleup", {"query_pk": "not-a-real-query-pk"})
+
+    assert server.bubbleup_calls == []
+
+
+async def test_bubbleup_on_a_bubbleup_result_id_from_an_earlier_bubbleup_passes(
+    settings: Settings,
+) -> None:
+    async with in_process_mcp(settings) as (mcp, server):
+        rq = await mcp.call("run_query", {"dataset_slug": settings.honeycomb_dataset})
+        await mcp.call("run_bubbleup", {"query_pk": rq.query_id})
+        first_result_id = server.bubbleup_result_ids[0]
+
+        # The drill-down call carries only the prior bubbleup's own id, not
+        # the original query_pk.
+        result = await mcp.call("run_bubbleup", {"bubbleup_result_id": first_result_id})
+
+    assert result.is_error is False
+    assert server.bubbleup_calls[-1]["bubbleup_result_id"] == first_result_id
+    assert server.bubbleup_calls[-1]["query_pk"] is None
+
+
+async def test_bubbleup_stray_dataset_slug_is_stripped_not_forwarded(settings: Settings) -> None:
+    async with in_process_mcp(settings) as (mcp, server):
+        rq = await mcp.call("run_query", {"dataset_slug": settings.honeycomb_dataset})
+        result = await mcp.call(
+            "run_bubbleup",
+            {"query_pk": rq.query_id, "dataset_slug": settings.honeycomb_dataset},
+        )
+
+    assert result.is_error is False
+    assert server.bubbleup_calls[-1]["dataset_slug"] is None
+
+
+async def test_ids_from_a_refused_run_query_are_not_recorded(settings: Settings) -> None:
+    async with in_process_mcp(settings) as (mcp, server):
+        with pytest.raises(ToolNotAllowed):
+            await mcp.call("run_query", {"dataset_slug": "receipts-investigator"})
+
+        assert mcp._produced_ids == set()
+
+        with pytest.raises(ToolNotAllowed, match="was not produced by a run_query"):
+            await mcp.call("run_bubbleup", {"query_pk": "anything"})
+
+    assert server.query_run_pks == []
+    assert server.bubbleup_calls == []
 
 
 def test_meta_kwarg_serializes_to_wire_key_meta() -> None:

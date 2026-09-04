@@ -5,6 +5,15 @@ management key. Read tools are allowed by default; write tools (board and
 Canvas creation, R12) raise `ToolNotAllowed` unless the caller opts in with
 `allow_write=True`.
 
+Tools that take a `dataset_slug` on the server (`DATASET_SCOPED_TOOLS`) are
+refused unless it names `settings.honeycomb_dataset`, so an investigation
+cannot read or query a different dataset in the same environment.
+`run_bubbleup` has no `dataset_slug` parameter at all, so it is scoped by
+provenance instead: it is refused unless its `query_pk` or
+`bubbleup_result_id` is an id this session itself produced with a passing
+`run_query` or `run_bubbleup` call. See the comment above
+`DATASET_SCOPED_TOOLS` for the history.
+
 Every tool result is reduced to compact text sized for a model, following
 the convention in `hevy-mcp/src/tools.ts`: a `ToolResult` carries the raw
 response, the compact text, the server's error flag, and any `query_id` or
@@ -95,9 +104,10 @@ WRITE_TOOLS: frozenset[str] = frozenset(
     }
 )
 
-# Tools that take a `dataset_slug` argument. `get_trace` looks a trace up by
-# id across the environment and takes no `dataset_slug`, so it is not here.
-# A call to any of these that omits `dataset_slug` or names a dataset other
+# Tools that take a `dataset_slug` argument on the server. `get_trace` looks
+# a trace up by id across the environment and takes no `dataset_slug`, so it
+# is not here; neither is `run_bubbleup`, for the same reason (see below). A
+# call to any of these that omits `dataset_slug` or names a dataset other
 # than `settings.honeycomb_dataset` is refused: this project's own telemetry
 # lands in a second dataset (`receipts-investigator`, see agent/telemetry.py)
 # in the same environment as the shop traffic, and an unscoped or
@@ -107,13 +117,26 @@ WRITE_TOOLS: frozenset[str] = frozenset(
 DATASET_SCOPED_TOOLS: frozenset[str] = frozenset(
     {
         "run_query",
-        "run_bubbleup",
         "get_dataset_columns",
         "find_columns",
         "list_spans",
         "get_span_details",
     }
 )
+
+# `run_bubbleup` takes no `dataset_slug` at all: its inputs are `query_pk`,
+# `selection`, `bubbleup_result_id`, `clause_name`, `items_per_page`,
+# `max_columns`, `page`, and `team`, confirmed against the hosted schema.
+# Before 2026-09-04 it was listed in DATASET_SCOPED_TOOLS above; since the
+# server never sends a `dataset_slug` for it, the model never did either,
+# and the guard refused every real `run_bubbleup` call this project ever
+# made (21 of 21 across the 2026-09-04 eval cells). It is scoped by
+# provenance instead: a `run_bubbleup` call is allowed only when its
+# `query_pk` or `bubbleup_result_id` names an id this session itself
+# received from a `run_query` or `run_bubbleup` call that passed the
+# dataset guard above. `HoneycombMCP` tracks that set in `_produced_ids`. A
+# stray `dataset_slug` the model adds anyway is stripped before the call
+# goes out, since the server does not define that parameter.
 
 DEFAULT_RATE = 40
 DEFAULT_PERIOD_S = 60.0
@@ -241,6 +264,11 @@ class HoneycombMCP:
         self._http_client = http_client
         self._exit_stack: AsyncExitStack | None = None
         self._session: ClientSession | None = None
+        # Ids this session has produced against the configured dataset: a
+        # `run_query`'s `query_id`, plus a `run_bubbleup`'s own id and any
+        # `bubbleup_result_id` it returns. `run_bubbleup` is scoped against
+        # this set instead of a `dataset_slug` parameter it does not have.
+        self._produced_ids: set[str] = set()
 
     def _allowed(self, name: str) -> bool:
         if name in READ_TOOLS:
@@ -317,14 +345,18 @@ class HoneycombMCP:
         """Call one tool and return its compact result.
 
         Raises `ToolNotAllowed` before any network call if `name` is neither
-        a read tool nor, with `allow_write=True`, a write tool, or if `name`
-        is dataset-scoped and `args` names a dataset other than
-        `settings.honeycomb_dataset`. A server-side error comes back as a
-        `ToolResult` with `is_error=True` and the server's message in
-        `text`, so the agent loop can show the model what went wrong and
-        move on; the dataset check raises instead, because its message is
-        instructive rather than diagnostic, and either way it becomes the
-        tool result the model reads.
+        a read tool nor, with `allow_write=True`, a write tool; if `name` is
+        dataset-scoped and `args` names a dataset other than
+        `settings.honeycomb_dataset`; or if `name` is `run_bubbleup` and
+        neither its `query_pk` nor its `bubbleup_result_id` is an id this
+        session itself produced with a `run_query` or `run_bubbleup` call
+        that passed the dataset guard (see `DATASET_SCOPED_TOOLS` and the
+        comment above it). A server-side error comes back as a `ToolResult`
+        with `is_error=True` and the server's message in `text`, so the
+        agent loop can show the model what went wrong and move on; these
+        checks raise instead, because their messages are instructive rather
+        than diagnostic, and either way it becomes the tool result the
+        model reads.
         """
         if not self._allowed(name):
             raise ToolNotAllowed(
@@ -339,6 +371,11 @@ class HoneycombMCP:
                     f"{name} must be called with dataset_slug={dataset!r}; "
                     f"got {given!r}. This investigation is scoped to {dataset!r} only."
                 )
+
+        call_args = dict(args or {})
+        if name == "run_bubbleup":
+            call_args = self._check_bubbleup_provenance(call_args)
+
         session = self._require_session()
 
         await self._bucket.wait()
@@ -349,7 +386,7 @@ class HoneycombMCP:
         if tracestate:
             meta["tracestate"] = tracestate
 
-        result = await session.call_tool(name, args or {}, meta=meta or None)
+        result = await session.call_tool(name, call_args, meta=meta or None)
 
         text_parts = [
             block.text for block in result.content if getattr(block, "type", None) == "text"
@@ -370,10 +407,58 @@ class HoneycombMCP:
             return ToolResult(raw=payload, text=text, is_error=True, query_id=None, permalink=None)
 
         query_id, permalink = fmt.extract_ids(joined_text)
-        text = fmt.format_tool_result(name, payload, args=args)
+        self._record_produced_ids(name, joined_text, query_id)
+        text = fmt.format_tool_result(name, payload, args=call_args)
         return ToolResult(
             raw=payload, text=text, is_error=False, query_id=query_id, permalink=permalink
         )
+
+    def _check_bubbleup_provenance(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Strip a stray `dataset_slug` and check `run_bubbleup`'s provenance.
+
+        `run_bubbleup` has no `dataset_slug` parameter on the server, so a
+        value the model sends anyway is dropped rather than forwarded. The
+        call is allowed only when `query_pk` or `bubbleup_result_id` is an
+        id this session itself produced against the configured dataset;
+        otherwise it is refused the same way a wrong `dataset_slug` is.
+        """
+        if "dataset_slug" in args:
+            logger.debug(
+                "run_bubbleup: dropping dataset_slug=%r, the server takes no such parameter",
+                args["dataset_slug"],
+            )
+            args = {k: v for k, v in args.items() if k != "dataset_slug"}
+
+        query_pk = args.get("query_pk")
+        bubbleup_result_id = args.get("bubbleup_result_id")
+        if query_pk in self._produced_ids or bubbleup_result_id in self._produced_ids:
+            return args
+
+        dataset = self._settings.honeycomb_dataset
+        raise ToolNotAllowed(
+            f"run_bubbleup query_pk={query_pk!r} bubbleup_result_id={bubbleup_result_id!r} "
+            f"names an id that was not produced by a run_query on {dataset!r} in this session. "
+            f"Call run_query first and build run_bubbleup on its query_id."
+        )
+
+    def _record_produced_ids(self, name: str, text: str, query_id: str | None) -> None:
+        """Track ids this session produced, for `run_bubbleup`'s provenance check.
+
+        `query_id` is already `fmt.extract_ids`'s first match, which for a
+        `run_query` result is its `query_run_pk`. A `run_bubbleup` result's
+        `bubbleup_result_id`, when the server sends one, is parsed directly
+        from the Metadata block rather than through `extract_ids`, since
+        `query_run_pk` takes priority there and would otherwise shadow it.
+        """
+        if name == "run_query":
+            if query_id:
+                self._produced_ids.add(query_id)
+        elif name == "run_bubbleup":
+            if query_id:
+                self._produced_ids.add(query_id)
+            bubbleup_result_id = fmt.parse_metadata_block(text).get("bubbleup_result_id")
+            if bubbleup_result_id:
+                self._produced_ids.add(bubbleup_result_id)
 
 
 async def _run_cli(tool: str, args: dict[str, Any]) -> int:
