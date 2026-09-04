@@ -118,6 +118,13 @@
       "emitted_at": "2026-09-04T16:47:08.734251Z",
       "window_start": "2026-09-04T16:25:32Z",
       "window_end": "2026-09-04T16:45:32Z"
+    },
+    {
+      "run_id": "run-c70845570362",
+      "scenario_id": "trigger-checkout-latency",
+      "emitted_at": "2026-09-04T22:27:52.957263Z",
+      "window_start": "2026-09-04T22:06:16Z",
+      "window_end": "2026-09-04T22:26:16Z"
     }
   ]
 }
