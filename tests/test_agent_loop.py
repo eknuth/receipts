@@ -240,6 +240,18 @@ def test_the_prompt_names_no_scenario_and_no_ground_truth() -> None:
         assert word not in prompt, word
 
 
+def test_the_prompt_makes_the_split_in_time_a_precondition() -> None:
+    """A standing difference is not an incident, and the method has to say so.
+
+    Two control runs reported a difference that held for the whole window as an
+    incident, so these phrases are pinned: an edit that drops them drops the rule.
+    """
+    prompt = render_prompt(RUN, AgentConfig())
+    assert "No candidate goes into `hypotheses` until this split has been run" in prompt
+    assert "still there, or still coming back, at the end" in prompt
+    assert "the same size on both sides of the split is a property of the system" in prompt
+
+
 def test_the_ablations_remove_whole_rules_from_the_prompt() -> None:
     full = render_prompt(RUN, AgentConfig())
     assert "negation" in full.lower()
