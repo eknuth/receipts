@@ -496,6 +496,72 @@ def test_trigger_is_optional() -> None:
 
 
 # --------------------------------------------------------------------------
+# R10: ground_truth.equivalent_dims
+# --------------------------------------------------------------------------
+
+
+def test_the_dependency_scenario_declares_its_equivalent_dims() -> None:
+    scenario = load_scenario("dependency-inventory-db-timeouts")
+    assert scenario.ground_truth.equivalent_dims == [{"name": "db.query"}]
+
+
+def test_a_name_clause_naming_the_faults_own_span_loads(tmp_path: Path) -> None:
+    body = VALID.replace(
+        "  affected_share: 0.6\n",
+        '  affected_share: 0.6\n  equivalent_dims:\n    - {name: "payments.charge"}\n',
+    )
+    scenario = load_scenario_file(write(tmp_path, body))
+    assert scenario.ground_truth.equivalent_dims == [{"name": "payments.charge"}]
+
+
+def test_an_equivalent_dims_entry_naming_the_wrong_span_is_rejected(tmp_path: Path) -> None:
+    body = VALID.replace(
+        "  affected_share: 0.6\n",
+        '  affected_share: 0.6\n  equivalent_dims:\n    - {name: "db.query"}\n',
+    )
+    with pytest.raises(ValidationError, match="not fault.effect.span"):
+        load_scenario_file(write(tmp_path, body))
+
+
+def test_an_equivalent_dims_entry_naming_the_wrong_service_is_rejected(tmp_path: Path) -> None:
+    body = VALID.replace(
+        "  affected_share: 0.6\n",
+        '  affected_share: 0.6\n  equivalent_dims:\n    - {service.component: "checkout"}\n',
+    )
+    with pytest.raises(ValidationError, match="not the service that runs"):
+        load_scenario_file(write(tmp_path, body))
+
+
+def test_an_equivalent_dims_entry_naming_an_unrelated_dimension_is_rejected(
+    tmp_path: Path,
+) -> None:
+    body = VALID.replace(
+        "  affected_share: 0.6\n",
+        '  affected_share: 0.6\n  equivalent_dims:\n    - {cloud.region: "eu-west-1"}\n',
+    )
+    with pytest.raises(ValidationError, match="not a dimension in fault.where"):
+        load_scenario_file(write(tmp_path, body))
+
+
+def test_an_equivalent_dims_entry_repeating_root_cause_dims_is_rejected(tmp_path: Path) -> None:
+    body = VALID.replace(
+        "  affected_share: 0.6\n",
+        '  affected_share: 0.6\n  equivalent_dims:\n    - {payment.provider: "stripe"}\n',
+    )
+    with pytest.raises(ValidationError, match="redundant"):
+        load_scenario_file(write(tmp_path, body))
+
+
+def test_a_control_may_not_declare_equivalent_dims() -> None:
+    import yaml
+
+    data = yaml.safe_load((SCENARIO_DIR / "control-quiet.yml").read_text())
+    data["ground_truth"]["equivalent_dims"] = [{"name": "db.query"}]
+    with pytest.raises(ValidationError, match="must not declare"):
+        Scenario.model_validate(data)
+
+
+# --------------------------------------------------------------------------
 # gen/scenarios/README.md
 # --------------------------------------------------------------------------
 

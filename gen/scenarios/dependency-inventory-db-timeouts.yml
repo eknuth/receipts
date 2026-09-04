@@ -14,6 +14,9 @@ ground_truth:
   root_cause_dims: {service.component: "inventory-db"}
   slow_or_failing_span: db.query
   affected_share: 1.0
+  # db.query only ever runs in inventory-db, so either selector names the same population.
+  equivalent_dims:
+    - {name: db.query}
 red_herrings:
   - where: {cloud.region: "eu-west-1"}
     effect: {span: "checkout.process", latency_add_ms: 150}

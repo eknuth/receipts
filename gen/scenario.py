@@ -155,6 +155,14 @@ class GroundTruth(BaseModel):
     root_cause_dims: dict[str, str] = Field(default_factory=dict)
     slow_or_failing_span: str | None = None
     affected_share: float | None = Field(default=None, ge=0, le=1)
+    equivalent_dims: list[dict[str, str]] = Field(
+        default_factory=list,
+        description=(
+            "Alternative selectors that pick the same population as root_cause_dims, "
+            "declared deliberately and per scenario. Validated against the topology; "
+            "see Scenario._check_equivalent_dims."
+        ),
+    )
 
 
 class Trigger(BaseModel):
@@ -198,6 +206,7 @@ class Scenario(BaseModel):
         self._check_timing()
         self._check_red_herrings()
         self._check_ground_truth()
+        self._check_equivalent_dims()
         return self
 
     def _check_timing(self) -> None:
@@ -348,6 +357,59 @@ class Scenario(BaseModel):
                 raise ValueError("a control scenario must not name a root cause or a span")
             if truth.affected_share is not None:
                 raise ValueError("a control scenario has no affected_share")
+
+    def _check_equivalent_dims(self) -> None:
+        """Each alternative in `equivalent_dims` has to select the same population
+        as `fault.where`, by construction, checked against the topology.
+
+        Only two selector kinds the topology can vouch for are allowed on a
+        key other than one already in `fault.where`: a `name` clause naming
+        the fault's own span, and a `service.component` clause naming the
+        service that runs it. Anything else has to repeat a `fault.where`
+        dimension exactly, because the topology has no way to know that some
+        other column selects the same requests.
+        """
+        truth = self.ground_truth
+        if not truth.equivalent_dims:
+            return
+        if not truth.incident_present:
+            raise ValueError("a control scenario must not declare ground_truth.equivalent_dims")
+        assert self.fault is not None  # _check_ground_truth already required this
+        for i, alternative in enumerate(truth.equivalent_dims):
+            label = f"ground_truth.equivalent_dims[{i}]"
+            if not alternative:
+                raise ValueError(f"{label} is empty; an equivalent selector needs a clause")
+            if alternative == truth.root_cause_dims:
+                raise ValueError(
+                    f"{label} repeats root_cause_dims exactly, which is redundant, not equivalent"
+                )
+            for key, value in alternative.items():
+                self._check_equivalent_clause(label, key, value)
+
+    def _check_equivalent_clause(self, label: str, key: str, value: str) -> None:
+        assert self.fault is not None
+        if key == "name":
+            if value != self.fault.effect.span:
+                raise ValueError(
+                    f"{label} names span {value!r}, which is not fault.effect.span "
+                    f"{self.fault.effect.span!r}; a name clause only vouches for the fault's "
+                    "own span"
+                )
+            return
+        if key == "service.component":
+            span_service = topology.SPAN_SERVICE.get(self.fault.effect.span)
+            if value != span_service:
+                raise ValueError(
+                    f"{label} names service.component={value!r}, which is not the service "
+                    f"that runs fault.effect.span ({span_service!r})"
+                )
+            return
+        if key not in self.fault.where or self.fault.where[key] != value:
+            raise ValueError(
+                f"{label} names {key}={value!r}, which is not a dimension in fault.where with "
+                "that same value; the topology can only vouch for name, service.component, and "
+                "fault.where's own dimensions"
+            )
 
     @property
     def onset_min(self) -> float | None:

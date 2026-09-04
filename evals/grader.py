@@ -47,7 +47,7 @@ from agent.validate import (
     queried_terms,
 )
 from gen.emit import RUNS_DIR, load_manifest
-from gen.scenario import Scenario, load_scenario
+from gen.scenario import GroundTruth, Scenario, load_scenario
 
 WEIGHTS: dict[str, float] = {
     "dims": 0.35,
@@ -229,7 +229,7 @@ def grade(
     top = report.hypotheses[0] if report.hypotheses else None
 
     if truth.incident_present:
-        jaccard = dims_jaccard(top.dims, truth.root_cause_dims) if top else None
+        jaccard = _best_dims_jaccard(top.dims, truth) if top else None
         dims = jaccard or 0.0
         span = float(top is not None and top.slow_or_failing_span == truth.slow_or_failing_span)
         onset = _onset_score(report, scenario, window_start, notes)
@@ -352,7 +352,9 @@ def dims_jaccard(reported: dict[str, str], truth: dict[str, str]) -> float:
     costs the same as a missing one: the spurious dim was a claim about the
     population, and it was wrong. Two live payments reports carry
     `name: payments.charge`, which is the span rather than a dimension, and
-    they pay for it here.
+    they pay for it here, because that scenario declares no equivalent for
+    it. This function scores one candidate against `reported`; `grade` calls
+    it once per candidate in `_best_dims_jaccard` and keeps the best.
     """
     if not reported and not truth:
         return 1.0
@@ -361,6 +363,21 @@ def dims_jaccard(reported: dict[str, str], truth: dict[str, str]) -> float:
     )
     union = len(truth) + len(reported) - matched
     return matched / union if union else 0.0
+
+
+def _best_dims_jaccard(reported: dict[str, str], truth: GroundTruth) -> float:
+    """The dims score `grade` uses: the best of `root_cause_dims` and every
+    `equivalent_dims` alternative.
+
+    `gen/scenario.py` validates each alternative against the topology at
+    load time, so every candidate here is a selector that picks the same
+    population as the fault by construction; scoring against whichever one
+    the report happened to phrase its claim as is not a looser rule, it is
+    the same population under a different name.
+    """
+    return max(
+        dims_jaccard(reported, cand) for cand in (truth.root_cause_dims, *truth.equivalent_dims)
+    )
 
 
 def _satisfies(value: str, want: str) -> bool:
