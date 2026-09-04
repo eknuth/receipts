@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 MAX_JSON_BYTES = 4096
 MAX_QUERY_ROWS = 25
@@ -72,6 +73,25 @@ def extract_ids(text: str) -> tuple[str | None, str | None]:
     query_id = next((metadata[k] for k in _QUERY_ID_KEYS if k in metadata), None)
     permalink = next((metadata[k] for k in _PERMALINK_KEYS if k in metadata), None)
     return query_id, permalink
+
+
+def extract_bubbleup_result_id(text: str) -> str | None:
+    """A `run_bubbleup` result's own id, for paging into it as `bubbleup_result_id`.
+
+    The live server does not send a plain `bubbleup_result_id:` Metadata
+    line (see `tests/fixtures/mcp/run_bubbleup.json`, captured from a real
+    call): the id is the `bubbleup_result` query parameter on `bubble_up_url`
+    instead, e.g. `...?tab=bubbleup&bubbleup_result=ujVTPWn4uyd`. That is the
+    primary source here. A literal `bubbleup_result_id` Metadata key, should
+    the server ever send one, is a fallback.
+    """
+    metadata = parse_metadata_block(text)
+    url = metadata.get("bubble_up_url")
+    if url:
+        values = parse_qs(urlsplit(url).query).get("bubbleup_result")
+        if values:
+            return values[0]
+    return metadata.get("bubbleup_result_id")
 
 
 def parse_results_table(
