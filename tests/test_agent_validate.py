@@ -11,6 +11,7 @@ from typing import Any
 
 from agent.report import Evidence, Hypothesis, ReportDraft, ToolCall
 from agent.validate import (
+    excluded_columns,
     queried_terms,
     query_ids,
     rejection_message,
@@ -650,3 +651,193 @@ def test_a_rejected_candidate_needs_no_negation() -> None:
         rejected_candidates=[{"claim": "cart size looked correlated", "reason": "it was not"}]
     )
     assert validate_draft(ruled_out, good_log(), run_id=RUN_ID) == []
+
+
+# --------------------------------------------------------------------------
+# A range claim (cart.size: ">= 8") is negated by its complement, not by !=
+#
+# EDW-1361: trigger-checkout-latency repeat 5 claimed cart.size >= 8 and
+# negated with cart.size < 8, the exact complement, and was rejected because
+# `<` was not in EXCLUDING_OPS. A live run scored a right answer as a
+# validation failure.
+# --------------------------------------------------------------------------
+
+
+def test_the_trigger_5_shape_passes() -> None:
+    """cart.size >= 8, negated with cart.size < 8 in the same run_query shape
+    that cost a right answer 0.25 on 2026-09-04."""
+    range_claim = hypothesis(
+        dims={"cart.size": ">= 8", "name": "checkout.process"},
+        negation=Evidence(query_id="Q2", summary="P99 flat under cart.size < 8"),
+    )
+    log = [
+        query_call(
+            "Q1",
+            filters=[{"column": "name", "op": "=", "value": "checkout.process"}],
+            breakdowns=["cart.size"],
+        ),
+        query_call(
+            "Q2",
+            filters=[
+                {"column": "name", "op": "=", "value": "checkout.process"},
+                {"column": "cart.size", "op": "<", "value": 8},
+            ],
+        ),
+        baseline_call(),
+    ]
+    assert validate_draft(draft(hypotheses=[range_claim]), log, run_id=RUN_ID) == []
+
+
+def test_a_complement_on_the_measured_column_is_not_a_negation() -> None:
+    """The trigger-2 shape from 2026-09-04: `duration_ms > 1000` negated by
+    `P99(duration_ms) WHERE duration_ms <= 1000`, which says fast requests
+    are fast. A negation excludes a population; it does not re-slice the
+    measurement."""
+    symptom_claim = hypothesis(
+        dims={"duration_ms": "> 1000", "name": "HTTP POST /checkout"},
+        negation=Evidence(query_id="Q2", summary="P99 under 1000 for the rest"),
+    )
+    log = [
+        query_call("Q1", breakdowns=["duration_ms"]),
+        query_call(
+            "Q2",
+            calculations=[{"op": "P99", "column": "duration_ms"}],
+            filters=[
+                {"column": "name", "op": "=", "value": "HTTP POST /checkout"},
+                {"column": "duration_ms", "op": "<=", "value": 1000},
+            ],
+        ),
+        baseline_call(),
+    ]
+    issues = validate_draft(draft(hypotheses=[symptom_claim]), log, run_id=RUN_ID)
+    assert [issue.code for issue in issues] == ["partial"]
+    assert "excludes []" in issues[0].message
+
+
+def test_a_complement_on_a_column_the_query_does_not_measure_still_counts() -> None:
+    """Same complement, but the query counts rows rather than calculating
+    over the claimed column, so the filter selects a population."""
+    range_claim = hypothesis(
+        dims={"cart.size": ">= 8"},
+        negation=Evidence(query_id="Q2", summary="P99 flat under cart.size < 8"),
+    )
+    log = [
+        query_call("Q1", breakdowns=["cart.size"]),
+        query_call(
+            "Q2",
+            calculations=[{"op": "P99", "column": "duration_ms"}],
+            filters=[{"column": "cart.size", "op": "<", "value": 8}],
+        ),
+        baseline_call(),
+    ]
+    assert validate_draft(draft(hypotheses=[range_claim]), log, run_id=RUN_ID) == []
+
+
+def test_excluded_columns_without_dims_ignores_the_measured_set() -> None:
+    """The old rule is untouched: `!=` on a measured column still counts,
+    as it did before, so the grader's stored cells do not move."""
+    call = query_call(
+        "Q2",
+        calculations=[{"op": "P99", "column": "duration_ms"}],
+        filters=[{"column": "duration_ms", "op": "!=", "value": 1000}],
+    )
+    assert excluded_columns([call]) == {"duration_ms"}
+    assert excluded_columns([call], dims={"duration_ms": "> 1000"}) == {"duration_ms"}
+
+
+def test_cart_size_less_than_9_against_gte_8_fails_the_wrong_bound() -> None:
+    range_claim = hypothesis(
+        dims={"cart.size": ">= 8"},
+        negation=Evidence(query_id="Q2", summary="P99 flat under cart.size < 9"),
+    )
+    log = [
+        query_call("Q1", breakdowns=["cart.size"]),
+        query_call("Q2", filters=[{"column": "cart.size", "op": "<", "value": 9}]),
+        baseline_call(),
+    ]
+    issues = validate_draft(draft(hypotheses=[range_claim]), log, run_id=RUN_ID)
+    assert [issue.code for issue in issues] == ["partial"]
+    assert "complementary comparison" in issues[0].message
+
+
+def test_cart_size_gte_8_against_gte_8_fails_the_same_side() -> None:
+    range_claim = hypothesis(
+        dims={"cart.size": ">= 8"},
+        negation=Evidence(query_id="Q2", summary="P99 for cart.size >= 8"),
+    )
+    log = [
+        query_call("Q1", breakdowns=["cart.size"]),
+        query_call("Q2", filters=[{"column": "cart.size", "op": ">=", "value": 8}]),
+        baseline_call(),
+    ]
+    issues = validate_draft(draft(hypotheses=[range_claim]), log, run_id=RUN_ID)
+    assert [issue.code for issue in issues] == ["partial"]
+
+
+def test_a_plain_value_negation_with_not_equal_still_passes() -> None:
+    plain = hypothesis(
+        dims={"payment.provider": "adyen"},
+        negation=Evidence(query_id="Q2", summary="flat outside adyen"),
+    )
+    log = [
+        query_call("Q1", breakdowns=["payment.provider"]),
+        query_call("Q2", filters=[{"column": "payment.provider", "op": "!=", "value": "adyen"}]),
+        baseline_call(),
+    ]
+    assert validate_draft(draft(hypotheses=[plain]), log, run_id=RUN_ID) == []
+
+
+def test_a_less_than_filter_on_a_non_range_claimed_value_still_fails() -> None:
+    """cart.size claimed as the plain string "8" is an exact claim, not a
+    range, so a `<` filter on it is not a negation of anything."""
+    plain = hypothesis(
+        dims={"cart.size": "8"},
+        negation=Evidence(query_id="Q2", summary="cart.size under 8"),
+    )
+    log = [
+        query_call("Q1", breakdowns=["cart.size"]),
+        query_call("Q2", filters=[{"column": "cart.size", "op": "<", "value": 8}]),
+        baseline_call(),
+    ]
+    issues = validate_draft(draft(hypotheses=[plain]), log, run_id=RUN_ID)
+    assert [issue.code for issue in issues] == ["partial"]
+
+
+def test_the_bound_arriving_as_a_string_still_passes() -> None:
+    range_claim = hypothesis(
+        dims={"cart.size": ">= 8"},
+        negation=Evidence(query_id="Q2", summary="flat under cart.size < 8"),
+    )
+    log = [
+        query_call("Q1", breakdowns=["cart.size"]),
+        query_call("Q2", filters=[{"column": "cart.size", "op": "<", "value": "8"}]),
+        baseline_call(),
+    ]
+    assert validate_draft(draft(hypotheses=[range_claim]), log, run_id=RUN_ID) == []
+
+
+def test_greater_than_against_less_or_equal_complement_passes() -> None:
+    range_claim = hypothesis(
+        dims={"cart.size": "> 8"},
+        negation=Evidence(query_id="Q2", summary="flat at cart.size <= 8"),
+    )
+    log = [
+        query_call("Q1", breakdowns=["cart.size"]),
+        query_call("Q2", filters=[{"column": "cart.size", "op": "<=", "value": 8}]),
+        baseline_call(),
+    ]
+    assert validate_draft(draft(hypotheses=[range_claim]), log, run_id=RUN_ID) == []
+
+
+def test_the_rejection_message_names_the_complement_as_an_accepted_form() -> None:
+    range_claim = hypothesis(
+        dims={"cart.size": ">= 8"},
+        negation=Evidence(query_id="Q2", summary="cart.size >= 8 again"),
+    )
+    log = [
+        query_call("Q1", breakdowns=["cart.size"]),
+        query_call("Q2", filters=[{"column": "cart.size", "op": ">=", "value": 8}]),
+        baseline_call(),
+    ]
+    issues = validate_draft(draft(hypotheses=[range_claim]), log, run_id=RUN_ID)
+    assert "complementary comparison (< 8) at the same bound" in issues[0].message

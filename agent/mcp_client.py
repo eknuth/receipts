@@ -46,6 +46,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import sys
 import time
 from collections.abc import Awaitable, Callable
@@ -149,6 +150,32 @@ DEFAULT_RATE = 40
 DEFAULT_PERIOD_S = 60.0
 DEFAULT_MIN_INTERVAL_S = 1.5
 
+# The hosted MCP's own error text for a `run_bubbleup` group selection whose
+# value did not match its column's type, or whose source query never broke
+# down on the group column. Neither cause is named in the message itself.
+GROUP_INDICES_ERROR = "failed to calculate group indices"
+
+# What a correctly-typed value looks like, for the retry hint. Only the
+# types a string can be mistaken for: a string column never causes this
+# error by carrying a string.
+_TYPE_EXAMPLE: dict[str, str] = {
+    "boolean": 'true, not "true"',
+    "integer": '8, not "8"',
+    "float": '1.5, not "1.5"',
+}
+
+# JSON numeric literals, which is what a retyped group value has to be.
+_INT_LITERAL = re.compile(r"^-?(?:0|[1-9][0-9]*)$")
+_FLOAT_LITERAL = re.compile(r"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][-+]?[0-9]+)?$")
+
+# What a wire value of each retypable column type looks like once it is
+# right, for the hint to tell a typed value from a string one.
+_TYPE_MATCHES: dict[str, tuple[type, ...]] = {
+    "boolean": (bool,),
+    "integer": (int,),
+    "float": (int, float),
+}
+
 
 class ToolNotAllowed(RuntimeError):
     """Raised when a tool outside the active allowlist is called.
@@ -179,7 +206,12 @@ class ToolResult:
     hosted MCP sets it for a bad dataset slug, a missing trace id, and the
     like, and `text` then carries the server's message. `query_id` and
     `permalink` are pulled out of the text when the tool result carries
-    them (`run_query`, `run_bubbleup`, and `get_trace` do).
+    them (`run_query`, `run_bubbleup`, and `get_trace` do). `coerced` names
+    the argument paths a `run_bubbleup` group selection was retyped on
+    (e.g. `selection.group.error`) from the dataset's column schema, empty
+    for every other call and for a call that needed no retyping. `hinted`
+    is set when a `run_bubbleup` "failed to calculate group indices" error
+    text carries an added retry hint.
     """
 
     raw: Any
@@ -187,6 +219,8 @@ class ToolResult:
     is_error: bool
     query_id: str | None
     permalink: str | None
+    coerced: tuple[str, ...] = ()
+    hinted: bool = False
 
 
 ClockFn = Callable[[], float]
@@ -276,6 +310,18 @@ class HoneycombMCP:
         # `bubbleup_result_id` it returns. `run_bubbleup` is scoped against
         # this set instead of a `dataset_slug` parameter it does not have.
         self._produced_ids: set[str] = set()
+        # Column name to lowercased type ("boolean", "integer", "float",
+        # "string"), populated from every successful `get_dataset_columns`
+        # result this session sees (merged by union across pages). Used to
+        # retype a `run_bubbleup` group selection's values against the
+        # dataset's own schema. Empty until a `get_dataset_columns` call
+        # succeeds.
+        self.column_types: dict[str, str] = {}
+        # A `run_query`'s `breakdowns`, keyed by the `query_id` it returned.
+        # Read by the `run_bubbleup` retry hint: a group selection only
+        # works when the source query already broke down on the group
+        # column, a fact the server's own error text does not mention.
+        self._breakdowns_by_id: dict[str, list[str]] = {}
 
     def _allowed(self, name: str) -> bool:
         if name in READ_TOOLS:
@@ -303,8 +349,11 @@ class HoneycombMCP:
     async def __aenter__(self) -> HoneycombMCP:
         # A re-entered client (a fresh `async with` on the same instance)
         # starts with an empty provenance set: an id from a prior session
-        # should not authorize a `run_bubbleup` in this one.
+        # should not authorize a `run_bubbleup` in this one, and its column
+        # types and breakdowns should not carry over either.
         self._produced_ids = set()
+        self.column_types = {}
+        self._breakdowns_by_id = {}
         stack = AsyncExitStack()
         try:
             read_stream, write_stream = await self._open_streams(stack)
@@ -393,8 +442,10 @@ class HoneycombMCP:
             )
 
         call_args = dict(args or {})
+        coerced: tuple[str, ...] = ()
         if name == "run_bubbleup":
             call_args = self._check_bubbleup_provenance(call_args)
+            call_args, coerced = self._coerce_bubbleup_group(call_args)
 
         session = self._require_session()
 
@@ -424,13 +475,36 @@ class HoneycombMCP:
 
         if is_error:
             text = fmt.format_error(name, joined_text)
-            return ToolResult(raw=payload, text=text, is_error=True, query_id=None, permalink=None)
+            hinted = False
+            if name == "run_bubbleup" and GROUP_INDICES_ERROR in joined_text:
+                hint = self._bubbleup_hint(call_args)
+                if hint:
+                    text = f"{text} {hint}"
+                    hinted = True
+            return ToolResult(
+                raw=payload,
+                text=text,
+                is_error=True,
+                query_id=None,
+                permalink=None,
+                coerced=coerced,
+                hinted=hinted,
+            )
 
         query_id, permalink = fmt.extract_ids(joined_text)
         self._record_produced_ids(name, joined_text, query_id)
+        if name == "run_query":
+            self._record_breakdowns(query_id, call_args)
+        elif name == "get_dataset_columns":
+            self._record_column_types(joined_text)
         text = fmt.format_tool_result(name, payload, args=call_args)
         return ToolResult(
-            raw=payload, text=text, is_error=False, query_id=query_id, permalink=permalink
+            raw=payload,
+            text=text,
+            is_error=False,
+            query_id=query_id,
+            permalink=permalink,
+            coerced=coerced,
         )
 
     def _check_bubbleup_provenance(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -498,6 +572,159 @@ class HoneycombMCP:
             bubbleup_result_id = fmt.extract_bubbleup_result_id(text)
             if bubbleup_result_id:
                 self._produced_ids.add(bubbleup_result_id)
+
+    def _record_breakdowns(self, query_id: str | None, call_args: dict[str, Any]) -> None:
+        """Remember what a `run_query` broke down on, keyed by its `query_id`.
+
+        Read by `_bubbleup_hint`: a group selection only works when the
+        query it pages into already broke down on the group column, and the
+        server's own error text does not say so.
+        """
+        if not query_id:
+            return
+        spec = call_args.get("query_spec") or {}
+        breakdowns = spec.get("breakdowns") or []
+        self._breakdowns_by_id[query_id] = [str(column) for column in breakdowns]
+
+    def _record_column_types(self, text: str) -> None:
+        """Merge a `get_dataset_columns` result's types into `column_types`.
+
+        By union rather than replacement: the tool pages, and a later page
+        should not lose the columns an earlier page already named.
+        """
+        parsed = fmt.parse_column_types(text)
+        if parsed:
+            self.column_types.update(parsed)
+
+    def _coerce_bubbleup_group(
+        self, args: dict[str, Any]
+    ) -> tuple[dict[str, Any], tuple[str, ...]]:
+        """Retype a `run_bubbleup` group selection's values from the column schema.
+
+        The hosted MCP rejects a group selection whose value is a string
+        against a boolean or numeric column (`{"error": "true"}`) with
+        `failed to calculate group indices`, and only accepts the column's
+        own JSON type (`{"error": true}`). This converts each group value
+        whose column is known (from a prior `get_dataset_columns`) and whose
+        string value parses as that column's type: `boolean` from a string
+        equal to `true`/`false` in any case, `integer` and `float` from a
+        string that parses as one. Any other value, any other type, and any
+        column not in `column_types` is left alone; the model's own value
+        goes out unchanged. Returns the (possibly rewritten) args and the
+        `selection.group.<column>` paths that were converted, in selection
+        order, for `ToolResult.coerced`.
+        """
+        selection = args.get("selection")
+        if not isinstance(selection, dict):
+            return args, ()
+        group = selection.get("group")
+        if not isinstance(group, dict):
+            return args, ()
+
+        new_group = dict(group)
+        coerced: list[str] = []
+        for column, value in group.items():
+            if not isinstance(value, str):
+                continue
+            column_type = self.column_types.get(column)
+            if column_type == "boolean" and value.lower() in ("true", "false"):
+                new_group[column] = value.lower() == "true"
+            elif column_type == "integer" and _parses_as(int, value):
+                new_group[column] = int(value)
+            elif column_type == "float" and _parses_as(float, value):
+                new_group[column] = float(value)
+            else:
+                continue
+            coerced.append(f"selection.group.{column}")
+
+        if not coerced:
+            return args, ()
+
+        logger.debug("run_bubbleup: retyped %s from the column schema", coerced)
+        new_args = dict(args)
+        new_args["selection"] = {**selection, "group": new_group}
+        return new_args, tuple(coerced)
+
+    def _bubbleup_hint(self, call_args: dict[str, Any]) -> str | None:
+        """The sentences added to a `failed to calculate group indices` error.
+
+        Two facts the server's own message leaves out: what JSON type each
+        group column wants, and whether the query it pages into broke down
+        on that column at all. Both have to hold for a group selection to
+        work; a live check on 2026-09-04 found every stored call with a
+        correctly-typed value against a query with no breakdowns still
+        failed the same way, and every one against a query that broke down
+        on the group column succeeded.
+
+        Reads the args as they went on the wire, after `_coerce_bubbleup_group`,
+        so a value the client already retyped is not sent back to the model
+        as a mistake to fix. Only the values that are still strings against
+        a boolean or numeric column get the type sentence. None for a call
+        with no group selection, where neither fact applies.
+        """
+        selection = call_args.get("selection")
+        group = selection.get("group") if isinstance(selection, dict) else None
+        if not isinstance(group, dict):
+            return None
+
+        sentences: list[str] = []
+        for column, value in group.items():
+            column_type = self.column_types.get(column)
+            if column_type is None:
+                if self.column_types:
+                    sentences.append(
+                        f"{column} is not in the columns this session fetched, so its type "
+                        "is unknown here."
+                    )
+                elif isinstance(value, str):
+                    sentences.append(
+                        f'{column} was sent as the string "{value}"; a boolean column needs a '
+                        "JSON boolean and a numeric column needs a number."
+                    )
+                continue
+            wanted = _TYPE_MATCHES.get(column_type)
+            if wanted is None:
+                continue
+            if isinstance(value, bool) and column_type != "boolean":
+                typed = False
+            else:
+                typed = isinstance(value, wanted)
+            if not typed:
+                sentences.append(
+                    f"{column} is {column_type}, so send {_TYPE_EXAMPLE[column_type]}."
+                )
+
+        # The server keys its lookup on bubbleup_result_id when it is given,
+        # the same precedence `_check_bubbleup_provenance` follows.
+        result_id = call_args.get("bubbleup_result_id")
+        query_pk = call_args.get("query_pk")
+        if result_id:
+            sentences.append(
+                f"This call pages into BubbleUp result {result_id}; a group selection needs "
+                "the group column in the breakdowns of the run_query that result was built on."
+            )
+        elif query_pk in self._breakdowns_by_id:
+            sentences.append(
+                f"query {query_pk} breaks down on {self._breakdowns_by_id[query_pk]} and a "
+                "group selection needs the group column in the source query's breakdowns."
+            )
+        else:
+            sentences.append(
+                "A group selection needs the group column in the source query's breakdowns."
+            )
+        return " ".join(sentences)
+
+
+def _parses_as(kind: type, value: str) -> bool:
+    """True when `value` is a plain JSON numeric literal of `kind` (`int` or `float`).
+
+    A regex rather than `int()`/`float()` on purpose. Python's parsers take
+    `"1_000"`, `" 8 "`, `"+8"`, non-ASCII digits, and `"nan"`, and a `nan`
+    goes on the wire as `null`, a value the model never wrote. What the
+    server wants is the JSON grammar, so that is what is accepted.
+    """
+    pattern = _INT_LITERAL if kind is int else _FLOAT_LITERAL
+    return pattern.match(value) is not None
 
 
 async def _run_cli(tool: str, args: dict[str, Any]) -> int:

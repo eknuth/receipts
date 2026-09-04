@@ -107,6 +107,30 @@ def parse_results_table(
     return _parse_markdown_table(text, heading)
 
 
+def parse_column_types(text: str) -> dict[str, str]:
+    """Column name to lowercased type, from a `get_dataset_columns` result's `# Columns` table.
+
+    Empty when there is no such table. `agent/mcp_client.py` uses this to
+    retype a BubbleUp group selection's values against the dataset's actual
+    schema (`boolean`, `integer`, `float`, `string`, the exact words the
+    hosted MCP uses) rather than guessing from the value's own shape.
+    """
+    table = _parse_markdown_table(text, heading="# Columns")
+    if table is None:
+        return {}
+    headers, rows = table
+    try:
+        name_idx = headers.index("Name")
+        type_idx = headers.index("Type")
+    except ValueError:
+        return {}
+    return {
+        row[name_idx]: row[type_idx].strip().lower()
+        for row in rows
+        if len(row) > max(name_idx, type_idx) and row[name_idx]
+    }
+
+
 def format_tool_result(name: str, payload: Any, *, args: dict[str, Any] | None = None) -> str:
     """Render one tool's result compactly.
 

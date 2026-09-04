@@ -292,3 +292,56 @@ def test_a_non_null_non_json_negation_string_still_fails() -> None:
                 "negation": "not json and not an object",
             }
         )
+
+
+# --------------------------------------------------------------------------
+# EDW-1362: a stray wrapper key around the whole report
+#
+# checkout-error-surge-adyen repeat 4 called submit_report with the whole
+# report nested under a stray "permalink" key. ReportDraft (extra="forbid")
+# rejected the outer dict as missing incident_present and carrying an
+# unknown permalink field, and an investigation that had found adyen filed
+# nothing.
+# --------------------------------------------------------------------------
+
+
+def _valid_report_dict() -> dict[str, object]:
+    return {
+        "incident_present": True,
+        "hypotheses": [
+            {
+                "claim": "the checkout path got slow",
+                "dims": {"a.b": "1"},
+                "slow_or_failing_span": "some.span",
+                "confidence": "high",
+                "evidence": [{"query_id": "Q1", "summary": "P99 went from 180ms to 1100ms"}],
+                "negation": {"query_id": "Q2", "summary": "P99 flat outside the population"},
+            }
+        ],
+        "affected_population": "12% of requests",
+        "onset_estimate": "2026-09-03T02:47:20Z",
+        "not_checked": ["cart.size"],
+    }
+
+
+def test_the_adyen_4_shape_validates_to_the_same_report_as_the_plain_form() -> None:
+    plain = ReportDraft.model_validate(_valid_report_dict())
+    context: dict[str, object] = {}
+    wrapped = ReportDraft.model_validate({"permalink": _valid_report_dict()}, context=context)
+    assert wrapped == plain
+    assert context["coerced_fields"] == ["wrapper:permalink"]
+
+
+def test_a_two_key_wrapper_still_fails() -> None:
+    with pytest.raises(ValidationError):
+        ReportDraft.model_validate({"permalink": _valid_report_dict(), "extra": "x"})
+
+
+def test_a_wrapper_whose_inner_dict_lacks_incident_present_still_fails() -> None:
+    with pytest.raises(ValidationError):
+        ReportDraft.model_validate({"permalink": {"hypotheses": []}})
+
+
+def test_a_one_key_input_whose_value_is_not_a_dict_still_fails() -> None:
+    with pytest.raises(ValidationError):
+        ReportDraft.model_validate({"permalink": "not a dict at all"})

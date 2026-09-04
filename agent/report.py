@@ -34,7 +34,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 Confidence = Literal["high", "medium", "low"]
 
@@ -250,6 +250,40 @@ class ReportDraft(BaseModel):
     def _coerce_lists(cls, value: Any, info: ValidationInfo) -> Any:
         return _coerce_json_container(value, list, info)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _unwrap_stray_wrapper(cls, value: Any, info: ValidationInfo) -> Any:
+        """Accept a report nested one level under a stray wrapper key.
+
+        A live run called `submit_report` with the whole report nested under
+        a wrong top-level key: `{"permalink": {"incident_present": true,
+        "hypotheses": [...], ...}}`. `ReportDraft` rejected the outer dict
+        as missing `incident_present` and carrying an unknown `permalink`
+        field, and an investigation that had found the cause (adyen) filed
+        nothing.
+
+        Unwrapped only when `value` is a dict with exactly one key, whose
+        value is itself a dict containing `incident_present`. Two keys, a
+        value that is not a dict, or an inner dict without `incident_present`
+        all fall through unchanged and fail validation the normal way. Since
+        `model_validate` runs a model validator before the field validators,
+        an unwrapped report whose inner fields are themselves JSON strings
+        still gets `_coerce_lists` and the rest of the coercions.
+
+        The wrapper key is recorded in `info.context["coerced_fields"]` as
+        `wrapper:<key>`, the same mechanism `_coerce_json_container` uses,
+        so a run that needed this is visible on the report rather than
+        silent.
+        """
+        if not isinstance(value, dict) or len(value) != 1:
+            return value
+        ((key, inner),) = value.items()
+        if not isinstance(inner, dict) or "incident_present" not in inner:
+            return value
+        if info.context is not None:
+            info.context.setdefault("coerced_fields", []).append(f"wrapper:{key}")
+        return inner
+
 
 class ToolCall(BaseModel):
     """One MCP call the loop made, as the record everything is checked against."""
@@ -263,6 +297,21 @@ class ToolCall(BaseModel):
     is_error: bool = False
     t: float = 0.0
     """Seconds since the run started."""
+
+    coerced: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Argument paths this call's args were retyped on, e.g. "
+            "selection.group.error, when the server was about to see a value "
+            "of the wrong JSON type for the column. Only run_bubbleup uses "
+            "this today; every other call carries an empty list. `args` is the "
+            "model's request as it wrote it, so for a call listed here the wire "
+            "carried the retyped value instead."
+        ),
+    )
+    hinted: bool = False
+    """Whether this call's error text carries an added retry hint, from
+    `agent/mcp_client.py`'s handling of `failed to calculate group indices`."""
 
 
 class Report(BaseModel):
@@ -307,10 +356,16 @@ class Report(BaseModel):
     coerced_fields: list[str] = Field(
         default_factory=list,
         description=(
-            "Fields submit_report sent as a JSON-encoded string that agent/report.py's "
-            "validators decoded, across every attempt this run made. Also noted as a line "
-            "in validation_messages; this is the same fact as structured data, for the "
-            "eval and the README finding to count without parsing prose."
+            "Two kinds of coercion, one entry per attempt or tool call this run made, so "
+            "the same fix twice is two entries. submit_report fields sent as a JSON-encoded "
+            "string that agent/report.py's validators decoded, and a stray wrapper key "
+            "unwrapped from around the whole "
+            "report, recorded as wrapper:<key>. And tool-argument coercions the MCP client "
+            "made before a call went out, recorded as <tool>:<path>, such as "
+            "run_bubbleup:selection.group.error. The tool log entry for a given call carries "
+            "the per-call detail; this field is the sum. Also noted as a line in "
+            "validation_messages; this is the same fact as structured data, for the eval "
+            "and the README finding to count without parsing prose."
         ),
     )
     error: str | None = None

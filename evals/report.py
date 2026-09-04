@@ -144,9 +144,11 @@ def render(runs: Sequence[GradedRun], unreadable: Sequence[str] = ()) -> str:
         "requires whatever the config) counts against the run here; read `outcome` in the "
         "scenario table for whether the answer changed. `tokens in` is uncached input, as the "
         "grade records it; the prompt cache reads that make up most of what the model read "
-        "are in each `report.json` and are already priced into the cost. `coerced` counts "
-        "submit_report fields that arrived as a JSON-encoded string and were decoded rather "
-        "than rejected, across every submit attempt in the config; blank when none were.",
+        "are in each `report.json` and are already priced into the cost. `coerced` counts two "
+        "kinds of fix, across every attempt and every tool call in the config: submit_report "
+        "fields decoded from a JSON-encoded string or unwrapped from a stray wrapper key "
+        "around the whole report, and BubbleUp group values the MCP client retyped from the "
+        "column schema rather than sending on as the model wrote them; blank when none were.",
         "",
     ]
     header = [

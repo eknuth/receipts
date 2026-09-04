@@ -21,6 +21,7 @@ from mcp.shared.memory import create_client_server_memory_streams
 
 from agent.mcp_client import (
     DATASET_SCOPED_TOOLS,
+    GROUP_INDICES_ERROR,
     READ_TOOLS,
     WRITE_TOOLS,
     HoneycombMCP,
@@ -212,6 +213,17 @@ class _RecordingServer:
         self.query_run_pks: list[str] = []
         self.bubbleup_calls: list[dict[str, Any]] = []
         self.bubbleup_result_ids: list[str] = []
+        # The `breakdowns` each `run_query` call carried, keyed by the
+        # `query_run_pk` it returned. `run_bubbleup` below reads this to
+        # decide whether the source query supports the group selection.
+        self.breakdowns_by_pk: dict[str, list[str]] = {}
+        # The `selection` argument of every `run_bubbleup` call, in order,
+        # whatever the client did to it (dropped `dataset_slug`, retyped
+        # group values). What is asserted on is what went on the wire.
+        self.bubbleup_selections: list[Any] = []
+        # Set by a test to make the next `run_bubbleup` fail with the group
+        # indices text whatever its selection, for the hint's edge cases.
+        self.fail_next_bubbleup = False
         self._install_tools()
 
     def _install_tools(self) -> None:
@@ -234,8 +246,22 @@ class _RecordingServer:
                 raise ToolError("Invalid or missing dataset: does-not-exist")
             pk = f"qp-{len(self.query_run_pks) + 1}"
             self.query_run_pks.append(pk)
+            self.breakdowns_by_pk[pk] = [str(c) for c in (query_spec or {}).get("breakdowns") or []]
             return (
                 f"# Results\n\n| COUNT |\n| --- |\n| 1 |\n\n---\nMetadata:\n  query_run_pk: {pk}\n"
+            )
+
+        @server.tool()
+        async def get_dataset_columns(dataset_slug: str, ctx: Context) -> str:
+            self.metas.append(ctx.request_context.meta)
+            return (
+                "# Columns\n\n"
+                "| Name | Type | Description | LastWritten |\n"
+                "| --- | --- | --- | --- |\n"
+                "| error | boolean |  | 2026-09-04 00:00:00 |\n"
+                "| cart.size | integer |  | 2026-09-04 00:00:00 |\n"
+                "| duration_ms | float |  | 2026-09-04 00:00:00 |\n"
+                "| name | string |  | 2026-09-04 00:00:00 |\n"
             )
 
         @server.tool()
@@ -256,6 +282,19 @@ class _RecordingServer:
                     "dataset_slug": dataset_slug,
                 }
             )
+            self.bubbleup_selections.append(selection)
+            if self.fail_next_bubbleup:
+                self.fail_next_bubbleup = False
+                raise ToolError(GROUP_INDICES_ERROR)
+            group = selection.get("group") if isinstance(selection, dict) else None
+            if isinstance(group, dict) and group:
+                # The live behavior this stands in for: a group value of the
+                # wrong JSON type, or a source query that never broke down
+                # on the group column, both come back as this exact text.
+                carries_a_string = any(isinstance(v, str) for v in group.values())
+                breakdowns = self.breakdowns_by_pk.get(query_pk or "", [])
+                if carries_a_string or not breakdowns:
+                    raise ToolError(GROUP_INDICES_ERROR)
             result_id = f"bu-{len(self.bubbleup_result_ids) + 1}"
             self.bubbleup_result_ids.append(result_id)
             source_pk = query_pk or bubbleup_result_id or "unknown"
@@ -527,6 +566,369 @@ async def test_produced_ids_are_cleared_on_enter(settings: Settings) -> None:
             await mcp.call("run_bubbleup", {"query_pk": "leftover-from-a-prior-session"})
 
     assert server.bubbleup_calls == []
+
+
+# --------------------------------------------------------------------------
+# EDW-1362: a run_bubbleup group selection retyped from the column schema
+# --------------------------------------------------------------------------
+
+
+async def test_group_boolean_string_is_retyped_after_a_columns_call(settings: Settings) -> None:
+    async with in_process_mcp(settings) as (mcp, server):
+        await mcp.call("get_dataset_columns", {"dataset_slug": settings.honeycomb_dataset})
+        rq = await mcp.call(
+            "run_query",
+            {"dataset_slug": settings.honeycomb_dataset, "query_spec": {"breakdowns": ["error"]}},
+        )
+        result = await mcp.call(
+            "run_bubbleup",
+            {"query_pk": rq.query_id, "selection": {"type": "group", "group": {"error": "true"}}},
+        )
+
+    assert result.is_error is False
+    assert server.bubbleup_selections[-1]["group"] == {"error": True}
+    assert result.coerced == ("selection.group.error",)
+
+
+async def test_group_integer_and_float_strings_are_retyped(settings: Settings) -> None:
+    async with in_process_mcp(settings) as (mcp, server):
+        await mcp.call("get_dataset_columns", {"dataset_slug": settings.honeycomb_dataset})
+        rq = await mcp.call(
+            "run_query",
+            {
+                "dataset_slug": settings.honeycomb_dataset,
+                "query_spec": {"breakdowns": ["cart.size", "duration_ms"]},
+            },
+        )
+
+        by_size = await mcp.call(
+            "run_bubbleup",
+            {"query_pk": rq.query_id, "selection": {"type": "group", "group": {"cart.size": "8"}}},
+        )
+        assert server.bubbleup_selections[-1]["group"] == {"cart.size": 8}
+        assert by_size.coerced == ("selection.group.cart.size",)
+
+        by_duration = await mcp.call(
+            "run_bubbleup",
+            {
+                "query_pk": rq.query_id,
+                "selection": {"type": "group", "group": {"duration_ms": "1.5"}},
+            },
+        )
+        assert server.bubbleup_selections[-1]["group"] == {"duration_ms": 1.5}
+        assert by_duration.coerced == ("selection.group.duration_ms",)
+
+
+async def test_group_boolean_string_is_case_insensitive(settings: Settings) -> None:
+    async with in_process_mcp(settings) as (mcp, server):
+        await mcp.call("get_dataset_columns", {"dataset_slug": settings.honeycomb_dataset})
+        rq = await mcp.call(
+            "run_query",
+            {"dataset_slug": settings.honeycomb_dataset, "query_spec": {"breakdowns": ["error"]}},
+        )
+        result = await mcp.call(
+            "run_bubbleup",
+            {"query_pk": rq.query_id, "selection": {"type": "group", "group": {"error": "TRUE"}}},
+        )
+
+    assert result.is_error is False
+    assert server.bubbleup_selections[-1]["group"] == {"error": True}
+
+
+async def test_only_json_numeric_literals_are_retyped(settings: Settings) -> None:
+    """Python's own parsers take `"1_000"`, `" 8 "`, `"+8"`, and `"nan"`, and
+    a `nan` would go on the wire as `null`. The server speaks JSON, so only
+    a JSON numeric literal is retyped; everything else stays the string the
+    model wrote."""
+    async with in_process_mcp(settings) as (mcp, server):
+        await mcp.call("get_dataset_columns", {"dataset_slug": settings.honeycomb_dataset})
+        rq = await mcp.call(
+            "run_query",
+            {
+                "dataset_slug": settings.honeycomb_dataset,
+                "query_spec": {"breakdowns": ["cart.size", "duration_ms"]},
+            },
+        )
+        for column, value in [
+            ("cart.size", "1_000"),
+            ("cart.size", " 8 "),
+            ("cart.size", "+8"),
+            ("cart.size", "8.0"),
+            ("cart.size", "0x10"),
+            ("duration_ms", "nan"),
+            ("duration_ms", "inf"),
+            ("duration_ms", "1_5.0"),
+        ]:
+            result = await mcp.call(
+                "run_bubbleup",
+                {"query_pk": rq.query_id, "selection": {"type": "group", "group": {column: value}}},
+            )
+            assert server.bubbleup_selections[-1]["group"] == {column: value}, (column, value)
+            assert result.coerced == (), (column, value)
+
+        for column, value, wanted in [
+            ("cart.size", "-8", -8),
+            ("cart.size", "0", 0),
+            ("duration_ms", "1e3", 1000.0),
+            ("duration_ms", "-0.5", -0.5),
+            ("duration_ms", "8", 8.0),
+        ]:
+            await mcp.call(
+                "run_bubbleup",
+                {"query_pk": rq.query_id, "selection": {"type": "group", "group": {column: value}}},
+            )
+            sent = server.bubbleup_selections[-1]["group"][column]
+            assert sent == wanted and type(sent) is type(wanted), (column, value)
+
+
+async def test_a_string_column_value_is_untouched(settings: Settings) -> None:
+    """`name` is typed `string`, so its own string value is not a coercion target."""
+    async with in_process_mcp(settings) as (mcp, server):
+        await mcp.call("get_dataset_columns", {"dataset_slug": settings.honeycomb_dataset})
+        rq = await mcp.call(
+            "run_query",
+            {"dataset_slug": settings.honeycomb_dataset, "query_spec": {"breakdowns": ["name"]}},
+        )
+        result = await mcp.call(
+            "run_bubbleup",
+            {"query_pk": rq.query_id, "selection": {"type": "group", "group": {"name": "true"}}},
+        )
+
+    assert server.bubbleup_selections[-1]["group"] == {"name": "true"}
+    assert result.coerced == ()
+
+
+async def test_a_column_absent_from_the_schema_is_untouched(settings: Settings) -> None:
+    async with in_process_mcp(settings) as (mcp, server):
+        await mcp.call("get_dataset_columns", {"dataset_slug": settings.honeycomb_dataset})
+        rq = await mcp.call("run_query", {"dataset_slug": settings.honeycomb_dataset})
+        result = await mcp.call(
+            "run_bubbleup",
+            {
+                "query_pk": rq.query_id,
+                "selection": {"type": "group", "group": {"unmapped.col": "true"}},
+            },
+        )
+
+    assert server.bubbleup_selections[-1]["group"] == {"unmapped.col": "true"}
+    assert result.coerced == ()
+
+
+async def test_a_value_that_is_not_true_or_false_is_untouched(settings: Settings) -> None:
+    async with in_process_mcp(settings) as (mcp, server):
+        await mcp.call("get_dataset_columns", {"dataset_slug": settings.honeycomb_dataset})
+        rq = await mcp.call(
+            "run_query",
+            {"dataset_slug": settings.honeycomb_dataset, "query_spec": {"breakdowns": ["error"]}},
+        )
+        result = await mcp.call(
+            "run_bubbleup",
+            {"query_pk": rq.query_id, "selection": {"type": "group", "group": {"error": "yes"}}},
+        )
+
+    assert server.bubbleup_selections[-1]["group"] == {"error": "yes"}
+    assert result.coerced == ()
+
+
+async def test_a_value_that_does_not_parse_as_the_columns_type_is_untouched(
+    settings: Settings,
+) -> None:
+    async with in_process_mcp(settings) as (mcp, server):
+        await mcp.call("get_dataset_columns", {"dataset_slug": settings.honeycomb_dataset})
+        rq = await mcp.call(
+            "run_query",
+            {
+                "dataset_slug": settings.honeycomb_dataset,
+                "query_spec": {"breakdowns": ["cart.size"]},
+            },
+        )
+        result = await mcp.call(
+            "run_bubbleup",
+            {
+                "query_pk": rq.query_id,
+                "selection": {"type": "group", "group": {"cart.size": "eight"}},
+            },
+        )
+
+    assert server.bubbleup_selections[-1]["group"] == {"cart.size": "eight"}
+    assert result.coerced == ()
+
+
+async def test_no_conversion_without_a_prior_get_dataset_columns_call(settings: Settings) -> None:
+    async with in_process_mcp(settings) as (mcp, server):
+        rq = await mcp.call(
+            "run_query",
+            {"dataset_slug": settings.honeycomb_dataset, "query_spec": {"breakdowns": ["error"]}},
+        )
+        result = await mcp.call(
+            "run_bubbleup",
+            {"query_pk": rq.query_id, "selection": {"type": "group", "group": {"error": "true"}}},
+        )
+
+    assert result.coerced == ()
+    assert server.bubbleup_selections[-1]["group"] == {"error": "true"}
+
+
+async def test_column_types_are_cleared_on_enter(settings: Settings) -> None:
+    """Like `_produced_ids`, a re-entered client starts with no schema
+    carried over from a prior session."""
+
+    def seed_with_a_leftover_type(mcp: HoneycombMCP) -> None:
+        mcp.column_types["leftover"] = "string"
+
+    async with in_process_mcp(settings, pre_enter=seed_with_a_leftover_type) as (mcp, _):
+        assert mcp.column_types == {}
+
+
+# --------------------------------------------------------------------------
+# EDW-1362: the retry hint on "failed to calculate group indices"
+# --------------------------------------------------------------------------
+
+
+async def test_the_hint_names_the_type_and_the_missing_breakdown(settings: Settings) -> None:
+    """A correctly-typed value against a query with no breakdowns still
+    fails; the hint should say both what the type is and that the source
+    query never broke down on the group column."""
+    async with in_process_mcp(settings) as (mcp, server):
+        await mcp.call("get_dataset_columns", {"dataset_slug": settings.honeycomb_dataset})
+        rq = await mcp.call("run_query", {"dataset_slug": settings.honeycomb_dataset})
+        result = await mcp.call(
+            "run_bubbleup",
+            {"query_pk": rq.query_id, "selection": {"type": "group", "group": {"error": "true"}}},
+        )
+
+    assert result.is_error is True
+    assert result.hinted is True
+    # The client already retyped "true" to true, so the model is not told
+    # to fix a type it did not get wrong: only the breakdown is named.
+    assert "so send true" not in result.text
+    assert f"query {rq.query_id} breaks down on []" in result.text
+    assert "\u2014" not in result.text
+
+
+async def test_the_hint_names_the_type_only_for_a_value_still_a_string(
+    settings: Settings,
+) -> None:
+    """A value the coercion could not retype (`"yes"` on a boolean column) is
+    the one the model has to fix, and the hint says which type it wants."""
+    async with in_process_mcp(settings) as (mcp, server):
+        await mcp.call("get_dataset_columns", {"dataset_slug": settings.honeycomb_dataset})
+        rq = await mcp.call(
+            "run_query",
+            {"dataset_slug": settings.honeycomb_dataset, "query_spec": {"breakdowns": ["error"]}},
+        )
+        result = await mcp.call(
+            "run_bubbleup",
+            {"query_pk": rq.query_id, "selection": {"type": "group", "group": {"error": "yes"}}},
+        )
+
+    assert result.hinted is True
+    assert 'error is boolean, so send true, not "true".' in result.text
+    assert f"query {rq.query_id} breaks down on ['error']" in result.text
+
+
+async def test_the_hint_gives_string_and_unmapped_columns_their_own_sentence(
+    settings: Settings,
+) -> None:
+    async with in_process_mcp(settings) as (mcp, server):
+        await mcp.call("get_dataset_columns", {"dataset_slug": settings.honeycomb_dataset})
+        rq = await mcp.call("run_query", {"dataset_slug": settings.honeycomb_dataset})
+        result = await mcp.call(
+            "run_bubbleup",
+            {
+                "query_pk": rq.query_id,
+                "selection": {"type": "group", "group": {"name": "x", "unmapped.col": "1"}},
+            },
+        )
+
+    assert result.hinted is True
+    assert "so send" not in result.text
+    assert "unmapped.col is not in the columns this session fetched" in result.text
+    assert "name is" not in result.text
+
+
+async def test_the_hint_follows_the_server_precedence_for_a_paging_call(
+    settings: Settings,
+) -> None:
+    """With `bubbleup_result_id` given the server ignores `query_pk`, so the
+    hint does not claim what `query_pk` broke down on."""
+    async with in_process_mcp(settings) as (mcp, server):
+        rq = await mcp.call(
+            "run_query",
+            {"dataset_slug": settings.honeycomb_dataset, "query_spec": {"breakdowns": ["error"]}},
+        )
+        first = await mcp.call(
+            "run_bubbleup",
+            {"query_pk": rq.query_id, "selection": {"type": "group", "group": {"error": True}}},
+        )
+        assert first.is_error is False
+        result_id = server.bubbleup_result_ids[-1]
+        server.fail_next_bubbleup = True
+        result = await mcp.call(
+            "run_bubbleup",
+            {
+                "query_pk": rq.query_id,
+                "bubbleup_result_id": result_id,
+                "selection": {"type": "group", "group": {"error": True}},
+            },
+        )
+
+    assert result.hinted is True
+    assert f"pages into BubbleUp result {result_id}" in result.text
+    assert "breaks down on" not in result.text
+
+
+async def test_a_group_indices_error_on_a_non_group_selection_gets_no_hint(
+    settings: Settings,
+) -> None:
+    async with in_process_mcp(settings) as (mcp, server):
+        rq = await mcp.call("run_query", {"dataset_slug": settings.honeycomb_dataset})
+        server.fail_next_bubbleup = True
+        result = await mcp.call(
+            "run_bubbleup",
+            {"query_pk": rq.query_id, "selection": {"type": "2d", "column": "duration_ms"}},
+        )
+
+    assert result.is_error is True
+    assert result.hinted is False
+    assert result.text.endswith("failed to calculate group indices")
+
+
+async def test_the_hint_is_generic_without_a_column_types_map(settings: Settings) -> None:
+    async with in_process_mcp(settings) as (mcp, server):
+        rq = await mcp.call("run_query", {"dataset_slug": settings.honeycomb_dataset})
+        result = await mcp.call(
+            "run_bubbleup",
+            {"query_pk": rq.query_id, "selection": {"type": "group", "group": {"error": "true"}}},
+        )
+
+    assert result.is_error is True
+    assert result.hinted is True
+    assert 'error was sent as the string "true"' in result.text
+    assert "needs a JSON boolean" in result.text
+    assert f"query {rq.query_id} breaks down on []" in result.text
+
+
+async def test_a_hinted_error_still_carries_the_group_indices_text(settings: Settings) -> None:
+    async with in_process_mcp(settings) as (mcp, server):
+        rq = await mcp.call("run_query", {"dataset_slug": settings.honeycomb_dataset})
+        result = await mcp.call(
+            "run_bubbleup",
+            {"query_pk": rq.query_id, "selection": {"type": "group", "group": {"error": "true"}}},
+        )
+
+    assert GROUP_INDICES_ERROR in result.text
+    assert result.text.startswith("run_bubbleup failed:")
+
+
+async def test_an_error_unrelated_to_group_indices_is_not_hinted(settings: Settings) -> None:
+    async with in_process_mcp(settings) as (mcp, _):
+        result = await mcp.call(
+            "run_query",
+            {"dataset_slug": settings.honeycomb_dataset, "query_spec": {"force_error": True}},
+        )
+
+    assert result.hinted is False
 
 
 def test_meta_kwarg_serializes_to_wire_key_meta() -> None:
