@@ -438,6 +438,44 @@ class Scenario(BaseModel):
     def onset_min(self) -> float | None:
         return self.fault.onset_min if self.fault else None
 
+    @property
+    def symptom_dims(self) -> dict[str, str]:
+        """Pairs that are true of the requests the fault touched, derived from the fault.
+
+        These are not the cause. They are what the fault looks like on the
+        wire, and the generator can vouch for every one of them because it
+        wrote them: the span the effect names, the service that runs that
+        span, and, when the effect fails the span, the error flag, the status
+        code the root span carries on a failure, and whatever `error.type` or
+        `exception.type` the effect attached. A control has none.
+
+        No scenario file may write these. A file that declares `symptom_dims`
+        is rejected by `extra="forbid"` on `Scenario` and on `GroundTruth`,
+        which is the point: a hand-written symptom set would be a second,
+        unchecked ground truth, and the grader would be scoring the file's
+        say-so instead of the fault. `evals/grader.py` treats a reported pair
+        that appears here and is not in `root_cause_dims` as neither right nor
+        wrong; see `evals/grader.md`.
+        """
+        if self.fault is None:
+            return {}
+        effect = self.fault.effect
+        dims = {
+            "name": effect.span,
+            "service.component": topology.SPAN_SERVICE[effect.span],
+        }
+        if effect.error_rate > 0:
+            # A failing child fails its ancestors, and the root writes 500
+            # when it failed; see `_mark_errors` and `generate_requests` in
+            # gen/topology.py.
+            dims["error"] = "true"
+            dims["http.status_code"] = "500"
+            if effect.error_type is not None:
+                dims["error.type"] = effect.error_type
+            if effect.exception is not None:
+                dims["exception.type"] = effect.exception.type
+        return dims
+
     def expected_affected_share(self) -> float:
         """The share of requests the fault's `where` clause selects, from the weights.
 

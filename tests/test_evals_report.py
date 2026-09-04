@@ -86,11 +86,11 @@ def test_the_scenario_table_shows_total_and_outcome_side_by_side(live_results: P
     text = render(load_results(live_results))
     header = next(line for line in text.splitlines() if line.startswith("| scenario |"))
     assert header == "| scenario | full total | full outcome | full top right |"
-    # The live payments runs: 0.90, 0.63, 0.24, 0.25. Mean 0.51, and one of
-    # the four is marked top_wrong (report-3, Jaccard 1/4).
+    # The live payments runs: 0.90, 0.63, 0.27, 0.25. Mean 0.51, and one of
+    # the four is marked top_wrong (report-3, Jaccard 1/3).
     payments = next(line for line in text.splitlines() if line.startswith("| payments-"))
     assert payments == (
-        "| payments-stripe-v251-uswest | 0.51 (0.24 to 0.90) | 0.59 (0.49 to 0.65) | 3 of 4 |"
+        "| payments-stripe-v251-uswest | 0.51 (0.25 to 0.90) | 0.60 (0.52 to 0.65) | 3 of 4 |"
     )
     control = next(line for line in text.splitlines() if line.startswith("| control-quiet"))
     assert control == "| control-quiet | 0.69 (-0.25 to 1.00) | 0.56 (0.00 to 0.75) | 3 of 4 |"

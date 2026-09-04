@@ -28,7 +28,7 @@ from evals.grader import (
     main,
     window_start_for,
 )
-from gen.scenario import load_scenario
+from gen.scenario import Scenario, load_scenario
 
 FIXTURES = Path(__file__).parent / "fixtures" / "reports"
 RUNS_DIR = FIXTURES / "runs"
@@ -404,7 +404,9 @@ def dependency_report(dims: dict[str, str]) -> Report:
     ("dims", "expected"),
     [
         ({"name": "db.query"}, 1.0),
-        ({"name": "db.query", "error": "true"}, 0.5),
+        # `error: true` is a symptom of this fault, so it is neutral and the
+        # score is the same as naming the span alone.
+        ({"name": "db.query", "error": "true"}, 1.0),
         ({"service.component": "inventory-db"}, 1.0),
     ],
 )
@@ -415,12 +417,105 @@ def test_the_grader_takes_the_best_of_root_cause_dims_and_equivalent_dims(
     assert result.jaccard == pytest.approx(expected)
 
 
-def test_name_as_a_dim_on_payments_still_scores_zero_since_it_declares_no_equivalent() -> None:
-    """The docstring's existing warning still holds: payments-stripe-v251-uswest
-    declares no equivalent_dims, so `name: payments.charge` is still a spurious
-    dim rather than an alternative selector."""
+def test_name_as_a_dim_on_payments_still_scores_zero_since_it_names_no_true_dim() -> None:
+    """payments-stripe-v251-uswest declares no equivalent_dims, so
+    `name: payments.charge` is not a selector there. It is a symptom of the
+    fault, so it costs nothing, and it earns nothing: the report named none
+    of the three true dims, so dims is 0 out of 3."""
     result = grade_synthetic(report(hypotheses=[hypothesis(dims={"name": "payments.charge"})]))
     assert result.components.dims == 0.0
+
+
+# --------------------------------------------------------------------------
+# EDW-1359: symptom dims are neutral
+# --------------------------------------------------------------------------
+
+DEPLOY = load_scenario("deploy-regression-v260")
+EXCEPTIONS = load_scenario("error-surge-exceptions")
+
+
+def dims_score(scenario: Scenario, dims: dict[str, str]) -> float:
+    """The dims component of a report whose top hypothesis names `dims`."""
+    top = {
+        "claim": "the top hypothesis",
+        "dims": dims,
+        "slow_or_failing_span": scenario.ground_truth.slow_or_failing_span,
+        "confidence": "high",
+    }
+    filed = Report.model_validate(
+        {
+            "run_id": "run-symptom",
+            "scenario_id": scenario.id,
+            "provider": "test",
+            "model": "test-model",
+            "incident_present": True,
+            "hypotheses": [top],
+        }
+    )
+    return grade(filed, scenario, window_start=WINDOW_START).components.dims
+
+
+@pytest.mark.parametrize(
+    ("scenario", "dims", "expected"),
+    [
+        # The 2026-09-04 run this rule came from: every pair is true of the
+        # requests the fault touched, and one of them is the cause.
+        (
+            DEPENDENCY,
+            {"service.component": "inventory-db", "name": "db.query", "error.type": "timeout"},
+            1.0,
+        ),
+        # The same answer through the declared equivalent selector.
+        (DEPENDENCY, {"name": "db.query"}, 1.0),
+        # A symptom pair rescues nothing. Payments has three true dims and
+        # this report names none of them.
+        (PAYMENTS, {"name": "payments.charge"}, 0.0),
+        # One of three, with the span neutral: 1 matched over 3 in the union.
+        (PAYMENTS, {"payment.provider": "stripe", "name": "payments.charge"}, 1 / 3),
+        # A wrong value on a true key is not a symptom and still costs.
+        (PAYMENTS, {"payment.provider": "paypal"}, 0.0),
+        # deploy-regression-v260 adds latency and fails nothing, so `error`
+        # is not among its symptoms and the pair is a mismatch: 1 over 2.
+        (DEPLOY, {"deployment.version": "2.6.0", "error": "true"}, 0.5),
+        # The exception type the effect attaches is a symptom, as is `error`.
+        (
+            EXCEPTIONS,
+            {"payment.provider": "adyen", "error": "true", "exception.type": "ProviderDeclined"},
+            1.0,
+        ),
+    ],
+)
+def test_a_symptom_pair_is_neither_right_nor_wrong(
+    scenario: Scenario, dims: dict[str, str], expected: float
+) -> None:
+    assert dims_score(scenario, dims) == pytest.approx(expected)
+
+
+def test_a_control_has_no_symptoms_and_scores_as_before() -> None:
+    assert CONTROL.symptom_dims == {}
+    quiet = grade_synthetic(control_report())
+    assert quiet.components.dims == 1.0
+    loud = grade_synthetic(
+        control_report(incident_present=True, hypotheses=[hypothesis(dims={"name": "db.query"})])
+    )
+    assert loud.components.dims == 0.0
+    assert loud.jaccard == 0.0
+
+
+def test_dims_jaccard_still_takes_two_arguments() -> None:
+    assert dims_jaccard({"name": "db.query"}, {"name": "db.query"}) == 1.0
+    assert dims_jaccard({"name": "db.query"}, TRUE_DIMS) == 0.0
+
+
+def test_a_neutral_pair_leaves_the_union_alone() -> None:
+    neutral = {"name": "payments.charge", "error": "true"}
+    assert dims_jaccard({"payment.provider": "stripe"}, TRUE_DIMS, neutral) == pytest.approx(1 / 3)
+    both = {"payment.provider": "stripe", "name": "payments.charge"}
+    assert dims_jaccard(both, TRUE_DIMS, neutral) == pytest.approx(1 / 3)
+    # A symptom key that is also a truth key is scored as truth, not skipped.
+    assert dims_jaccard({"name": "db.query"}, {"name": "db.query"}, neutral) == 1.0
+    # A symptom key carrying some other value is a plain mismatch.
+    assert dims_jaccard({"error": "false"}, TRUE_DIMS, neutral) == 0.0
 
 
 # --------------------------------------------------------------------------
@@ -569,9 +664,11 @@ LIVE: dict[str, float] = {
     # was set by an older validator on an entry the current one accepts.
     # 0.2333+0.15+0.15+0.10+0.15+0.10 - 0.25.
     "run-4155490e2a44/report-2.json": 0.633333,
-    # One true dim plus the span name as a dim: Jaccard 1/4, so wrong and
-    # high. 0.0875+0.15+0.15+0.10+0.15+0.10 - 0.50.
-    "run-4155490e2a44/report-3.json": 0.2375,
+    # One true dim plus the span name as a dim. The span is a symptom of the
+    # fault, so it is neutral and the Jaccard is 1/3 over the two true dims
+    # the report never named: still under the 0.5 line, so wrong and high.
+    # 0.1167+0.15+0.15+0.10+0.15+0.10 - 0.50.
+    "run-4155490e2a44/report-3.json": 0.266667,
     # All three dims at low confidence, root span named instead of the child,
     # negation is its own evidence, one not-checked entry names queried spans.
     # 0.35+0+0.15+0.10+0+0 - 0.25 validation - 0.10 hedged right.

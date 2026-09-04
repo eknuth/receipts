@@ -615,6 +615,113 @@ def test_a_control_may_not_declare_equivalent_dims() -> None:
 
 
 # --------------------------------------------------------------------------
+# Scenario.symptom_dims (EDW-1359)
+# --------------------------------------------------------------------------
+
+
+def test_a_latency_fault_has_only_the_span_and_its_service_as_symptoms() -> None:
+    scenario = load_scenario("payments-stripe-v251-uswest")
+    assert scenario.symptom_dims == {
+        "name": "payments.charge",
+        "service.component": "payments",
+    }
+
+
+def test_an_error_fault_adds_the_error_flag_and_the_status_code() -> None:
+    scenario = load_scenario("checkout-error-surge-adyen")
+    assert scenario.symptom_dims == {
+        "name": "payments.charge",
+        "service.component": "payments",
+        "error": "true",
+        "http.status_code": "500",
+    }
+
+
+def test_a_timeout_fault_adds_its_error_type() -> None:
+    scenario = load_scenario("dependency-inventory-db-timeouts")
+    assert scenario.symptom_dims == {
+        "name": "db.query",
+        "service.component": "inventory-db",
+        "error": "true",
+        "http.status_code": "500",
+        "error.type": "timeout",
+    }
+
+
+def test_an_exception_fault_adds_its_exception_type() -> None:
+    scenario = load_scenario("error-surge-exceptions")
+    assert scenario.symptom_dims == {
+        "name": "payments.charge",
+        "service.component": "payments",
+        "error": "true",
+        "http.status_code": "500",
+        "exception.type": "ProviderDeclined",
+    }
+
+
+def test_a_control_has_no_symptoms() -> None:
+    for scenario_id in ("control-quiet", "control-noisy"):
+        assert load_scenario(scenario_id).symptom_dims == {}
+
+
+def test_every_symptom_names_a_span_the_topology_runs() -> None:
+    for scenario in load_all():
+        symptoms = scenario.symptom_dims
+        if not symptoms:
+            assert scenario.fault is None
+            continue
+        assert symptoms["name"] in topology.SPAN_NAMES
+        assert symptoms["service.component"] == topology.SPAN_SERVICE[symptoms["name"]]
+
+
+def test_the_generator_emits_the_symptoms_a_failing_fault_declares() -> None:
+    """The two claims the derivation makes about a failure: the root span
+    carries `error` and a 500, and the failing span carries the effect's
+    `error.type`. Checked on generated spans rather than taken on trust."""
+    data = _dependency_dict()
+    data["baseline"] = {"rps": 20, "minutes": 2}
+    data["fault"]["onset_min"] = 1
+    data["red_herrings"] = []
+    scenario = Scenario.model_validate(data)
+    symptoms = scenario.symptom_dims
+
+    checked = 0
+    for request in topology.generate_requests(scenario, seed=1):
+        if not request.faulted:
+            continue
+        failing = [
+            span
+            for span in request.root.walk()
+            if span.name == symptoms["name"] and span.attributes.get("error.type") is not None
+        ]
+        if not failing:
+            continue
+        checked += 1
+        assert failing[0].attributes["error.type"] == symptoms["error.type"]
+        assert str(request.root.attributes["error"]).lower() == symptoms["error"]
+        assert str(request.root.attributes["http.status_code"]) == symptoms["http.status_code"]
+    assert checked > 0
+
+
+def _dependency_dict() -> dict:
+    import yaml
+
+    return yaml.safe_load((SCENARIO_DIR / "dependency-inventory-db-timeouts.yml").read_text())
+
+
+def test_a_file_declaring_symptom_dims_is_rejected() -> None:
+    data = _payments_dict()
+    data["ground_truth"]["symptom_dims"] = {"name": "payments.charge"}
+    with pytest.raises(ValidationError, match="symptom_dims"):
+        Scenario.model_validate(data)
+
+    top_level = _payments_dict()
+    top_level["symptom_dims"] = {"name": "payments.charge"}
+    with pytest.raises(ValidationError, match="symptom_dims"):
+        Scenario.model_validate(top_level)
+
+
+# --------------------------------------------------------------------------
 # gen/scenarios/README.md
 # --------------------------------------------------------------------------
 

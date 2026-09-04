@@ -31,9 +31,10 @@ import json
 import math
 import re
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import MappingProxyType
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -77,6 +78,10 @@ ZERO_EVIDENCE_PENALTY = -0.25
 ZERO_EVIDENCE_CAP = -0.50
 VALIDATION_FAILED_PENALTY = -0.25
 FLOOR = -1.0
+
+# The symptom set of a scenario with no fault, and the default for a caller
+# that has none: nothing is neutral.
+_NO_SYMPTOMS: Mapping[str, str] = MappingProxyType({})
 
 # A ground-truth value like ">=8": an operator and a number.
 _RANGE = re.compile(r"^\s*(>=|<=|>|<)\s*(-?\d+(?:\.\d+)?)\s*$")
@@ -229,7 +234,7 @@ def grade(
     top = report.hypotheses[0] if report.hypotheses else None
 
     if truth.incident_present:
-        jaccard = _best_dims_jaccard(top.dims, truth) if top else None
+        jaccard = _best_dims_jaccard(top.dims, truth, scenario.symptom_dims) if top else None
         dims = jaccard or 0.0
         span = float(top is not None and top.slow_or_failing_span == truth.slow_or_failing_span)
         onset = _onset_score(report, scenario, window_start, notes)
@@ -339,46 +344,69 @@ def grade_file(
 # --------------------------------------------------------------------------
 
 
-def dims_jaccard(reported: dict[str, str], truth: dict[str, str]) -> float:
-    """Jaccard over `key=value` pairs, with ground-truth ranges honoured.
+def dims_jaccard(
+    reported: dict[str, str],
+    truth: dict[str, str],
+    neutral: Mapping[str, str] = _NO_SYMPTOMS,
+) -> float:
+    """Jaccard over `key=value` pairs, with ground-truth ranges honoured and
+    symptom pairs set aside.
 
     A truth pair matches when the report names the same key and its value
     satisfies the truth value: equal as a string, or, when the truth is a
     range like `>=8`, a number inside it or the same range written the same
-    way. Every other pair on either side is in the union and nowhere else.
+    way.
+
+    `neutral` is the scenario's symptom set, derived from the fault by
+    `Scenario.symptom_dims`. A reported pair whose key is in there, whose
+    value satisfies the symptom value, and whose key is not in `truth` is
+    true of the requests the fault touched, so it is neither matched nor
+    counted in the union. Every other pair on either side is in the union.
 
     So a report naming two of three true dims and nothing false scores 2/3,
-    and one naming all three plus a spurious fourth scores 3/4. An extra pair
-    costs the same as a missing one: the spurious dim was a claim about the
-    population, and it was wrong. Two live payments reports carry
-    `name: payments.charge`, which is the span rather than a dimension, and
-    they pay for it here, because that scenario declares no equivalent for
-    it. This function scores one candidate against `reported`; `grade` calls
-    it once per candidate in `_best_dims_jaccard` and keeps the best.
+    and one naming all three plus a spurious fourth scores 3/4: an extra pair
+    that is not a symptom costs the same as a missing one, because it was a
+    claim about the population and it was wrong. A symptom pair costs
+    nothing, and it earns nothing either. Two live payments reports carry
+    `name: payments.charge`, the fault's own span, which is neutral there;
+    what those reports still pay for is the true dims they never named. This
+    function scores one candidate against `reported`; `grade` calls it once
+    per candidate in `_best_dims_jaccard` and keeps the best.
     """
     if not reported and not truth:
         return 1.0
     matched = sum(
         1 for key, want in truth.items() if key in reported and _satisfies(reported[key], want)
     )
-    union = len(truth) + len(reported) - matched
+    ignored = sum(
+        1
+        for key, value in reported.items()
+        if key not in truth and key in neutral and _satisfies(value, neutral[key])
+    )
+    union = len(truth) + len(reported) - matched - ignored
     return matched / union if union else 0.0
 
 
-def _best_dims_jaccard(reported: dict[str, str], truth: GroundTruth) -> float:
+def _best_dims_jaccard(
+    reported: dict[str, str],
+    truth: GroundTruth,
+    symptom: Mapping[str, str] = _NO_SYMPTOMS,
+) -> float:
     """The dims score `grade` uses: the best of `root_cause_dims` and every
-    `equivalent_dims` alternative.
+    `equivalent_dims` alternative, with the same symptom set applied to each.
 
     `gen/scenario.py` checks each alternative against the topology at load
     time: it keeps every population-restricting dimension of `fault.where`
     and may also name the fault's own span or the service that runs it, so
     it selects the same requests as `root_cause_dims` under a different
-    name. A scenario that declares no equivalent for a dimension still
-    charges the usual way for it: `name: payments.charge` on the payments
-    scenario is a spurious dim there, not an alternative selector.
+    name. A scenario that declares no equivalent for a dimension is still
+    scored against `root_cause_dims` alone; the symptom set is not an
+    alternative selector and cannot stand in for a dimension the report
+    never named.
     """
     return max(
-        dims_jaccard(reported, cand) for cand in (truth.root_cause_dims, *truth.equivalent_dims)
+        dims_jaccard(reported, cand, symptom)
+        for cand in (truth.root_cause_dims, *truth.equivalent_dims)
     )
 
 
