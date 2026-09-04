@@ -104,6 +104,20 @@
       "emitted_at": "2026-09-04T15:37:19.845848Z",
       "window_start": "2026-09-04T15:15:43Z",
       "window_end": "2026-09-04T15:35:43Z"
+    },
+    {
+      "run_id": "run-a340b11cd648",
+      "scenario_id": "trigger-checkout-latency",
+      "emitted_at": "2026-09-04T16:42:51.696856Z",
+      "window_start": "2026-09-04T16:21:15Z",
+      "window_end": "2026-09-04T16:41:15Z"
+    },
+    {
+      "run_id": "run-26b0a1192bb6",
+      "scenario_id": "trigger-checkout-latency",
+      "emitted_at": "2026-09-04T16:47:08.734251Z",
+      "window_start": "2026-09-04T16:25:32Z",
+      "window_end": "2026-09-04T16:45:32Z"
     }
   ]
 }
