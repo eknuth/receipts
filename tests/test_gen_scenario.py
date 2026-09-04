@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from gen import topology
 from gen.scenario import (
+    AFFECTED_SHARE_TOLERANCE,
     SCENARIO_DIR,
     Scenario,
     available_scenarios,
@@ -27,6 +28,12 @@ REQUIRED_SCENARIOS = {
     "control-quiet",
     "checkout-error-surge-adyen",
     "deploy-regression-v260",
+    "dependency-inventory-db-timeouts",
+    "trigger-checkout-latency",
+    "control-noisy",
+    "herring-region-vs-version",
+    "herring-customer-whale",
+    "error-surge-exceptions",
 }
 
 VALID = """
@@ -62,6 +69,11 @@ def test_every_scenario_on_disk_loads() -> None:
     assert REQUIRED_SCENARIOS <= {s.id for s in scenarios}
 
 
+def test_load_all_returns_ten_scenarios() -> None:
+    """R1 through R5 add up to ten: four from R1-R4 plus six from R5."""
+    assert len(load_all()) == 10
+
+
 def test_scenario_dir_has_no_stray_yaml_extension() -> None:
     """The loader globs *.yml, so a *.yaml file would be invisible."""
     assert list(SCENARIO_DIR.glob("*.yaml")) == []
@@ -69,21 +81,30 @@ def test_scenario_dir_has_no_stray_yaml_extension() -> None:
 
 @pytest.mark.parametrize("scenario_id", sorted(available_scenarios()))
 def test_ground_truth_affected_share_matches_the_weights(scenario_id: str) -> None:
-    """The share written in the file is the share the dimension weights produce."""
+    """The share written in the file is the share the dimension weights produce.
+
+    Tighter than a scenario's own load-time check would need
+    (`AFFECTED_SHARE_TOLERANCE`, the same tolerance the model itself enforces)
+    rather than an exact match: a plain value's weight product is a clean
+    decimal, but a range clause like `cart.size: ">=8"` sums a tail of a
+    geometric series, which never lands on the three decimals a file writes.
+    """
     scenario = load_scenario(scenario_id)
     if scenario.fault is None:
         assert scenario.ground_truth.affected_share is None
         return
     expected = scenario.ground_truth.affected_share
     assert expected is not None
-    assert scenario.expected_affected_share() == pytest.approx(expected, abs=1e-9)
+    assert scenario.expected_affected_share() == pytest.approx(
+        expected, abs=AFFECTED_SHARE_TOLERANCE
+    )
 
 
-def test_exactly_one_control_and_three_faults() -> None:
+def test_exactly_two_controls_and_eight_faults() -> None:
     scenarios = load_all()
     controls = [s for s in scenarios if not s.ground_truth.incident_present]
-    assert [s.id for s in controls] == ["control-quiet"]
-    assert len(scenarios) - len(controls) == 3
+    assert {s.id for s in controls} == {"control-quiet", "control-noisy"}
+    assert len(scenarios) - len(controls) == 8
 
 
 def test_every_scenario_has_at_least_one_red_herring() -> None:
@@ -267,3 +288,225 @@ def test_a_control_may_not_carry_an_affected_share() -> None:
     data["ground_truth"]["affected_share"] = 0.4
     with pytest.raises(ValueError, match="no affected_share"):
         Scenario.model_validate(data)
+
+
+# --------------------------------------------------------------------------
+# R5: timeouts, exceptions, sigma_scale, bursts, ranges, service.component,
+# pinned customers, and triggers
+# --------------------------------------------------------------------------
+
+
+def test_effect_timeout_ms_requires_a_positive_error_rate(tmp_path: Path) -> None:
+    body = VALID.replace(
+        'effect: {span: "payments.charge", latency_add_ms: 500}',
+        'effect: {span: "payments.charge", latency_add_ms: 500, timeout_ms: 5000}',
+    )
+    with pytest.raises(ValidationError, match="timeout_ms requires error_rate"):
+        load_scenario_file(write(tmp_path, body))
+
+
+def test_effect_timeout_ms_and_latency_add_ms_are_exclusive(tmp_path: Path) -> None:
+    body = VALID.replace(
+        'effect: {span: "payments.charge", latency_add_ms: 500}',
+        'effect: {span: "payments.charge", latency_add_ms: 500, error_rate: 0.1, timeout_ms: 5000}',
+    )
+    with pytest.raises(ValidationError, match="exclusive"):
+        load_scenario_file(write(tmp_path, body))
+
+
+def test_effect_error_type_requires_a_positive_error_rate(tmp_path: Path) -> None:
+    body = VALID.replace(
+        'effect: {span: "payments.charge", latency_add_ms: 500}',
+        'effect: {span: "payments.charge", latency_add_ms: 500, error_type: "timeout"}',
+    )
+    with pytest.raises(ValidationError, match="error_type requires error_rate"):
+        load_scenario_file(write(tmp_path, body))
+
+
+def test_effect_exception_requires_a_positive_error_rate(tmp_path: Path) -> None:
+    body = VALID.replace(
+        'effect: {span: "payments.charge", latency_add_ms: 500}',
+        'effect: {span: "payments.charge", latency_add_ms: 500, '
+        'exception: {type: "ProviderDeclined", message: "declined"}}',
+    )
+    with pytest.raises(ValidationError, match="exception requires error_rate"):
+        load_scenario_file(write(tmp_path, body))
+
+
+def test_a_timeout_with_an_error_rate_and_error_type_loads(tmp_path: Path) -> None:
+    body = VALID.replace(
+        'effect: {span: "payments.charge", latency_add_ms: 500}',
+        'effect: {span: "payments.charge", error_rate: 0.4, timeout_ms: 5000, '
+        'error_type: "timeout"}',
+    )
+    scenario = load_scenario_file(write(tmp_path, body))
+    assert scenario.fault is not None
+    assert scenario.fault.effect.timeout_ms == 5000
+    assert scenario.fault.effect.error_type == "timeout"
+
+
+def _dependency_dict() -> dict:
+    import yaml
+
+    return yaml.safe_load((SCENARIO_DIR / "dependency-inventory-db-timeouts.yml").read_text())
+
+
+def test_a_latency_herring_on_a_timeouts_own_span_is_rejected() -> None:
+    """The herring in the file targets checkout.process, a different span
+    than the fault's db.query timeout, on purpose. Retargeting it to db.query
+    with latency_add_ms would jitter the exact 5000ms deadline for any
+    request the herring also matches."""
+    data = _dependency_dict()
+    data["red_herrings"][0]["effect"] = {"span": "db.query", "latency_add_ms": 150}
+    with pytest.raises(ValidationError, match="replaces outright"):
+        Scenario.model_validate(data)
+
+
+def test_the_dependency_scenarios_actual_herring_loads() -> None:
+    """Confirms the rejection above is about the span, not the file: the
+    real herring, on checkout.process, is unaffected by the timeout."""
+    scenario = load_scenario("dependency-inventory-db-timeouts")
+    assert scenario.red_herrings[0].effect.span == "checkout.process"
+
+
+def test_sigma_scale_defaults_to_one() -> None:
+    scenario = load_scenario("payments-stripe-v251-uswest")
+    assert scenario.baseline.sigma_scale == 1.0
+
+
+def test_sigma_scale_must_be_positive(tmp_path: Path) -> None:
+    body = VALID.replace(
+        "baseline: {rps: 10, minutes: 20}", "baseline: {rps: 10, minutes: 20, sigma_scale: 0}"
+    )
+    with pytest.raises(ValidationError):
+        load_scenario_file(write(tmp_path, body))
+
+
+def test_a_red_herring_burst_may_not_run_past_the_window() -> None:
+    data = _payments_dict()
+    data["red_herrings"][0]["duration_min"] = 25.0  # onset 0 + 25 > the 20 minute window
+    with pytest.raises(ValueError, match="past the end"):
+        Scenario.model_validate(data)
+
+
+def test_a_red_herring_burst_inside_the_window_loads() -> None:
+    data = _payments_dict()
+    data["red_herrings"][0]["duration_min"] = 5.0
+    scenario = Scenario.model_validate(data)
+    assert scenario.red_herrings[0].duration_min == 5.0
+
+
+def test_customer_id_pins_must_sum_to_less_than_one(tmp_path: Path) -> None:
+    body = VALID + 'dimensions:\n  customer.id: {"cust-00001": 0.6, "cust-00002": 0.5}\n'
+    with pytest.raises(ValidationError, match="leaves nothing for the rest"):
+        load_scenario_file(write(tmp_path, body))
+
+
+def test_a_where_clause_on_customer_id_must_be_pinned_first(tmp_path: Path) -> None:
+    body = VALID.replace(
+        'where: {payment.provider: "stripe"}', 'where: {customer.id: "cust-00007"}'
+    ).replace(
+        'effect: {span: "payments.charge", latency_add_ms: 500}',
+        'effect: {span: "payments.charge", error_rate: 0.1}',
+    )
+    with pytest.raises(ValidationError, match="not pinned"):
+        load_scenario_file(write(tmp_path, body))
+
+
+def test_a_where_clause_on_a_pinned_customer_id_loads(tmp_path: Path) -> None:
+    body = (
+        VALID.replace('where: {payment.provider: "stripe"}', 'where: {customer.id: "cust-00007"}')
+        .replace(
+            'effect: {span: "payments.charge", latency_add_ms: 500}',
+            'effect: {span: "payments.charge", error_rate: 0.1}',
+        )
+        .replace(
+            'root_cause_dims: {payment.provider: "stripe"}',
+            'root_cause_dims: {customer.id: "cust-00007"}',
+        )
+        .replace("affected_share: 0.6", "affected_share: 0.15")
+        + 'dimensions:\n  customer.id: {"cust-00007": 0.15}\n'
+    )
+    scenario = load_scenario_file(write(tmp_path, body))
+    assert scenario.fault is not None
+    assert scenario.fault.where == {"customer.id": "cust-00007"}
+
+
+def test_a_where_clause_on_service_component_must_name_the_effect_spans_service(
+    tmp_path: Path,
+) -> None:
+    body = VALID.replace(
+        'where: {payment.provider: "stripe"}', 'where: {service.component: "gateway"}'
+    )
+    with pytest.raises(ValidationError, match="not the service that runs"):
+        load_scenario_file(write(tmp_path, body))
+
+
+def test_a_where_clause_on_the_effect_spans_own_service_component_loads(tmp_path: Path) -> None:
+    body = (
+        VALID.replace(
+            'where: {payment.provider: "stripe"}', 'where: {service.component: "payments"}'
+        )
+        .replace(
+            'root_cause_dims: {payment.provider: "stripe"}',
+            'root_cause_dims: {service.component: "payments"}',
+        )
+        .replace("affected_share: 0.6", "affected_share: 1.0")
+    )
+    scenario = load_scenario_file(write(tmp_path, body))
+    assert scenario.fault is not None
+    assert scenario.ground_truth.affected_share == 1.0
+
+
+def test_a_cart_size_range_on_a_span_without_cart_size_is_rejected(tmp_path: Path) -> None:
+    """cart.size is not on payments.charge, so the verifier could not filter for it."""
+    body = VALID.replace('where: {payment.provider: "stripe"}', 'where: {cart.size: ">=8"}')
+    with pytest.raises(ValidationError, match="does not carry it"):
+        load_scenario_file(write(tmp_path, body))
+
+
+def test_a_cart_size_range_on_a_span_that_carries_it_loads() -> None:
+    scenario = load_scenario("trigger-checkout-latency")
+    assert scenario.fault is not None
+    assert scenario.fault.where == {"cart.size": ">=8"}
+
+
+def test_a_malformed_cart_size_value_is_rejected(tmp_path: Path) -> None:
+    body = VALID.replace(
+        'where: {payment.provider: "stripe"}', 'where: {cart.size: "big"}'
+    ).replace(
+        'effect: {span: "payments.charge", latency_add_ms: 500}',
+        'effect: {span: "checkout.process", latency_add_ms: 500}',
+    )
+    with pytest.raises(ValidationError, match="neither a range"):
+        load_scenario_file(write(tmp_path, body))
+
+
+def test_a_trigger_scenario_carries_its_block() -> None:
+    scenario = load_scenario("trigger-checkout-latency")
+    assert scenario.trigger is not None
+    assert scenario.trigger.id == "bhuYLpkRKnv"
+    assert scenario.trigger.threshold_ms == 1500
+    assert scenario.trigger.window_min == 5
+
+
+def test_trigger_is_optional() -> None:
+    scenario = load_scenario("payments-stripe-v251-uswest")
+    assert scenario.trigger is None
+
+
+# --------------------------------------------------------------------------
+# gen/scenarios/README.md
+# --------------------------------------------------------------------------
+
+
+def test_the_scenarios_readme_table_lists_every_scenario_and_nothing_else() -> None:
+    from agent import format as fmt
+
+    text = (SCENARIO_DIR / "README.md").read_text()
+    table = fmt.parse_results_table(text, heading=None)
+    assert table is not None
+    headers, rows = table
+    assert headers[0] == "id"
+    listed = {row[0].strip("`") for row in rows}
+    assert listed == set(available_scenarios())

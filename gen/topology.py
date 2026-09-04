@@ -36,6 +36,16 @@ across the four services. A fault adds latency to one named span, or makes it
 fail, for the requests that match its `where` clause after its onset minute.
 The added latency is jittered by about 12% so the slow requests spread across
 a band of the heatmap instead of stacking on one value.
+
+An effect that fails a span can also carry `timeout_ms` (the span's own time
+is replaced exactly, no jitter, since a deadline does not vary), `error_type`
+(written as `error.type` on the failing span only), and `exception` (an
+`exception` span event on the failing span, see `gen/emit.py`). `where` may
+name `service.component` (every request touches every service, so this
+clause always matches) or a numeric range on `cart.size` (`>=8` and the
+like). `dimensions.customer.id` pins one or more customer ids to a fixed
+share, spreading the rest over the usual Zipf tail. `Baseline.sigma_scale`
+widens or narrows the log-normal spread of every span's own time.
 """
 
 from __future__ import annotations
@@ -43,12 +53,13 @@ from __future__ import annotations
 import bisect
 import math
 import random
+import re
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle only matters for type checkers
-    from gen.scenario import Effect, Scenario
+    from gen.scenario import Effect, ExceptionEffect, Scenario
 
 GATEWAY = "gateway"
 CHECKOUT = "checkout"
@@ -146,6 +157,32 @@ def _walk(node: SpanNode) -> Iterator[SpanNode]:
 SPAN_NAMES: tuple[str, ...] = tuple(node.name for node in _walk(TREE))
 SPAN_SERVICE: dict[str, str] = {node.name: node.service for node in _walk(TREE)}
 
+# The non-propagated dims each span carries, from the topology tree. A `where`
+# clause naming one of these has to name a span that actually has it, or the
+# verifier could not filter for it.
+SPAN_DIMS: dict[str, tuple[str, ...]] = {node.name: node.dims for node in _walk(TREE)}
+
+# A `where` value matching this is a numeric range rather than an exact match,
+# e.g. ">=8". Only NUMERIC_RANGE_DIMS accept one.
+RANGE_RE = re.compile(r"^\s*(>=|<=|>|<)\s*(-?\d+(?:\.\d+)?)\s*$")
+NUMERIC_RANGE_DIMS: frozenset[str] = frozenset({"cart.size"})
+
+
+def span_carries(span: str, dim: str) -> bool:
+    """True when `span` has `dim` on it, propagated or its own."""
+    return dim in PROPAGATED_DIMS or dim in SPAN_DIMS.get(span, ())
+
+
+def _compare(value: float, op: str, bound: float) -> bool:
+    if op == ">=":
+        return value >= bound
+    if op == "<=":
+        return value <= bound
+    if op == ">":
+        return value > bound
+    return value < bound
+
+
 # Dimensions a fault or a red herring may select on. Weights are the default
 # mix; a scenario can override any of them in its `dimensions:` block.
 # The default mix puts 0.40 * 0.50 * 0.60 = 0.12 of traffic in the
@@ -228,6 +265,27 @@ def customer_weights(count: int = CUSTOMER_COUNT) -> dict[str, float]:
     return {f"cust-{i:05d}": 1.0 / (i + 1) ** CUSTOMER_ZIPF_EXPONENT for i in range(count)}
 
 
+def customer_weights_for(scenario: Scenario, count: int = CUSTOMER_COUNT) -> dict[str, float]:
+    """Customer weights, with `dimensions.customer.id` pins spread over the rest.
+
+    A pin fixes one customer's share exactly. The remaining share (1 minus the
+    sum of the pins) is spread over the other ids in their normal Zipf
+    proportions, so a scenario can hand one id a fixed 15% of traffic without
+    flattening the distribution the rest of the ids still draw from.
+    """
+    pins = scenario.dimensions.get("customer.id", {})
+    base = customer_weights(count)
+    if not pins:
+        return base
+    remaining_ids = {cust_id: w for cust_id, w in base.items() if cust_id not in pins}
+    remaining_total = sum(remaining_ids.values())
+    remaining_share = 1.0 - sum(pins.values())
+    weights = dict(pins)
+    for cust_id, w in remaining_ids.items():
+        weights[cust_id] = w / remaining_total * remaining_share
+    return weights
+
+
 def cart_size_weights() -> dict[str, float]:
     """Cart sizes 1 to 12, decaying, so small carts dominate."""
     return {str(size): 0.75 ** (size - 1) for size in range(1, 13)}
@@ -244,6 +302,11 @@ class SpanRecord:
     attributes: dict[str, object] = field(default_factory=dict)
     error: bool = False
     children: list[SpanRecord] = field(default_factory=list)
+    # Set only on a span that failed because of an effect carrying `exception`;
+    # a baseline failure or a red herring's failure never gets one. gen/emit.py
+    # turns this into a span event named "exception" at the span's end time.
+    exception_type: str | None = None
+    exception_message: str | None = None
 
     def walk(self) -> Iterator[SpanRecord]:
         yield self
@@ -274,12 +337,22 @@ class _ActiveEffect:
     span: str
     latency_add_ms: float
     error_rate: float
+    timeout_ms: float | None = None
+    error_type: str | None = None
+    exception: ExceptionEffect | None = None
 
 
 def dimension_weights_for(scenario: Scenario) -> dict[str, dict[str, float]]:
-    """The dimension mix this scenario uses: the defaults with its overrides applied."""
+    """The dimension mix this scenario uses: the defaults with its overrides applied.
+
+    `customer.id` is not here: it is not one of the three weighted dims a
+    fault can select on by a plain value swap, it is pinned shares spread
+    over the Zipf tail, handled by `customer_weights_for`.
+    """
     weights = {name: dict(values) for name, values in DIMENSION_WEIGHTS.items()}
     for name, override in scenario.dimensions.items():
+        if name == "customer.id":
+            continue
         weights[name] = dict(override)
     return weights
 
@@ -291,7 +364,7 @@ class Sampler:
         self.dimensions = {
             name: WeightedChoice(values) for name, values in dimension_weights_for(scenario).items()
         }
-        self.customer = WeightedChoice(customer_weights())
+        self.customer = WeightedChoice(customer_weights_for(scenario))
         self.cart_size = WeightedChoice(cart_size_weights())
         self.route = WeightedChoice(HTTP_ROUTES)
         self.db_statement = WeightedChoice(DB_STATEMENT_HASHES)
@@ -303,37 +376,90 @@ class Sampler:
         The dimensions are drawn independently, so the share is the product of
         the per-dimension shares. A clause naming a value the scenario never
         emits gives zero, which is how a mistyped scenario file is caught.
+
+        `service.component` is not a per-request draw, every span carries its
+        own node's service, so a `where` clause on it (already checked at load
+        time to name the service that runs the effect's span) selects every
+        request; it contributes no factor. `customer.id` and `cart.size` are
+        not in `self.dimensions`, they have their own choosers.
         """
         share = 1.0
         for name, value in where.items():
+            if name == "service.component":
+                continue
+            if name == "customer.id":
+                share *= self.customer.share(str(value))
+                continue
+            if name == "cart.size":
+                share *= self._cart_size_share(str(value))
+                continue
             chooser = self.dimensions.get(name)
             if chooser is None:
                 return 0.0
             share *= chooser.share(str(value))
         return share
 
+    def _cart_size_share(self, value: str) -> float:
+        rng = RANGE_RE.match(value)
+        if rng is None:
+            return self.cart_size.share(value)
+        op, bound = rng.group(1), float(rng.group(2))
+        return sum(
+            self.cart_size.share(size)
+            for size in self.cart_size.values
+            if _compare(float(size), op, bound)
+        )
 
-def matches(dims: Mapping[str, str], where: Mapping[str, str]) -> bool:
-    """True when every clause in `where` holds for these request dimensions."""
-    return all(str(dims.get(name)) == str(value) for name, value in where.items())
+
+def matches(dims: Mapping[str, object], where: Mapping[str, str]) -> bool:
+    """True when every clause in `where` holds for these request dimensions.
+
+    `service.component` is skipped: it is not a per-request draw (every span
+    carries the service it runs on, not the request's), and a `where` clause
+    naming it is validated at load time to name the service that runs the
+    effect's span, so it selects every request by construction. A value
+    matching `RANGE_RE`, such as `>=8`, is a numeric comparison against
+    `dims[name]` rather than an equality check.
+    """
+    for name, value in where.items():
+        if name == "service.component":
+            continue
+        actual = dims.get(name)
+        rng = RANGE_RE.match(str(value))
+        if rng is not None:
+            if actual is None or not _compare(float(actual), rng.group(1), float(rng.group(2))):
+                return False
+            continue
+        if str(actual) != str(value):
+            return False
+    return True
 
 
 def _effects_for(
-    scenario: Scenario, dims: Mapping[str, str], offset_s: float
+    scenario: Scenario, attributes: Mapping[str, object], offset_s: float
 ) -> tuple[list[_ActiveEffect], bool, bool]:
-    """The effects in force for one request, plus fault population and fault flags."""
+    """The effects in force for one request, plus fault population and fault flags.
+
+    `attributes` is the full per-request draw, the three propagated dims
+    plus `customer.id`, `cart.size`, and the rest, because a `where` clause
+    may select on any of them.
+    """
     active: list[_ActiveEffect] = []
     in_population = False
     faulted = False
 
     if scenario.fault is not None:
-        in_population = matches(dims, scenario.fault.where)
+        in_population = matches(attributes, scenario.fault.where)
         if in_population and offset_s >= scenario.fault.onset_min * 60.0:
             faulted = True
             active.append(_as_active(scenario.fault.effect))
 
     for herring in scenario.red_herrings:
-        if matches(dims, herring.where) and offset_s >= herring.onset_min * 60.0:
+        if not matches(attributes, herring.where):
+            continue
+        start_s = herring.onset_min * 60.0
+        end_s = None if herring.duration_min is None else start_s + herring.duration_min * 60.0
+        if offset_s >= start_s and (end_s is None or offset_s < end_s):
             active.append(_as_active(herring.effect))
 
     return active, in_population, faulted
@@ -344,6 +470,9 @@ def _as_active(effect: Effect) -> _ActiveEffect:
         span=effect.span,
         latency_add_ms=effect.latency_add_ms,
         error_rate=effect.error_rate,
+        timeout_ms=effect.timeout_ms,
+        error_type=effect.error_type,
+        exception=effect.exception,
     )
 
 
@@ -353,10 +482,13 @@ def _build_span(
     effects: Sequence[_ActiveEffect],
     attributes: Mapping[str, object],
     failing: set[str],
+    sigma_scale: float = 1.0,
 ) -> SpanRecord:
     """Build one span and its subtree, applying any effect aimed at this span."""
-    self_ms = rng.lognormvariate(math.log(node.self_ms_median), node.self_ms_sigma)
+    self_ms = rng.lognormvariate(math.log(node.self_ms_median), node.self_ms_sigma * sigma_scale)
 
+    span_error_type: str | None = None
+    span_exception: ExceptionEffect | None = None
     for effect in effects:
         if effect.span != node.name:
             continue
@@ -365,17 +497,26 @@ def _build_span(
             self_ms += effect.latency_add_ms * jitter
         if effect.error_rate and rng.random() < effect.error_rate:
             failing.add(node.name)
+            if effect.timeout_ms is not None:
+                # A deadline, not a slow draw: exact, no jitter.
+                self_ms = effect.timeout_ms
+            if effect.error_type is not None:
+                span_error_type = effect.error_type
+            if effect.exception is not None:
+                span_exception = effect.exception
 
     span_attributes: dict[str, object] = {name: attributes[name] for name in SPAN_COMMON_ATTRIBUTES}
     for name in node.dims:
         if name in attributes:
             span_attributes[name] = attributes[name]
     span_attributes["service.component"] = node.service
+    if span_error_type is not None:
+        span_attributes["error.type"] = span_error_type
 
     children: list[SpanRecord] = []
     cursor = self_ms / 2.0
     for child_node in node.children:
-        child = _build_span(child_node, rng, effects, attributes, failing)
+        child = _build_span(child_node, rng, effects, attributes, failing, sigma_scale)
         child.start_offset_ms = cursor
         cursor += child.duration_ms
         children.append(child)
@@ -388,6 +529,8 @@ def _build_span(
         duration_ms=duration,
         attributes=span_attributes,
         children=children,
+        exception_type=None if span_exception is None else span_exception.type,
+        exception_message=None if span_exception is None else span_exception.message,
     )
 
 
@@ -429,10 +572,12 @@ def generate_requests(scenario: Scenario, seed: int = 0) -> list[Request]:
         attributes["http.route"] = sampler.route.pick(rng)
         attributes["db.statement.hash"] = sampler.db_statement.pick(rng)
 
-        effects, in_population, faulted = _effects_for(scenario, dims, offset_s)
+        effects, in_population, faulted = _effects_for(scenario, attributes, offset_s)
 
         failing: set[str] = set()
-        root = _build_span(TREE, rng, effects, attributes, failing)
+        root = _build_span(
+            TREE, rng, effects, attributes, failing, sigma_scale=scenario.baseline.sigma_scale
+        )
         if rng.random() < BASELINE_ERROR_RATE:
             failing.add(sampler.error_source.pick(rng))
         _mark_errors(root, failing)
@@ -457,3 +602,10 @@ def generate_requests(scenario: Scenario, seed: int = 0) -> list[Request]:
 def span_count(requests: Sequence[Request]) -> int:
     """Total spans across every request, which is what Honeycomb bills as events."""
     return sum(1 for request in requests for _ in request.root.walk())
+
+
+def exception_event_count(requests: Sequence[Request]) -> int:
+    """How many spans carry an exception event, i.e. how many `exception_type` is set."""
+    return sum(
+        1 for request in requests for span in request.root.walk() if span.exception_type is not None
+    )

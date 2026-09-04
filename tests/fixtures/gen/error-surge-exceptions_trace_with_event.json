@@ -1,0 +1,14 @@
+{
+  "tool": "get_trace",
+  "args": {
+    "environment_slug": "receipts-demo",
+    "trace_id": "00faa2abc1c7c8a8e6e6184c1d125a85",
+    "show_events": true,
+    "view_mode": "full"
+  },
+  "structured_content": null,
+  "content_texts": [
+    "| span_id | parent_id | start_unix_ns | duration_ns | kind | status_code | error | http_status | service | route | name | annotation_type | link_span_id | link_trace_id | depth | child_count | descendant_count | event_count | is_collapsed |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n| 9462a1775b44574f |  | 1788498035930571008 | 125786524 | server | ERROR | true | 500 | receipts-shop | /checkout/gift | HTTP POST /checkout |  |  |  | 0 | 1 | 4 | 0 | false |\n| 5da1adb454f66b95 | 9462a1775b44574f | 1788498035932742400 | 121443552 | internal | ERROR | true |  | receipts-shop | /checkout/gift | checkout.process |  |  |  | 1 | 2 | 3 | 0 | false |\n| 7ec6e2d9f977ff5e | 5da1adb454f66b95 | 1788498036036943872 | 9653223 | internal | UNSET | false |  | receipts-shop |  | inventory.reserve |  |  |  | 2 | 1 | 1 | 0 | false |\n| f779c54b4e443fbd | 7ec6e2d9f977ff5e | 1788498036038985216 | 5570494 | client | UNSET | false |  | receipts-shop |  | db.query |  |  |  | 3 | 0 | 0 | 0 | false |\n| ac8e09ade76d84d4 | 5da1adb454f66b95 | 1788498035940331520 | 96612181 | client | ERROR | true |  | receipts-shop |  | payments.charge |  |  |  | 2 | 0 | 0 | 1 | false |\n|  | ac8e09ade76d84d4 | 1788498036036943872 | 0 |  |  | false |  |  |  | exception | span_event |  |  | 0 | 0 | 0 | 0 | false |\n\n\n---\nMetadata:\n  environment: receipts-demo\n  mean_sample_rate: 1\n  navigation_hints: Errors detected. Look for spans with error=true or status_code=ERROR for investigation.; Use focus_span_id='9462a1775b44574f' to examine the slowest span and its children.\n  show_events: true\n  time_range: \"from 2026-09-04T04:52:45Z to 2026-09-04T05:02:45Z\"\n  total_spans: 5\n  trace_id: 00faa2abc1c7c8a8e6e6184c1d125a85\n  trace_link: \"https://ui.honeycomb.io/joymath/environments/receipts-demo/result/g2fA18YNfHg/trace?trace_id=00faa2abc1c7c8a8e6e6184c1d125a85\"\n  trace_result_pk: g2fA18YNfHg\n  view_mode: full\n  visible_spans: 6\n"
+  ],
+  "is_error": false
+}

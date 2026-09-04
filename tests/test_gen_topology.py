@@ -348,6 +348,261 @@ def test_population_share_is_the_product_of_the_dimension_shares() -> None:
     assert sampler.population_share({"no.such.dim": "x"}) == 0.0
 
 
+def test_customer_weights_for_spreads_the_remaining_share_over_the_zipf_tail() -> None:
+    scenario = load_scenario("herring-customer-whale")
+    weights = topology.customer_weights_for(scenario)
+    chooser = topology.WeightedChoice(weights)
+    assert chooser.share("cust-00007") == pytest.approx(0.15)
+    assert sum(weights.values()) == pytest.approx(1.0, rel=1e-9)
+    # cust-00000, the busiest unpinned id, still outweighs a rare id: pinning
+    # cust-00007 did not flatten the Zipf shape of the rest of the tail.
+    assert chooser.share("cust-00000") > chooser.share("cust-01999")
+
+
+def test_customer_weights_for_is_unchanged_without_a_pin() -> None:
+    scenario = load_scenario(PAYMENTS)
+    assert topology.customer_weights_for(scenario) == topology.customer_weights()
+
+
+# --------------------------------------------------------------------------
+# R5: matches(), ranges, service.component, and timing windows
+# --------------------------------------------------------------------------
+
+
+def test_matches_treats_service_component_as_always_true() -> None:
+    """Every span carries service.component for its own node, not the request's,
+    so a where clause naming it is validated at load time and matches every
+    request here rather than being checked against `dims`."""
+    assert topology.matches({}, {"service.component": "inventory-db"})
+    assert topology.matches({"cart.size": 3}, {"service.component": "anything"})
+
+
+def test_matches_evaluates_a_numeric_range() -> None:
+    assert topology.matches({"cart.size": 8}, {"cart.size": ">=8"})
+    assert not topology.matches({"cart.size": 7}, {"cart.size": ">=8"})
+    assert topology.matches({"cart.size": 3}, {"cart.size": "<5"})
+    assert not topology.matches({"cart.size": 3}, {"cart.size": ">5"})
+
+
+def test_matches_still_does_plain_equality() -> None:
+    assert topology.matches({"payment.provider": "adyen"}, {"payment.provider": "adyen"})
+    assert not topology.matches({"payment.provider": "stripe"}, {"payment.provider": "adyen"})
+
+
+def test_a_dependency_fault_times_out_the_failing_span_exactly() -> None:
+    """The failing db.query calls hit a 5000ms deadline exactly, no jitter, and
+    only the ones the effect actually failed carry error.type=timeout; a
+    baseline noise failure that happens to land on db.query does not."""
+    scenario = load_scenario("dependency-inventory-db-timeouts")
+    requests = topology.generate_requests(scenario, seed=0)
+
+    def db_span(r: topology.Request) -> topology.SpanRecord:
+        return r.root.children[0].children[1].children[0]
+
+    faulted = [r for r in requests if r.faulted]
+    timed_out = [r for r in faulted if db_span(r).attributes.get("error.type") == "timeout"]
+    assert timed_out
+    assert {round(db_span(r).duration_ms, 6) for r in timed_out} == {5000.0}
+    for r in timed_out:
+        assert db_span(r).error is True
+
+    not_timed_out = [r for r in faulted if db_span(r).attributes.get("error.type") != "timeout"]
+    assert all("error.type" not in db_span(r).attributes for r in not_timed_out)
+
+
+def test_exception_event_lands_only_on_the_span_the_effect_failed() -> None:
+    scenario = load_scenario("error-surge-exceptions")
+    requests = topology.generate_requests(scenario, seed=0)
+    assert scenario.fault is not None
+    exc = scenario.fault.effect.exception
+    assert exc is not None
+
+    def charge_span(r: topology.Request) -> topology.SpanRecord:
+        return r.root.children[0].children[0]
+
+    with_exception = [r for r in requests if charge_span(r).exception_type is not None]
+    assert with_exception
+    for r in with_exception:
+        span = charge_span(r)
+        assert span.error is True
+        assert span.exception_type == exc.type
+        assert span.exception_message == exc.message
+        assert r.faulted  # only the fault's own failures get one, not baseline or herring noise
+
+    # The us-east-1 herring also fails payments.charge, with no exception.
+    herring_failures = [
+        r
+        for r in requests
+        if charge_span(r).error and not r.faulted and charge_span(r).exception_type is None
+    ]
+    assert herring_failures
+
+
+def test_a_cart_size_range_selects_the_documented_population() -> None:
+    scenario = load_scenario("trigger-checkout-latency")
+    sampler = topology.Sampler(scenario)
+    assert scenario.fault is not None
+    assert sampler.population_share(scenario.fault.where) == pytest.approx(0.1051, abs=0.001)
+
+
+def test_a_pinned_customer_id_draws_at_its_pinned_share() -> None:
+    scenario = load_scenario("herring-customer-whale")
+    requests = topology.generate_requests(scenario, seed=0)
+    ids = [r.root.attributes["customer.id"] for r in requests]
+    share = sum(1 for i in ids if i == "cust-00007") / len(ids)
+    assert share == pytest.approx(0.15, abs=0.02)
+
+
+def test_the_whale_holds_about_a_third_of_all_errors() -> None:
+    """cust-00007 is 15% of traffic; its own elevated failure rate makes it
+    about 30% of all errors over the window even though adyen, not the whale,
+    is the incident."""
+    scenario = load_scenario("herring-customer-whale")
+    requests = topology.generate_requests(scenario, seed=0)
+    whale = "cust-00007"
+
+    traffic_share = sum(1 for r in requests if r.root.attributes["customer.id"] == whale) / len(
+        requests
+    )
+    assert traffic_share == pytest.approx(0.15, abs=0.02)
+
+    errored = [r for r in requests if r.root.error]
+    whale_errors = sum(1 for r in errored if r.root.attributes["customer.id"] == whale)
+    error_share = whale_errors / len(errored)
+    assert error_share == pytest.approx(0.30, abs=0.05)
+
+
+def test_the_whales_own_error_share_is_not_steady_across_onset() -> None:
+    """The whale's 30% share of all errors is a whole-window number, not a
+    steady one: adyen's surge after onset dilutes the whale's own share of
+    errors from 66% before onset to 24% after, even as the whale's own error
+    rate itself climbs (its errors are a shrinking share of a bigger pool).
+    Excluding the whale, adyen's own step still holds; excluding adyen, the
+    whale's own rate does not step, which is what makes the whale a red
+    herring and adyen the incident."""
+    scenario = load_scenario("herring-customer-whale")
+    requests = topology.generate_requests(scenario, seed=0)
+    whale = "cust-00007"
+    onset_s = scenario.fault.onset_min * 60.0
+
+    def share(attr: str, value: str, before: bool) -> float:
+        window = [r for r in requests if (r.offset_s < onset_s) is before]
+        errored = [r for r in window if r.root.error]
+        hits = [r for r in errored if r.root.attributes[attr] == value]
+        return len(hits) / len(errored)
+
+    assert share("customer.id", whale, before=True) == pytest.approx(0.663, abs=0.01)
+    assert share("customer.id", whale, before=False) == pytest.approx(0.236, abs=0.01)
+
+    def own_error_rate(attr: str, value: str, before: bool) -> float:
+        window = [
+            r
+            for r in requests
+            if (r.offset_s < onset_s) is before and r.root.attributes[attr] == value
+        ]
+        return sum(1 for r in window if r.root.error) / len(window)
+
+    assert own_error_rate("customer.id", whale, before=True) == pytest.approx(0.049, abs=0.005)
+    assert own_error_rate("customer.id", whale, before=False) == pytest.approx(0.106, abs=0.005)
+
+    def excl_error_rate(attr: str, value: str, before: bool) -> float:
+        window = [
+            r
+            for r in requests
+            if (r.offset_s < onset_s) is before and r.root.attributes[attr] != value
+        ]
+        return sum(1 for r in window if r.root.error) / len(window)
+
+    # Excluding the whale (customer.id != cust-00007): adyen's step survives.
+    excl_whale_before = excl_error_rate("customer.id", whale, before=True)
+    excl_whale_after = excl_error_rate("customer.id", whale, before=False)
+    assert excl_whale_before == pytest.approx(0.0045, abs=0.001)
+    assert excl_whale_after == pytest.approx(0.0594, abs=0.005)
+    assert excl_whale_after / excl_whale_before > 10  # steps hard, the whale was not carrying it
+
+    # Excluding adyen (payment.provider != adyen): the rate stays flat.
+    excl_adyen_before = excl_error_rate("payment.provider", "adyen", before=True)
+    excl_adyen_after = excl_error_rate("payment.provider", "adyen", before=False)
+    assert excl_adyen_before == pytest.approx(0.0099, abs=0.002)
+    assert excl_adyen_after == pytest.approx(0.0134, abs=0.003)
+    assert excl_adyen_after / excl_adyen_before < 2  # no real step, unlike excluding the whale
+
+
+def _self_ms(span: topology.SpanRecord) -> float:
+    """A span's own time: its duration minus every child's."""
+    return span.duration_ms - sum(child.duration_ms for child in span.children)
+
+
+def _self_times_by_name(requests: list[topology.Request]) -> dict[str, list[float]]:
+    times: dict[str, list[float]] = {}
+    for request in requests:
+        for span in request.root.walk():
+            times.setdefault(span.name, []).append(_self_ms(span))
+    return times
+
+
+def test_sigma_scale_widens_the_spread_without_moving_each_spans_own_median() -> None:
+    """sigma_scale widens the log-normal draw for each span's own time, and
+    each span's own median holds. The fair comparison is control-noisy
+    against an in-memory copy of itself with sigma_scale reset to 1.0:
+    comparing against control-quiet, as an earlier version of this test did,
+    compares against a scenario with its own red herring on db.query, a
+    confound that happened to make the old, looser assertion pass."""
+    noisy = load_scenario("control-noisy")
+    assert noisy.baseline.sigma_scale == pytest.approx(2.0)
+    flat = noisy.model_copy(deep=True)
+    flat.baseline.sigma_scale = 1.0
+
+    noisy_times = _self_times_by_name(topology.generate_requests(noisy, seed=0))
+    flat_times = _self_times_by_name(topology.generate_requests(flat, seed=0))
+
+    for name in topology.SPAN_NAMES:
+        ratio = _median(noisy_times[name]) / _median(flat_times[name])
+        assert 0.9 <= ratio <= 1.1, (name, ratio)
+
+    noisy_root = noisy_times[topology.ROOT_SPAN]
+    flat_root = flat_times[topology.ROOT_SPAN]
+    assert (max(noisy_root) - min(noisy_root)) > (max(flat_root) - min(flat_root))
+
+
+def test_sigma_scale_still_moves_the_root_median_because_durations_sum() -> None:
+    """The root span's duration is its own time plus every descendant's, so
+    widening each span's spread compounds: a sum of wider log-normals has a
+    heavier right tail, and the root median shifts even though no individual
+    span's own median does (the test above)."""
+    noisy = load_scenario("control-noisy")
+    flat = noisy.model_copy(deep=True)
+    flat.baseline.sigma_scale = 1.0
+
+    noisy_root = _median([r.duration_ms for r in topology.generate_requests(noisy, seed=0)])
+    flat_root = _median([r.duration_ms for r in topology.generate_requests(flat, seed=0)])
+    assert noisy_root / flat_root > 1.1
+
+
+def test_a_red_herring_burst_only_fires_inside_its_window() -> None:
+    scenario = load_scenario("control-noisy")
+    herring = scenario.red_herrings[0]
+    assert herring.duration_min is not None
+    requests = topology.generate_requests(scenario, seed=0)
+
+    def charge_span(r: topology.Request) -> topology.SpanRecord:
+        return r.root.children[0].children[0]
+
+    start_s = herring.onset_min * 60.0
+    end_s = start_s + herring.duration_min * 60.0
+    paypal = [r for r in requests if r.root.attributes["payment.provider"] == "paypal"]
+    before = [r for r in paypal if r.offset_s < start_s]
+    during = [r for r in paypal if start_s <= r.offset_s < end_s]
+    after = [r for r in paypal if r.offset_s >= end_s]
+    assert before and during and after
+
+    before_rate = sum(1 for r in before if charge_span(r).error) / len(before)
+    during_rate = sum(1 for r in during if charge_span(r).error) / len(during)
+    after_rate = sum(1 for r in after if charge_span(r).error) / len(after)
+    assert during_rate > 10 * max(before_rate, after_rate, 0.001)
+    assert after_rate == pytest.approx(before_rate, abs=0.05)
+
+
 def _median(values: list[float]) -> float:
     ordered = sorted(values)
     return ordered[len(ordered) // 2]

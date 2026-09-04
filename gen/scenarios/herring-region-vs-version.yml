@@ -1,0 +1,25 @@
+id: herring-region-vs-version
+narrative: >-
+  v2.6.1 rolled out at the ten minute mark, only to 8% of traffic, and checkout got
+  about 600ms slower for those requests. us-east-1 has been steadily 120ms slower on
+  checkout the whole time, present before onset, and it is 45% of traffic against
+  v2.6.1's 8%, so a BubbleUp drawn low enough to catch the region's shift ranks
+  the region first. Only the version stepped at onset. The region did not move.
+baseline: {rps: 15, minutes: 20}
+dimensions:
+  deployment.version: {"2.5.0": 0.46, "2.5.1": 0.46, "2.6.1": 0.08}
+  cloud.region: {"us-west-2": 0.35, "us-east-1": 0.45, "eu-west-1": 0.20}
+fault:
+  onset_min: 10
+  where: {deployment.version: "2.6.1"}
+  effect: {span: "checkout.process", latency_add_ms: 600}
+ground_truth:
+  incident_present: true
+  root_cause_dims: {deployment.version: "2.6.1"}
+  slow_or_failing_span: checkout.process
+  affected_share: 0.08
+red_herrings:
+  - where: {cloud.region: "us-east-1"}
+    effect: {span: "checkout.process", latency_add_ms: 120}
+    onset_min: 0
+    note: us-east-1 is steadily slower on checkout, present before onset, and larger by count, but did not step at onset

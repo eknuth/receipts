@@ -1,0 +1,21 @@
+id: dependency-inventory-db-timeouts
+narrative: >-
+  inventory-db started timing out at the ten minute mark. 40% of db.query calls hit a
+  5000ms deadline and fail, in every region and on every provider, because every
+  request touches this database. eu-west-1 has been a little slow at checkout all
+  along, a steady regional cost on a separate span from the database timeout.
+baseline: {rps: 15, minutes: 20}
+fault:
+  onset_min: 10
+  where: {service.component: "inventory-db"}
+  effect: {span: "db.query", error_rate: 0.4, timeout_ms: 5000, error_type: "timeout"}
+ground_truth:
+  incident_present: true
+  root_cause_dims: {service.component: "inventory-db"}
+  slow_or_failing_span: db.query
+  affected_share: 1.0
+red_herrings:
+  - where: {cloud.region: "eu-west-1"}
+    effect: {span: "checkout.process", latency_add_ms: 150}
+    onset_min: 0
+    note: eu-west-1 has been a little slower at checkout all along, a steady regional cost on a different span than the database timeout
