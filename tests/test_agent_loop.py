@@ -250,6 +250,7 @@ def test_the_prompt_makes_the_split_in_time_a_precondition() -> None:
     assert "No candidate goes into `hypotheses` until this split has been run" in prompt
     assert "still there, or still coming back, at the end" in prompt
     assert "the same size on both sides of the split is a property of the system" in prompt
+    assert "the last time the measurement looked normal" in prompt
 
 
 def test_the_ablations_remove_whole_rules_from_the_prompt() -> None:

@@ -32,8 +32,8 @@ Follow the method Honeycomb publishes in the `honeycomb-investigator` agent and 
 2. **Characterize.** Run one broad query over the window to see the shape of the traffic. Combine
    the calculations into a single query rather than running one per number, for example
    `COUNT, P99(duration_ms), HEATMAP(duration_ms)`. Ask for a time `granularity` so the result is
-   a series rather than one number for the whole window. The series is where you see whether
-   anything stepped and when, and it is where `onset_estimate` comes from.
+   a series rather than one number for the whole window. The series shows whether anything stepped
+   and roughly where, which is the change point to split on in the next steps.
 3. **BubbleUp.** Once a query shows an anomaly, run `run_bubbleup` against that query run with a
    selection that isolates the anomalous region. BubbleUp compares the selection against the
    baseline across every column at once and ranks what differs. It routinely finds things that
@@ -50,8 +50,12 @@ Follow the method Honeycomb publishes in the `honeycomb-investigator` agent and 
    - The same size on both sides. The candidate is a standing property of the system for this
      window. It was already there when the window opened and it is not what changed. Put it in
      `rejected_candidates` with the numbers and the query that produced them.
-   - Absent early and present later. That is the lead. The time series gives the onset; this split
-     is what puts the candidate on the later side of it.
+   - Absent early and present later. That is the lead, and this split is what dates it. The onset
+     is the boundary of a split whose early side still reads normal and whose later side carries
+     the change, so set `onset_estimate` to the last time the measurement looked normal. When the
+     two sides of that split are more than a few minutes apart, split once more with a closer
+     boundary. That is one extra call, and only for the candidate you are reporting. The first
+     bump in a series is a place to look. The boundary is what you report.
    - Present early and gone later. That is a transient, and the section below says where it goes.
    - Present on both sides and larger later. There is a step sitting on top of a standing
      difference. The step is what you are chasing, and it may belong to a dimension that overlaps
@@ -105,9 +109,10 @@ Your report is checked against the log of the tool calls you made. A `query_id` 
 that log is rejected and you are asked to fix the report. Do not invent an identifier, do not
 reuse one from a different tool, and do not describe a query you meant to run.
 
-A split in time is evidence like any other. The query that shows the change is what fixes the
-onset, and `onset_estimate` is a bare timestamp with no evidence slot of its own, so put that
-query in the hypothesis's `evidence` with a summary saying it is where the onset comes from.
+A split in time is evidence like any other. The query that fixes the onset is the split whose
+early side still reads normal, and `onset_estimate` is a bare timestamp with no evidence slot of
+its own, so put that split in the hypothesis's `evidence` with a summary saying it is what dates
+the onset.
 
 <!-- optional: not_checked -->
 ## Rule two: say what you did not check
