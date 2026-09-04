@@ -27,20 +27,24 @@ from test_agent_loop import (
 
 from agent.loop import SUBMIT_REPORT, AgentConfig
 from agent.providers.base import Completion, ToolSchema, Turn
-from agent.report import Evidence, Hypothesis, Report
+from agent.report import Evidence, Hypothesis, Report, load_report
+from evals.grader import grade_file
 from evals.run import (
     CONFIGS,
     GradedRun,
     RunIndex,
     agent_config,
     crashed_run,
+    graded_run,
     load_run,
     main,
     next_repeat,
+    regrade,
     resolve_run,
     run_dir,
     run_matrix,
     top_permalink,
+    write_run,
 )
 from gen.emit import EmitResult
 from gen.scenario import Scenario
@@ -49,6 +53,9 @@ from receipts.settings import REPO_ROOT, Settings
 PAYMENTS = "payments-stripe-v251-uswest"
 CONTROL = "control-quiet"
 DEPLOY = "deploy-regression-v260"
+
+FIXTURES = Path(__file__).parent / "fixtures" / "reports"
+FIXTURE_RUNS_DIR = FIXTURES / "runs"
 
 
 # --------------------------------------------------------------------------
@@ -820,3 +827,95 @@ def test_usage_errors_exit_2_before_anything_runs(tmp_path: Path) -> None:
     assert main(["--scenarios", CONTROL, "--configs", "not-a-config", *safe]) == 2
     assert main(["--scenarios", CONTROL, "--repeats", "0", *safe]) == 2
     assert main(["--scenarios", CONTROL, "--provider", "bedrock", *safe]) == 2
+
+
+def test_scenarios_is_required_unless_regrade_is_given(tmp_path: Path) -> None:
+    safe = ["--results-dir", str(tmp_path / "results"), "--runs-dir", str(tmp_path / "runs")]
+    assert main(safe) == 2
+
+
+# --------------------------------------------------------------------------
+# --regrade
+# --------------------------------------------------------------------------
+
+
+def _seeded_cell(results_dir: Path, config: str = "full", repeat: int = 1) -> tuple[Path, float]:
+    """One real graded cell, filed the way the runner files it. Returns the
+    grade.json path and the total a fresh grade actually computes."""
+    report_path = FIXTURES / "run-4155490e2a44" / "report.json"
+    report = load_report(report_path)
+    result = grade_file(report_path, runs_dir=FIXTURE_RUNS_DIR)
+    graded = graded_run(report, result, config=config, repeat=repeat)
+    directory = run_dir(results_dir, config, report.scenario_id, repeat)
+    write_run(directory, graded, report)
+    return directory / "grade.json", result.total
+
+
+def _make_stale(grade_path: Path, stale_total: float = -9.0) -> None:
+    """Overwrite a grade.json's total, standing in for one written before a
+    grader change, without touching its report.json."""
+    data = json.loads(grade_path.read_text())
+    data["total"] = stale_total
+    data["grade"]["total"] = stale_total
+    grade_path.write_text(json.dumps(data))
+
+
+def test_regrade_rebuilds_a_stale_grade_and_reports_the_change(tmp_path: Path) -> None:
+    grade_path, real_total = _seeded_cell(tmp_path)
+    _make_stale(grade_path)
+
+    changed = regrade(tmp_path, FIXTURE_RUNS_DIR)
+
+    assert changed == [(grade_path, -9.0, real_total)]
+    assert load_run(grade_path).total == pytest.approx(real_total)
+
+
+def test_regrade_leaves_an_unchanged_grade_out_of_the_report_and_rewrites_it_anyway(
+    tmp_path: Path,
+) -> None:
+    grade_path, real_total = _seeded_cell(tmp_path)
+    before = grade_path.read_text()
+
+    changed = regrade(tmp_path, FIXTURE_RUNS_DIR)
+
+    assert changed == []
+    assert load_run(grade_path).total == pytest.approx(real_total)
+    assert grade_path.read_text() == before  # a pure function of the same report and scenario
+
+
+def test_regrade_leaves_a_crashed_cell_alone(tmp_path: Path) -> None:
+    crash = crashed_run(config="full", scenario_id=CONTROL, run_id="run-x", repeat=1, error="boom")
+    directory = run_dir(tmp_path, "full", CONTROL, 1)
+    write_run(directory, crash, None)  # no report.json, the way a bare crash writes
+    before = (directory / "grade.json").read_text()
+
+    changed = regrade(tmp_path, FIXTURE_RUNS_DIR)
+
+    assert changed == []
+    assert (directory / "grade.json").read_text() == before
+
+
+def test_regrade_via_the_cli_needs_no_scenarios_and_prints_the_change(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    grade_path, real_total = _seeded_cell(tmp_path)
+    _make_stale(grade_path)
+
+    assert (
+        main(["--regrade", "--results-dir", str(tmp_path), "--runs-dir", str(FIXTURE_RUNS_DIR)])
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "-9.000 -> " in out
+    assert f"{real_total:.3f}" in out
+
+
+def test_regrade_via_the_cli_says_so_when_nothing_changed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _seeded_cell(tmp_path)
+    assert (
+        main(["--regrade", "--results-dir", str(tmp_path), "--runs-dir", str(FIXTURE_RUNS_DIR)])
+        == 0
+    )
+    assert "no grades changed" in capsys.readouterr().out

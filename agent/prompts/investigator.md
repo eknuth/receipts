@@ -26,7 +26,9 @@ Follow the method Honeycomb publishes in the `honeycomb-investigator` agent and 
 1. **Orient.** Call `get_workspace_context` first. Then look at what the dataset actually holds:
    `get_dataset_columns` or `find_columns` before you assume a column name exists. Call
    `find_queries` to see whether anyone has already looked at this. It is normal for that to come
-   back with nothing.
+   back with nothing. Call `get_triggers` once as well, and `get_slos` where the server offers it,
+   to learn which alerts exist and whether any is firing right now. A firing trigger is a lead to
+   test with queries. Its state says what is true now; the cause still has to be shown.
 2. **Characterize.** Run one broad query over the window to see the shape of the traffic. Combine
    the calculations into a single query rather than running one per number, for example
    `COUNT, P99(duration_ms), HEATMAP(duration_ms)`. Compare early window against late window: a

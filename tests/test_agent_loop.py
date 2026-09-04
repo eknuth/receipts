@@ -486,6 +486,104 @@ async def test_a_not_checked_entry_that_was_queried_fails_validation(
     assert any("not_checked_false" in message for message in report.validation_messages)
 
 
+async def test_a_json_encoded_hypotheses_list_is_accepted_and_the_coercion_is_recorded(
+    settings: Settings,
+) -> None:
+    """A live run once sent `hypotheses` as the JSON text of a list rather than
+    a list. Before agent/report.py's coercion this burned the call budget on
+    a validation error and filed nothing; now it is accepted and the
+    coercion is recorded rather than silent."""
+    encoded = report_args(hypotheses=json.dumps(report_args()["hypotheses"]))
+    provider = FakeProvider(
+        [
+            completion(query_use("b"), negation_use("c"), baseline_use("d")),
+            completion(use(SUBMIT_REPORT, encoded, ident="d")),
+        ]
+    )
+    report = await run_loop(provider, settings=settings)
+
+    assert report.stop_reason == "report"
+    assert report.validation_failed is False
+    assert report.hypotheses[0].dims == {"deployment.version": "9.9.9"}
+    assert report.coerced_fields == ["hypotheses"]
+    assert any("coerced_fields" in message for message in report.validation_messages)
+    assert any("hypotheses" in message for message in report.validation_messages)
+
+
+async def test_coerced_then_validator_rejected_then_clean_still_records_the_coercion(
+    settings: Settings,
+) -> None:
+    """The first attempt sends hypotheses as a JSON string (coerces) and has
+    no evidence (the validator rejects it, not the schema). The second
+    attempt is a plain, uncoerced, valid report. The run ends clean, and the
+    coercion from the abandoned first attempt is still on the record."""
+    first_hypothesis = dict(report_args()["hypotheses"][0], evidence=[])
+    coerced_and_rejected = report_args(hypotheses=json.dumps([first_hypothesis]))
+    provider = FakeProvider(
+        [
+            completion(query_use("b"), negation_use("c"), baseline_use("d")),
+            completion(use(SUBMIT_REPORT, coerced_and_rejected, ident="d")),
+            completion(use(SUBMIT_REPORT, report_args(), ident="e")),
+        ]
+    )
+    report = await run_loop(provider, settings=settings)
+
+    assert report.stop_reason == "report"
+    assert report.validation_failed is False
+    assert report.coerced_fields == ["hypotheses"]
+    assert any("coerced_fields" in message for message in report.validation_messages)
+
+
+async def test_coerced_then_schema_rejected_twice_still_records_the_coercion(
+    settings: Settings,
+) -> None:
+    """Both attempts send dims as a JSON string (coerces) inside a hypothesis
+    an invalid confidence level makes schema-invalid regardless. A field
+    validator for one field runs even when a sibling field fails, so the
+    coercion happens on every attempt though neither ever validates."""
+
+    def bad_schema() -> dict[str, Any]:
+        return report_args(
+            hypotheses=[
+                {
+                    "claim": "x",
+                    "dims": json.dumps({"deployment.version": "9.9.9"}),
+                    "confidence": "certain",  # not one of high/medium/low
+                    "evidence": [{"query_id": "Q1", "summary": "rows"}],
+                }
+            ]
+        )
+
+    provider = FakeProvider(
+        [
+            completion(query_use("b"), negation_use("c"), baseline_use("d")),
+            completion(use(SUBMIT_REPORT, bad_schema(), ident="d")),
+            completion(use(SUBMIT_REPORT, bad_schema(), ident="e")),
+        ]
+    )
+    report = await run_loop(provider, settings=settings)
+
+    assert report.stop_reason == "report"
+    assert report.validation_failed is True
+    assert report.hypotheses == []  # the schema-rejected draft was never kept
+    assert report.coerced_fields == ["dims"]
+    assert any("coerced_fields" in message for message in report.validation_messages)
+
+
+async def test_a_clean_report_records_no_coercion(settings: Settings) -> None:
+    provider = FakeProvider(
+        [
+            completion(query_use("b"), negation_use("c"), baseline_use("d")),
+            completion(use(SUBMIT_REPORT, report_args(), ident="d")),
+        ]
+    )
+    report = await run_loop(provider, settings=settings)
+
+    assert report.stop_reason == "report"
+    assert report.coerced_fields == []
+    assert not any("coerced_fields" in message for message in report.validation_messages)
+
+
 async def test_a_report_that_does_not_match_the_schema_is_handed_back(
     settings: Settings,
 ) -> None:

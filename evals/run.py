@@ -2,6 +2,12 @@
 
     uv run python -m evals.run --scenarios all --configs full,no-negation --repeats 3
     uv run python -m evals.run --scenarios payments-stripe-v251-uswest,control-quiet --emit
+    uv run python -m evals.run --regrade
+
+`--regrade` rebuilds every `grade.json` under `--results-dir` from its stored
+`report.json` and exits, with no `--scenarios` or `--configs`, no
+investigation, and nothing spent: it is what a change to `evals/grader.py`
+calls for, since the reports it grades did not change. See `regrade`.
 
 Each investigation writes `evals/results/<config>/<scenario>/<n>/report.json`
 and `grade.json`, and `evals/report.py` renders `evals/report.md` from the
@@ -79,9 +85,9 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from agent.loop import DEFAULT_MAX_CALLS, DEFAULT_MAX_WALL_S, AgentConfig, ScenarioRun, investigate
 from agent.mcp_client import HoneycombMCP, TokenBucket
 from agent.providers.base import Provider
-from agent.report import Report
+from agent.report import Report, load_report
 from agent.telemetry import Telemetry
-from evals.grader import WRONG_BELOW, Grade, grade
+from evals.grader import WRONG_BELOW, Grade, grade, grade_file
 from gen.emit import RUNS_DIR, EmitResult, emit, load_manifest
 from gen.scenario import Scenario, available_scenarios, load_scenario
 from receipts.settings import Settings
@@ -240,6 +246,9 @@ class GradedRun(BaseModel):
     stop_reason: str
     error: str | None
     validation_failed: bool
+    coerced_fields: list[str] = Field(default_factory=list)
+    """Fields submit_report sent as a JSON-encoded string and Report.py decoded, copied
+    from the report so a run that needed it is visible without opening report.json."""
     permalink: str | None
     """The top evidence query of the top hypothesis, or the first baseline query."""
 
@@ -306,6 +315,7 @@ def graded_run(report: Report, result: Grade, *, config: str, repeat: int) -> Gr
         stop_reason=report.stop_reason,
         error=report.error,
         validation_failed=report.validation_failed,
+        coerced_fields=report.coerced_fields,
         permalink=top_permalink(report),
         tool_calls=result.process.tool_calls,
         tokens_in=result.process.tokens_in,
@@ -353,6 +363,7 @@ def crashed_run(
         stop_reason=report.stop_reason if report else "crash",
         error=error,
         validation_failed=report.validation_failed if report else False,
+        coerced_fields=report.coerced_fields if report else [],
         permalink=top_permalink(report) if report else None,
         tool_calls=report.tool_calls if report else tool_calls,
         tokens_in=report.tokens_in if report else 0,
@@ -389,6 +400,45 @@ def write_run(directory: Path, graded: GradedRun, report: Report | None) -> Path
 
 def load_run(path: Path) -> GradedRun:
     return GradedRun.model_validate(json.loads(path.read_text()))
+
+
+def regrade(
+    results_dir: Path = RESULTS_DIR,
+    runs_dir: Path = RUNS_DIR,
+) -> list[tuple[Path, float, float]]:
+    """Rebuild every `grade.json` under `results_dir` from its `report.json`.
+
+    Grading is a pure function of the report and the scenario, so a change
+    to `evals/grader.py` leaves every stored `report.json` correct and every
+    stored `grade.json` stale. This walks the `<config>/<scenario>/<n>/`
+    layout `run_matrix` writes and regrades each cell through `grade_file`,
+    the same report-and-manifest lookup `run_one` uses, then overwrites
+    `grade.json` with the result; `report.json` and the runner-side `notes`
+    are untouched. No investigation runs and nothing is spent.
+
+    A cell with no `report.json`, or whose stored grade was already a crash
+    (`grade` is `None`, by design: a run that ended in error skips the
+    grader, because an empty report on a control would otherwise read as a
+    correct "no incident"), is left alone: there is nothing to regrade it
+    from, or it was never graded in the first place.
+
+    Returns the cells whose total changed, as `(grade.json path, old total,
+    new total)`, in the sorted order they were found.
+    """
+    changed: list[tuple[Path, float, float]] = []
+    for grade_path in sorted(results_dir.glob("*/*/*/grade.json")):
+        old = load_run(grade_path)
+        report_path = grade_path.parent / "report.json"
+        if old.crashed or not report_path.exists():
+            continue
+        report = load_report(report_path)
+        result = grade_file(report_path, runs_dir=runs_dir)
+        new = graded_run(report, result, config=old.config, repeat=old.repeat)
+        new.notes = old.notes
+        if round(new.total, 6) != round(old.total, 6):
+            changed.append((grade_path, old.total, new.total))
+        grade_path.write_text(new.model_dump_json(indent=2) + "\n")
+    return changed
 
 
 # --------------------------------------------------------------------------
@@ -728,8 +778,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--scenarios",
-        required=True,
-        help=f"'all' or a comma-separated list from: {available_scenarios()}",
+        default=None,
+        help=(
+            "'all' or a comma-separated list from: "
+            f"{available_scenarios()}. Required unless --regrade is given."
+        ),
     )
     parser.add_argument(
         "--configs",
@@ -748,6 +801,14 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-wall-s", type=float, default=DEFAULT_MAX_WALL_S)
     parser.add_argument("--results-dir", type=Path, default=RESULTS_DIR)
     parser.add_argument("--runs-dir", type=Path, default=RUNS_DIR, help="where manifests live")
+    parser.add_argument(
+        "--regrade",
+        action="store_true",
+        help=(
+            "rebuild every grade.json under --results-dir from its report.json and exit; "
+            "no scenarios or configs, no investigation runs, nothing spent"
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -756,10 +817,28 @@ def _split(value: str) -> list[str]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Exit 0 when every run graded, 1 when any crashed, 2 on a usage error."""
+    """Exit 0 when every run graded, 1 when any crashed, 2 on a usage error.
+
+    `--regrade` short-circuits everything else: it neither emits nor
+    investigates, so none of the scenario, config, provider, or Settings
+    checks below apply to it.
+    """
     from evals.report import write_report
 
     args = _parse_args(argv)
+
+    if args.regrade:
+        changed = regrade(args.results_dir, args.runs_dir)
+        for path, old_total, new_total in changed:
+            rel = path.relative_to(args.results_dir)
+            print(f"{rel}: {old_total:.3f} -> {new_total:.3f}")
+        if not changed:
+            print("no grades changed")
+        return 0
+
+    if not args.scenarios:
+        print("error: --scenarios is required unless --regrade is given", file=sys.stderr)
+        return 2
 
     known = available_scenarios()
     scenario_ids = known if args.scenarios == "all" else _split(args.scenarios)

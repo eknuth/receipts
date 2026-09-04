@@ -144,7 +144,9 @@ def render(runs: Sequence[GradedRun], unreadable: Sequence[str] = ()) -> str:
         "requires whatever the config) counts against the run here; read `outcome` in the "
         "scenario table for whether the answer changed. `tokens in` is uncached input, as the "
         "grade records it; the prompt cache reads that make up most of what the model read "
-        "are in each `report.json` and are already priced into the cost.",
+        "are in each `report.json` and are already priced into the cost. `coerced` counts "
+        "submit_report fields that arrived as a JSON-encoded string and were decoded rather "
+        "than rejected, across every submit attempt in the config; blank when none were.",
         "",
     ]
     header = [
@@ -156,6 +158,7 @@ def render(runs: Sequence[GradedRun], unreadable: Sequence[str] = ()) -> str:
         "mean tokens out",
         "mean cost USD",
         "mean wall s",
+        "coerced",
         f"passes theirs, fails ours (total < {num(OUTCOME_FAIL_BELOW, 2)})",
     ]
     lines.append(_row(header))
@@ -165,6 +168,7 @@ def render(runs: Sequence[GradedRun], unreadable: Sequence[str] = ()) -> str:
         contrast = sum(
             1 for item in cell if item.honeycomb_process_passed and item.total < OUTCOME_FAIL_BELOW
         )
+        coerced = sum(len(item.coerced_fields) for item in cell)
         lines.append(
             _row(
                 [
@@ -176,6 +180,7 @@ def render(runs: Sequence[GradedRun], unreadable: Sequence[str] = ()) -> str:
                     _mean(cell, lambda item: item.tokens_out, 0),
                     _mean(cell, lambda item: item.cost_usd, 2),
                     _mean(cell, lambda item: item.wall_s, 0),
+                    str(coerced) if coerced else "",
                     f"{contrast} of {len(cell)}",
                 ]
             )

@@ -155,6 +155,14 @@ class GroundTruth(BaseModel):
     root_cause_dims: dict[str, str] = Field(default_factory=dict)
     slow_or_failing_span: str | None = None
     affected_share: float | None = Field(default=None, ge=0, le=1)
+    equivalent_dims: list[dict[str, str]] = Field(
+        default_factory=list,
+        description=(
+            "Alternative selectors that pick the same population as root_cause_dims, "
+            "declared deliberately and per scenario. Validated against the topology; "
+            "see Scenario._check_equivalent_dims."
+        ),
+    )
 
 
 class Trigger(BaseModel):
@@ -198,6 +206,7 @@ class Scenario(BaseModel):
         self._check_timing()
         self._check_red_herrings()
         self._check_ground_truth()
+        self._check_equivalent_dims()
         return self
 
     def _check_timing(self) -> None:
@@ -348,6 +357,82 @@ class Scenario(BaseModel):
                 raise ValueError("a control scenario must not name a root cause or a span")
             if truth.affected_share is not None:
                 raise ValueError("a control scenario has no affected_share")
+
+    def _check_equivalent_dims(self) -> None:
+        """Each alternative in `equivalent_dims` has to select the same population
+        as `fault.where`, checked against the topology.
+
+        Every request runs every span, so `fault.where`'s own dimensions are
+        what narrows the population; `service.component` alone never does
+        (it is checked at load time to name the service that already runs
+        the fault's span, so it selects every request). An alternative
+        therefore has to repeat every other key of `fault.where` with the
+        same value. On top of that, it may add or swap in a `name` clause
+        naming the fault's own span, or a `service.component` clause naming
+        the service that runs it, since those are the only two selector
+        kinds the topology can vouch for beyond `fault.where` itself.
+        Anything else is rejected, and so is an alternative identical to
+        `root_cause_dims` or to an earlier entry in `equivalent_dims`.
+        """
+        truth = self.ground_truth
+        if not truth.equivalent_dims:
+            return
+        if not truth.incident_present:
+            raise ValueError("a control scenario must not declare ground_truth.equivalent_dims")
+        assert self.fault is not None  # _check_ground_truth already required this
+        required = {k: v for k, v in self.fault.where.items() if k != "service.component"}
+        seen: list[dict[str, str]] = []
+        for i, alternative in enumerate(truth.equivalent_dims):
+            label = f"ground_truth.equivalent_dims[{i}]"
+            if not alternative:
+                raise ValueError(f"{label} is empty; an equivalent selector needs a clause")
+            if alternative == truth.root_cause_dims:
+                raise ValueError(
+                    f"{label} repeats root_cause_dims exactly, which is redundant, not equivalent"
+                )
+            if alternative in seen:
+                raise ValueError(f"{label} repeats an earlier equivalent_dims entry exactly")
+            seen.append(alternative)
+            missing = {k: v for k, v in required.items() if alternative.get(k) != v}
+            if missing:
+                raise ValueError(
+                    f"{label} does not repeat fault.where's own dimensions {missing}; every key "
+                    "of fault.where other than service.component has to appear in an equivalent "
+                    "selector with the same value, since every request runs every span and only "
+                    "those dimensions narrow the population"
+                )
+            for key, value in alternative.items():
+                if key not in required:
+                    self._check_equivalent_extra_clause(label, key, value)
+
+    def _check_equivalent_extra_clause(self, label: str, key: str, value: str) -> None:
+        """A key in an `equivalent_dims` alternative beyond `fault.where`'s own.
+
+        Only `name` and `service.component` are allowed here, because they
+        are the only two selectors the topology can check against the fault
+        itself; anything else would be trusting the file's say-so about a
+        population the loader has no way to verify.
+        """
+        assert self.fault is not None
+        if key == "name":
+            if value != self.fault.effect.span:
+                raise ValueError(
+                    f"{label} names span {value!r}, which is not fault.effect.span "
+                    f"{self.fault.effect.span!r}"
+                )
+            return
+        if key == "service.component":
+            span_service = topology.SPAN_SERVICE.get(self.fault.effect.span)
+            if value != span_service:
+                raise ValueError(
+                    f"{label} names service.component={value!r}, which is not the service "
+                    f"that runs fault.effect.span ({span_service!r})"
+                )
+            return
+        raise ValueError(
+            f"{label} names {key}={value!r}, which is not one of fault.where's own dimensions "
+            "and is not name or service.component; the topology can only vouch for those"
+        )
 
     @property
     def onset_min(self) -> float | None:

@@ -374,6 +374,56 @@ def test_no_hypothesis_on_an_incident_scores_zero_on_dims_and_span() -> None:
 
 
 # --------------------------------------------------------------------------
+# R10: ground_truth.equivalent_dims
+# --------------------------------------------------------------------------
+
+DEPENDENCY = load_scenario("dependency-inventory-db-timeouts")
+
+
+def dependency_report(dims: dict[str, str]) -> Report:
+    return Report.model_validate(
+        {
+            "run_id": "run-dependency",
+            "scenario_id": DEPENDENCY.id,
+            "provider": "test",
+            "model": "test-model",
+            "incident_present": True,
+            "hypotheses": [
+                {
+                    "claim": "inventory-db timed out",
+                    "dims": dims,
+                    "slow_or_failing_span": "db.query",
+                    "confidence": "high",
+                }
+            ],
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("dims", "expected"),
+    [
+        ({"name": "db.query"}, 1.0),
+        ({"name": "db.query", "error": "true"}, 0.5),
+        ({"service.component": "inventory-db"}, 1.0),
+    ],
+)
+def test_the_grader_takes_the_best_of_root_cause_dims_and_equivalent_dims(
+    dims: dict[str, str], expected: float
+) -> None:
+    result = grade(dependency_report(dims), DEPENDENCY, window_start=WINDOW_START)
+    assert result.jaccard == pytest.approx(expected)
+
+
+def test_name_as_a_dim_on_payments_still_scores_zero_since_it_declares_no_equivalent() -> None:
+    """The docstring's existing warning still holds: payments-stripe-v251-uswest
+    declares no equivalent_dims, so `name: payments.charge` is still a spurious
+    dim rather than an alternative selector."""
+    result = grade_synthetic(report(hypotheses=[hypothesis(dims={"name": "payments.charge"})]))
+    assert result.components.dims == 0.0
+
+
+# --------------------------------------------------------------------------
 # Onset
 # --------------------------------------------------------------------------
 
