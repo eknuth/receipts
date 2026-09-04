@@ -12,6 +12,7 @@ from agent.format import (
     extract_ids,
     format_error,
     format_tool_result,
+    parse_column_types,
     parse_metadata_block,
     truncate,
 )
@@ -225,6 +226,18 @@ def test_a_query_spec_recorded_with_the_old_start_and_end_time_names_still_rende
     text = "# Results\n\n| COUNT |\n| --- |\n| 1 |\n"
     out = format_tool_result("run_query", text, args=args)
     assert "time_range=1700000000..1700001800" in out
+
+
+def test_parse_column_types_reads_the_columns_table() -> None:
+    fixture = load("get_dataset_columns")
+    types = parse_column_types(text_of(fixture))
+    assert types["duration_ms"] == "float"
+    assert types["name"] == "string"
+    assert types["span.num_events"] == "integer"
+
+
+def test_parse_column_types_is_empty_with_no_table() -> None:
+    assert parse_column_types("no table here, just prose") == {}
 
 
 def test_format_error_names_the_tool_and_message() -> None:

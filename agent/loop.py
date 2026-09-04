@@ -440,9 +440,11 @@ class _RunState:
         self.rejections = 0
         self.last_rejection = ""
         self.issues: list[validate.Issue] = []
-        self.coerced: set[str] = set()
-        """Fields `submit_report` sent as a JSON-encoded string, across every
-        attempt this run made, accepted or rejected. See `submit`."""
+        self.coerced: list[str] = []
+        """Fields `submit_report` sent as a JSON-encoded string, or a wrapper
+        key unwrapped, once per attempt this run made, accepted or rejected.
+        A list, not a set: two attempts that each needed the same fix are
+        two interventions, and the count is the honest number. See `submit`."""
 
     # -- counters ---------------------------------------------------------
 
@@ -496,6 +498,8 @@ class _RunState:
                 is_error=result.is_error,
                 query_id=result.query_id,
                 permalink=result.permalink,
+                coerced=list(result.coerced),
+                hinted=result.hinted,
             )
             return ToolResultBlock(
                 tool_use_id=use.id, content=result.text, is_error=result.is_error
@@ -509,6 +513,8 @@ class _RunState:
         is_error: bool,
         query_id: str | None = None,
         permalink: str | None = None,
+        coerced: list[str] | None = None,
+        hinted: bool = False,
     ) -> None:
         self.tool_log.append(
             ToolCall(
@@ -518,6 +524,8 @@ class _RunState:
                 permalink=permalink,
                 is_error=is_error,
                 t=round(elapsed, 3),
+                coerced=coerced or [],
+                hinted=hinted,
             )
         )
 
@@ -543,7 +551,7 @@ class _RunState:
             try:
                 draft = ReportDraft.model_validate(use.args, context=coercion_context)
             except ValidationError as exc:
-                self.coerced.update(coercion_context.get("coerced_fields", []))
+                self.coerced.extend(coercion_context.get("coerced_fields", []))
                 self.rejections += 1
                 self.last_rejection = (
                     "The report did not match the submit_report schema and was not filed:\n"
@@ -558,7 +566,7 @@ class _RunState:
                     )
                 return None
 
-            self.coerced.update(coercion_context.get("coerced_fields", []))
+            self.coerced.extend(coercion_context.get("coerced_fields", []))
 
             issues = validate.validate_draft(
                 draft,
@@ -599,7 +607,11 @@ class _RunState:
         `self.coerced` is emitted here, not in `submit`, so every exit path
         carries it: a run that spent its budget between a coerced attempt and
         the next submit still records what happened, even though the run
-        never got to file again.
+        never got to file again. Folded in alongside it: every tool log
+        entry's own `coerced` paths (a `run_bubbleup` group value the MCP
+        client retyped from the column schema), as `<tool>:<path>`, so
+        `coerced_fields` counts both kinds the way its description says, one
+        entry per attempt or call, so the same path twice is two entries.
         """
         cost = cost_usd(
             self.provider.model,
@@ -612,7 +624,8 @@ class _RunState:
             logger.warning(
                 "no price for %r in evals/pricing.yml; cost recorded as 0", self.provider.model
             )
-        coerced_fields = sorted(self.coerced)
+        tool_coerced = [f"{call.name}:{path}" for call in self.tool_log for path in call.coerced]
+        coerced_fields = sorted([*self.coerced, *tool_coerced])
         validation_messages = list(messages or [])
         if coerced_fields:
             validation_messages.append(f"coerced_fields: {coerced_fields}")

@@ -134,6 +134,25 @@ def test_the_coerced_column_is_blank_when_no_run_needed_it_and_a_count_when_one_
     assert process.split("|")[-3].strip() == "2"
 
 
+def test_the_coerced_column_counts_a_wrapper_and_a_tool_argument_coercion_as_two(
+    live_results: Path,
+) -> None:
+    """EDW-1362: coerced_fields now also carries wrapper:<key> (a stray
+    submit_report wrapper unwrapped) and <tool>:<path> (a BubbleUp group
+    value the MCP client retyped from the column schema). Both kinds count
+    toward the same total the column already sums."""
+    report_path = FIXTURES / "run-ebc9c1e4be3d" / "report.json"
+    report = load_report(report_path)
+    result = grade_file(report_path, runs_dir=RUNS_DIR)
+    coerced = graded_run(report, result, config="full", repeat=99)
+    coerced.coerced_fields = ["wrapper:permalink", "run_bubbleup:selection.group.error"]
+    write_run(run_dir(live_results, "full", report.scenario_id, 99), coerced, report)
+
+    text = render(load_results(live_results))
+    process = next(line for line in text.splitlines() if line.startswith("| full |"))
+    assert process.split("|")[-3].strip() == "2"
+
+
 def test_every_run_row_links_its_top_evidence_query(live_results: Path) -> None:
     text = render(load_results(live_results))
     rows = [line for line in text.splitlines() if line.startswith("| payments-") and "run-" in line]

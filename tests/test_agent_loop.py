@@ -579,7 +579,9 @@ async def test_coerced_then_schema_rejected_twice_still_records_the_coercion(
     assert report.stop_reason == "report"
     assert report.validation_failed is True
     assert report.hypotheses == []  # the schema-rejected draft was never kept
-    assert report.coerced_fields == ["dims"]
+    # Two attempts each needed the coercion, so two entries: the count is
+    # per attempt, not per distinct field.
+    assert report.coerced_fields == ["dims", "dims"]
     assert any("coerced_fields" in message for message in report.validation_messages)
 
 
@@ -595,6 +597,51 @@ async def test_a_clean_report_records_no_coercion(settings: Settings) -> None:
     assert report.stop_reason == "report"
     assert report.coerced_fields == []
     assert not any("coerced_fields" in message for message in report.validation_messages)
+
+
+async def test_a_tool_argument_coercion_is_folded_into_report_coerced_fields(
+    settings: Settings,
+) -> None:
+    """EDW-1362: a run_bubbleup group value the MCP client retyped from the
+    column schema (agent/mcp_client.py) shows up in Report.coerced_fields as
+    run_bubbleup:<path>, on the tool log entry, and alongside a submit-side
+    coercion when one also happened in the same run."""
+
+    class BubbleupCoercing(FakeMCP):
+        async def call(
+            self, name: str, args: dict[str, Any] | None = None, **kwargs: Any
+        ) -> ToolResult:
+            if name == "run_bubbleup":
+                self.calls.append((name, dict(args or {})))
+                return ToolResult(
+                    raw="ok",
+                    text="run_bubbleup ok",
+                    is_error=False,
+                    query_id="B1",
+                    permalink=None,
+                    coerced=("selection.group.error",),
+                )
+            return await super().call(name, args, **kwargs)
+
+    encoded = report_args(hypotheses=json.dumps(report_args()["hypotheses"]))
+    bubbleup_use = use(
+        "run_bubbleup",
+        {"query_pk": "Q1", "selection": {"type": "group", "group": {"error": "true"}}},
+        ident="e",
+    )
+    provider = FakeProvider(
+        [
+            completion(query_use("b"), negation_use("c"), baseline_use("d"), bubbleup_use),
+            completion(use(SUBMIT_REPORT, encoded, ident="f")),
+        ]
+    )
+    report = await run_loop(provider, BubbleupCoercing(), settings=settings)
+
+    assert report.stop_reason == "report"
+    assert "run_bubbleup:selection.group.error" in report.coerced_fields
+    assert "hypotheses" in report.coerced_fields
+    logged = next(call for call in report.tool_log if call.name == "run_bubbleup")
+    assert logged.coerced == ["selection.group.error"]
 
 
 async def test_a_report_that_does_not_match_the_schema_is_handed_back(
