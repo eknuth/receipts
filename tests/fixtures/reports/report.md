@@ -9,7 +9,7 @@ Every number here is read from a `grade.json` under `evals/results/`, written by
 | scenario | full total | full outcome | full top right |
 | --- | --- | --- | --- |
 | control-quiet | 0.69 (-0.25 to 1.00) | 0.56 (0.00 to 0.75) | 3 of 4 |
-| payments-stripe-v251-uswest | 0.51 (0.24 to 0.90) | 0.59 (0.49 to 0.65) | 3 of 4 |
+| payments-stripe-v251-uswest | 0.51 (0.25 to 0.90) | 0.60 (0.52 to 0.65) | 3 of 4 |
 | all scenarios | 0.60 (-0.25 to 1.00) | 0.58 (0.00 to 0.75) | 6 of 8 |
 
 ## Process by config
@@ -32,5 +32,5 @@ One row per investigation. `query` links to the first evidence query of the top 
 | control-quiet | full | 4 | run-ebc9c1e4be3d | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 |  | report | 28 | 0.38 | 150 | 0.90 pass | [query](https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/tetSH95EPMN) |
 | payments-stripe-v251-uswest | full | 1 | run-4155490e2a44 | claude-sonnet-4-5 | 0.90 | 0.65 | 0.25 | high | report | 37 | 0.63 | 237 | 1.00 pass | [query](https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/3QtwuURhM6g) |
 | payments-stripe-v251-uswest | full | 2 | run-4155490e2a44 | claude-sonnet-4-5 | 0.63 | 0.63 | 0.25 | high | report (validation failed) | 38 | 0.71 | 239 | 1.00 pass | [query](https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/9tbBWa1yqWP) |
-| payments-stripe-v251-uswest | full | 3 | run-4155490e2a44 | claude-sonnet-4-5 | 0.24 | 0.49 | 0.25 | high | report | 37 | 0.64 | 234 | 1.00 pass | [query](https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/Ej6NNq2NrAm) |
+| payments-stripe-v251-uswest | full | 3 | run-4155490e2a44 | claude-sonnet-4-5 | 0.27 | 0.52 | 0.25 | high | report | 37 | 0.64 | 234 | 1.00 pass | [query](https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/Ej6NNq2NrAm) |
 | payments-stripe-v251-uswest | full | 4 | run-4155490e2a44 | claude-sonnet-4-5 | 0.25 | 0.60 | 0.00 | low | report (validation failed) | 40 | 0.63 | 254 | 1.00 pass | [query](https://ui.honeycomb.io/team/environments/receipts-demo/datasets/receipts-shop/result/96GW37QXQsy) |
