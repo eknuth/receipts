@@ -369,11 +369,13 @@ def _best_dims_jaccard(reported: dict[str, str], truth: GroundTruth) -> float:
     """The dims score `grade` uses: the best of `root_cause_dims` and every
     `equivalent_dims` alternative.
 
-    `gen/scenario.py` validates each alternative against the topology at
-    load time, so every candidate here is a selector that picks the same
-    population as the fault by construction; scoring against whichever one
-    the report happened to phrase its claim as is not a looser rule, it is
-    the same population under a different name.
+    `gen/scenario.py` checks each alternative against the topology at load
+    time: it keeps every population-restricting dimension of `fault.where`
+    and may also name the fault's own span or the service that runs it, so
+    it selects the same requests as `root_cause_dims` under a different
+    name. A scenario that declares no equivalent for a dimension still
+    charges the usual way for it: `name: payments.charge` on the payments
+    scenario is a spurious dim there, not an alternative selector.
     """
     return max(
         dims_jaccard(reported, cand) for cand in (truth.root_cause_dims, *truth.equivalent_dims)

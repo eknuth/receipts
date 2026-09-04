@@ -505,42 +505,82 @@ def test_the_dependency_scenario_declares_its_equivalent_dims() -> None:
     assert scenario.ground_truth.equivalent_dims == [{"name": "db.query"}]
 
 
-def test_a_name_clause_naming_the_faults_own_span_loads(tmp_path: Path) -> None:
-    body = VALID.replace(
-        "  affected_share: 0.6\n",
-        '  affected_share: 0.6\n  equivalent_dims:\n    - {name: "payments.charge"}\n',
-    )
-    scenario = load_scenario_file(write(tmp_path, body))
-    assert scenario.ground_truth.equivalent_dims == [{"name": "payments.charge"}]
+def test_a_bare_name_clause_missing_the_faults_own_dims_is_rejected() -> None:
+    """Before this fix, a clause was checked alone: {name: payments.charge}
+    loaded even though it selects every request through that span (100%),
+    against a fault that only hits the 12% in fault.where."""
+    data = _payments_dict()
+    data["ground_truth"]["equivalent_dims"] = [{"name": "payments.charge"}]
+    with pytest.raises(ValidationError, match="does not repeat fault.where"):
+        Scenario.model_validate(data)
 
 
-def test_an_equivalent_dims_entry_naming_the_wrong_span_is_rejected(tmp_path: Path) -> None:
-    body = VALID.replace(
-        "  affected_share: 0.6\n",
-        '  affected_share: 0.6\n  equivalent_dims:\n    - {name: "db.query"}\n',
-    )
+def test_a_bare_service_component_clause_missing_the_faults_own_dims_is_rejected() -> None:
+    """The same bug on deploy-regression-v260: {service.component: checkout}
+    loaded even though checkout.process runs on every request (100%),
+    against a fault that only hits the 35% on deployment.version 2.6.0."""
+    import yaml
+
+    data = yaml.safe_load((SCENARIO_DIR / "deploy-regression-v260.yml").read_text())
+    data["ground_truth"]["equivalent_dims"] = [{"service.component": "checkout"}]
+    with pytest.raises(ValidationError, match="does not repeat fault.where"):
+        Scenario.model_validate(data)
+
+
+def test_a_name_clause_added_to_the_faults_own_dims_loads() -> None:
+    data = _payments_dict()
+    data["ground_truth"]["equivalent_dims"] = [
+        {
+            "deployment.version": "2.5.1",
+            "cloud.region": "us-west-2",
+            "payment.provider": "stripe",
+            "name": "payments.charge",
+        }
+    ]
+    scenario = Scenario.model_validate(data)
+    assert scenario.ground_truth.equivalent_dims[0]["name"] == "payments.charge"
+
+
+def test_an_equivalent_dims_entry_naming_the_wrong_span_is_rejected() -> None:
+    data = _payments_dict()
+    data["ground_truth"]["equivalent_dims"] = [
+        {
+            "deployment.version": "2.5.1",
+            "cloud.region": "us-west-2",
+            "payment.provider": "stripe",
+            "name": "db.query",
+        }
+    ]
     with pytest.raises(ValidationError, match="not fault.effect.span"):
-        load_scenario_file(write(tmp_path, body))
+        Scenario.model_validate(data)
 
 
-def test_an_equivalent_dims_entry_naming_the_wrong_service_is_rejected(tmp_path: Path) -> None:
-    body = VALID.replace(
-        "  affected_share: 0.6\n",
-        '  affected_share: 0.6\n  equivalent_dims:\n    - {service.component: "checkout"}\n',
-    )
+def test_an_equivalent_dims_entry_naming_the_wrong_service_is_rejected() -> None:
+    data = _payments_dict()
+    data["ground_truth"]["equivalent_dims"] = [
+        {
+            "deployment.version": "2.5.1",
+            "cloud.region": "us-west-2",
+            "payment.provider": "stripe",
+            "service.component": "checkout",
+        }
+    ]
     with pytest.raises(ValidationError, match="not the service that runs"):
-        load_scenario_file(write(tmp_path, body))
+        Scenario.model_validate(data)
 
 
-def test_an_equivalent_dims_entry_naming_an_unrelated_dimension_is_rejected(
-    tmp_path: Path,
-) -> None:
-    body = VALID.replace(
-        "  affected_share: 0.6\n",
-        '  affected_share: 0.6\n  equivalent_dims:\n    - {cloud.region: "eu-west-1"}\n',
-    )
-    with pytest.raises(ValidationError, match="not a dimension in fault.where"):
-        load_scenario_file(write(tmp_path, body))
+def test_an_equivalent_dims_entry_naming_an_unrelated_dimension_is_rejected() -> None:
+    data = _payments_dict()
+    data["ground_truth"]["equivalent_dims"] = [
+        {
+            "deployment.version": "2.5.1",
+            "cloud.region": "us-west-2",
+            "payment.provider": "stripe",
+            "http.route": "/checkout",
+        }
+    ]
+    with pytest.raises(ValidationError, match="is not one of fault.where's own dimensions"):
+        Scenario.model_validate(data)
 
 
 def test_an_equivalent_dims_entry_repeating_root_cause_dims_is_rejected(tmp_path: Path) -> None:
@@ -550,6 +590,19 @@ def test_an_equivalent_dims_entry_repeating_root_cause_dims_is_rejected(tmp_path
     )
     with pytest.raises(ValidationError, match="redundant"):
         load_scenario_file(write(tmp_path, body))
+
+
+def test_a_duplicate_equivalent_dims_entry_is_rejected() -> None:
+    data = _payments_dict()
+    entry = {
+        "deployment.version": "2.5.1",
+        "cloud.region": "us-west-2",
+        "payment.provider": "stripe",
+        "name": "payments.charge",
+    }
+    data["ground_truth"]["equivalent_dims"] = [dict(entry), dict(entry)]
+    with pytest.raises(ValidationError, match="repeats an earlier equivalent_dims entry"):
+        Scenario.model_validate(data)
 
 
 def test_a_control_may_not_declare_equivalent_dims() -> None:

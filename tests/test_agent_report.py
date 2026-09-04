@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from agent.report import (
     Evidence,
     Hypothesis,
+    RejectedCandidate,
     Report,
     ReportDraft,
     ToolCall,
@@ -218,3 +219,76 @@ def test_no_coercion_recorded_when_the_fields_were_already_the_right_shape() -> 
     context: dict[str, object] = {}
     ReportDraft.model_validate({"incident_present": False}, context=context)
     assert "coerced_fields" not in context
+
+
+# --------------------------------------------------------------------------
+# Review fixes: RejectedCandidate.dims/.evidence, and a JSON null negation
+# --------------------------------------------------------------------------
+
+
+def test_rejected_candidate_dims_and_evidence_as_json_strings_coerce() -> None:
+    candidate = RejectedCandidate.model_validate(
+        {
+            "claim": "the eu-west-1 db.query latency",
+            "dims": json.dumps({"cloud.region": "eu-west-1"}),
+            "reason": "present the whole window, not a step at onset",
+            "evidence": json.dumps([{"query_id": "Q1", "summary": "flat before and after"}]),
+        }
+    )
+    assert candidate.dims == {"cloud.region": "eu-west-1"}
+    assert candidate.evidence == [Evidence(query_id="Q1", summary="flat before and after")]
+
+
+def test_rejected_candidate_evidence_of_the_wrong_container_type_still_fails() -> None:
+    with pytest.raises(ValidationError):
+        RejectedCandidate.model_validate(
+            {
+                "claim": "x",
+                "reason": "y",
+                "evidence": json.dumps({"query_id": "Q1", "summary": "not a list"}),
+            }
+        )
+
+
+def test_a_json_null_negation_coerces_to_none() -> None:
+    """negation: Evidence | None accepts the JSON text of its own null case,
+    not only a real object; a model that serialised the whole field as JSON
+    should not be punished for the one case that means "no negation"."""
+    hypothesis = Hypothesis.model_validate(
+        {
+            "claim": "x",
+            "dims": {},
+            "confidence": "low",
+            "evidence": [{"query_id": "Q1", "summary": "rows"}],
+            "negation": "null",
+        }
+    )
+    assert hypothesis.negation is None
+
+
+def test_a_json_null_negation_is_recorded_as_a_coercion() -> None:
+    context: dict[str, object] = {}
+    Hypothesis.model_validate(
+        {
+            "claim": "x",
+            "dims": {},
+            "confidence": "low",
+            "evidence": [{"query_id": "Q1", "summary": "rows"}],
+            "negation": "null",
+        },
+        context=context,
+    )
+    assert context["coerced_fields"] == ["negation"]  # type: ignore[comparison-overlap]
+
+
+def test_a_non_null_non_json_negation_string_still_fails() -> None:
+    with pytest.raises(ValidationError):
+        Hypothesis.model_validate(
+            {
+                "claim": "x",
+                "dims": {},
+                "confidence": "low",
+                "evidence": [{"query_id": "Q1", "summary": "rows"}],
+                "negation": "not json and not an object",
+            }
+        )

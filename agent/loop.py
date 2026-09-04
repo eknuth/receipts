@@ -440,6 +440,9 @@ class _RunState:
         self.rejections = 0
         self.last_rejection = ""
         self.issues: list[validate.Issue] = []
+        self.coerced: set[str] = set()
+        """Fields `submit_report` sent as a JSON-encoded string, across every
+        attempt this run made, accepted or rejected. See `submit`."""
 
     # -- counters ---------------------------------------------------------
 
@@ -527,12 +530,20 @@ class _RunState:
         happens here, so the traceparent `tool_span` builds goes unused, but
         the span still puts every report-filing attempt on the Agent
         Timeline next to the query calls it followed.
+
+        `self.coerced` collects the fields `agent/report.py`'s validators
+        decoded from a JSON-encoded string on every attempt, accepted or
+        rejected, because a model that sent a field wrong on a rejected try
+        and right on the next one still needed the coercion once. `finish`
+        emits whatever has accumulated there on every exit path, not only
+        this one, so a run that spent its budget mid-retry still records it.
         """
         with self.trace.tool_span(SUBMIT_REPORT, use.id, use.args) as span:
             coercion_context: dict[str, Any] = {}
             try:
                 draft = ReportDraft.model_validate(use.args, context=coercion_context)
             except ValidationError as exc:
+                self.coerced.update(coercion_context.get("coerced_fields", []))
                 self.rejections += 1
                 self.last_rejection = (
                     "The report did not match the submit_report schema and was not filed:\n"
@@ -547,7 +558,7 @@ class _RunState:
                     )
                 return None
 
-            coerced = self._coerced_fields_message(coercion_context)
+            self.coerced.update(coercion_context.get("coerced_fields", []))
 
             issues = validate.validate_draft(
                 draft,
@@ -558,11 +569,7 @@ class _RunState:
             )
             if not issues:
                 span.record_result("accepted", is_error=False)
-                return self.finish(
-                    stop_reason="report",
-                    draft=draft,
-                    messages=coerced,
-                )
+                return self.finish(stop_reason="report", draft=draft)
 
             self.rejections += 1
             self.issues = issues
@@ -574,23 +581,9 @@ class _RunState:
                     stop_reason="report",
                     draft=draft,
                     validation_failed=True,
-                    messages=[*coerced, *(str(issue) for issue in issues)],
+                    messages=[str(issue) for issue in issues],
                 )
             return None
-
-    @staticmethod
-    def _coerced_fields_message(context: dict[str, Any]) -> list[str]:
-        """A `coerced_fields: [...]` note when `submit_report` sent a field as a
-        JSON-encoded string instead of the list or dict it should have been.
-
-        `agent/report.py`'s field validators accept that string and decode it,
-        so the run is not lost, but the coercion is recorded here rather than
-        happening silently, since a model reliably needing it is a finding.
-        """
-        fields = context.get("coerced_fields")
-        if not fields:
-            return []
-        return [f"coerced_fields: {sorted(set(fields))}"]
 
     def finish(
         self,
@@ -601,7 +594,13 @@ class _RunState:
         messages: Sequence[str] | None = None,
         error: str | None = None,
     ) -> Report:
-        """Assemble the report with the process fields the loop measured."""
+        """Assemble the report with the process fields the loop measured.
+
+        `self.coerced` is emitted here, not in `submit`, so every exit path
+        carries it: a run that spent its budget between a coerced attempt and
+        the next submit still records what happened, even though the run
+        never got to file again.
+        """
         cost = cost_usd(
             self.provider.model,
             self.tokens_in,
@@ -613,6 +612,10 @@ class _RunState:
             logger.warning(
                 "no price for %r in evals/pricing.yml; cost recorded as 0", self.provider.model
             )
+        coerced_fields = sorted(self.coerced)
+        validation_messages = list(messages or [])
+        if coerced_fields:
+            validation_messages.append(f"coerced_fields: {coerced_fields}")
         process = {
             "run_id": self.run.run_id,
             "scenario_id": self.run.scenario_id,
@@ -630,7 +633,8 @@ class _RunState:
             "stop_reason": stop_reason,
             "model_stop_reason": self.model_stop_reason,
             "validation_failed": validation_failed,
-            "validation_messages": list(messages or []),
+            "validation_messages": validation_messages,
+            "coerced_fields": coerced_fields,
             "error": error,
         }
         if draft is None:

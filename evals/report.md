@@ -11,22 +11,22 @@ Every number here is read from a `grade.json` under `evals/results/`, written by
 | checkout-error-surge-adyen | 1.00 (1.00 to 1.00) | 0.75 (0.75 to 0.75) | 1 of 1 |
 | control-noisy | -0.25 (-0.25 to -0.25) | 0.00 (0.00 to 0.00) | 0 of 1 |
 | control-quiet | 0.44 (-0.60 to 1.00) | 0.50 (0.00 to 0.75) | 4 of 6 |
-| dependency-inventory-db-timeouts | -0.20 (-0.20 to -0.20) | 0.30 (0.30 to 0.30) | 0 of 1 |
+| dependency-inventory-db-timeouts | 0.17 (0.17 to 0.17) | 0.47 (0.47 to 0.47) | 1 of 1 |
 | deploy-regression-v260 | 0.25 (0.25 to 0.25) | 0.00 (0.00 to 0.00) | 0 of 1 |
 | error-surge-exceptions | 1.00 (1.00 to 1.00) | 0.75 (0.75 to 0.75) | 1 of 1 |
 | herring-customer-whale | 0.82 (0.82 to 0.82) | 0.57 (0.57 to 0.57) | 1 of 1 |
 | herring-region-vs-version | 0.90 (0.90 to 0.90) | 0.65 (0.65 to 0.65) | 1 of 1 |
 | payments-stripe-v251-uswest | -0.04 (-0.25 to 0.24) | 0.16 (0.00 to 0.49) | 0 of 3 |
 | trigger-checkout-latency | -0.10 (-0.10 to -0.10) | 0.15 (0.15 to 0.15) | 0 of 1 |
-| all scenarios | 0.35 (-0.60 to 1.00) | 0.39 (0.00 to 0.75) | 8 of 17 |
+| all scenarios | 0.37 (-0.60 to 1.00) | 0.40 (0.00 to 0.75) | 9 of 17 |
 
 ## Process by config
 
-Means over every run in the config, crashes included. `passes theirs, fails ours` counts runs that pass Honeycomb's process evaluator (a reimplementation of `tests/scenarios/evaluator.py` in `honeycombio/agent-skill`, pass at 0.6) and score a `total` under 0.50 on ours. A crash has no process score and is not counted as passing theirs. The line is on `total`, so under an ablation config the removed rule's weight (0.15 for the negation, which the grader requires whatever the config) counts against the run here; read `outcome` in the scenario table for whether the answer changed. `tokens in` is uncached input, as the grade records it; the prompt cache reads that make up most of what the model read are in each `report.json` and are already priced into the cost.
+Means over every run in the config, crashes included. `passes theirs, fails ours` counts runs that pass Honeycomb's process evaluator (a reimplementation of `tests/scenarios/evaluator.py` in `honeycombio/agent-skill`, pass at 0.6) and score a `total` under 0.50 on ours. A crash has no process score and is not counted as passing theirs. The line is on `total`, so under an ablation config the removed rule's weight (0.15 for the negation, which the grader requires whatever the config) counts against the run here; read `outcome` in the scenario table for whether the answer changed. `tokens in` is uncached input, as the grade records it; the prompt cache reads that make up most of what the model read are in each `report.json` and are already priced into the cost. `coerced` counts submit_report fields that arrived as a JSON-encoded string and were decoded rather than rejected, across every submit attempt in the config; blank when none were.
 
-| config | runs | crashed | mean calls | mean tokens in | mean tokens out | mean cost USD | mean wall s | passes theirs, fails ours (total < 0.50) |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| full | 17 | 0 | 36.8 | 630 | 12,403 | 0.65 | 228 | 9 of 17 |
+| config | runs | crashed | mean calls | mean tokens in | mean tokens out | mean cost USD | mean wall s | coerced | passes theirs, fails ours (total < 0.50) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| full | 17 | 0 | 36.8 | 630 | 12,403 | 0.65 | 228 |  | 9 of 17 |
 
 ## Runs
 
@@ -42,7 +42,7 @@ One row per investigation. `query` links to the first evidence query of the top 
 | control-quiet | full | 4 | run-ebc9c1e4be3d | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 |  | report | 36 | 0.67 | 211 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/qtvUKayzcUj) |
 | control-quiet | full | 5 | run-ebc9c1e4be3d | claude-sonnet-4-5 | -0.60 | 0.00 | 0.15 | high | report (validation failed) | 35 | 0.66 | 229 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/cq7AbWj3x6y) |
 | control-quiet | full | 6 | run-a265adf6e322 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 |  | report | 38 | 0.60 | 228 | 0.95 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/e1uwRGrEgUR) |
-| dependency-inventory-db-timeouts | full | 1 | run-e10b6c1bf2dc | claude-sonnet-4-5 | -0.20 | 0.30 | 0.00 | medium | report (validation failed) | 40 | 0.73 | 252 | 0.80 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/bWUeN27N6Lp) |
+| dependency-inventory-db-timeouts | full | 1 | run-e10b6c1bf2dc | claude-sonnet-4-5 | 0.17 | 0.47 | 0.00 | medium | report (validation failed) | 40 | 0.73 | 252 | 0.80 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/bWUeN27N6Lp) |
 | deploy-regression-v260 | full | 1 | run-2ef344b96d57 | claude-sonnet-4-5 | 0.25 | 0.00 | 0.25 |  | report | 37 | 0.66 | 201 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/iRoyqV6VDuM) |
 | error-surge-exceptions | full | 1 | run-a6353e4f46f8 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 34 | 0.62 | 212 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/mw23Pa6PKeu) |
 | herring-customer-whale | full | 1 | run-29580981edf1 | claude-sonnet-4-5 | 0.82 | 0.57 | 0.25 | high | report | 39 | 0.65 | 221 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/ADWPrjtEnG8) |

@@ -360,14 +360,19 @@ class Scenario(BaseModel):
 
     def _check_equivalent_dims(self) -> None:
         """Each alternative in `equivalent_dims` has to select the same population
-        as `fault.where`, by construction, checked against the topology.
+        as `fault.where`, checked against the topology.
 
-        Only two selector kinds the topology can vouch for are allowed on a
-        key other than one already in `fault.where`: a `name` clause naming
-        the fault's own span, and a `service.component` clause naming the
-        service that runs it. Anything else has to repeat a `fault.where`
-        dimension exactly, because the topology has no way to know that some
-        other column selects the same requests.
+        Every request runs every span, so `fault.where`'s own dimensions are
+        what narrows the population; `service.component` alone never does
+        (it is checked at load time to name the service that already runs
+        the fault's span, so it selects every request). An alternative
+        therefore has to repeat every other key of `fault.where` with the
+        same value. On top of that, it may add or swap in a `name` clause
+        naming the fault's own span, or a `service.component` clause naming
+        the service that runs it, since those are the only two selector
+        kinds the topology can vouch for beyond `fault.where` itself.
+        Anything else is rejected, and so is an alternative identical to
+        `root_cause_dims` or to an earlier entry in `equivalent_dims`.
         """
         truth = self.ground_truth
         if not truth.equivalent_dims:
@@ -375,6 +380,8 @@ class Scenario(BaseModel):
         if not truth.incident_present:
             raise ValueError("a control scenario must not declare ground_truth.equivalent_dims")
         assert self.fault is not None  # _check_ground_truth already required this
+        required = {k: v for k, v in self.fault.where.items() if k != "service.component"}
+        seen: list[dict[str, str]] = []
         for i, alternative in enumerate(truth.equivalent_dims):
             label = f"ground_truth.equivalent_dims[{i}]"
             if not alternative:
@@ -383,17 +390,35 @@ class Scenario(BaseModel):
                 raise ValueError(
                     f"{label} repeats root_cause_dims exactly, which is redundant, not equivalent"
                 )
+            if alternative in seen:
+                raise ValueError(f"{label} repeats an earlier equivalent_dims entry exactly")
+            seen.append(alternative)
+            missing = {k: v for k, v in required.items() if alternative.get(k) != v}
+            if missing:
+                raise ValueError(
+                    f"{label} does not repeat fault.where's own dimensions {missing}; every key "
+                    "of fault.where other than service.component has to appear in an equivalent "
+                    "selector with the same value, since every request runs every span and only "
+                    "those dimensions narrow the population"
+                )
             for key, value in alternative.items():
-                self._check_equivalent_clause(label, key, value)
+                if key not in required:
+                    self._check_equivalent_extra_clause(label, key, value)
 
-    def _check_equivalent_clause(self, label: str, key: str, value: str) -> None:
+    def _check_equivalent_extra_clause(self, label: str, key: str, value: str) -> None:
+        """A key in an `equivalent_dims` alternative beyond `fault.where`'s own.
+
+        Only `name` and `service.component` are allowed here, because they
+        are the only two selectors the topology can check against the fault
+        itself; anything else would be trusting the file's say-so about a
+        population the loader has no way to verify.
+        """
         assert self.fault is not None
         if key == "name":
             if value != self.fault.effect.span:
                 raise ValueError(
                     f"{label} names span {value!r}, which is not fault.effect.span "
-                    f"{self.fault.effect.span!r}; a name clause only vouches for the fault's "
-                    "own span"
+                    f"{self.fault.effect.span!r}"
                 )
             return
         if key == "service.component":
@@ -404,12 +429,10 @@ class Scenario(BaseModel):
                     f"that runs fault.effect.span ({span_service!r})"
                 )
             return
-        if key not in self.fault.where or self.fault.where[key] != value:
-            raise ValueError(
-                f"{label} names {key}={value!r}, which is not a dimension in fault.where with "
-                "that same value; the topology can only vouch for name, service.component, and "
-                "fault.where's own dimensions"
-            )
+        raise ValueError(
+            f"{label} names {key}={value!r}, which is not one of fault.where's own dimensions "
+            "and is not name or service.component; the topology can only vouch for those"
+        )
 
     @property
     def onset_min(self) -> float | None:
