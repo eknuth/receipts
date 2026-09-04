@@ -28,7 +28,7 @@ from evals.grader import (
     main,
     window_start_for,
 )
-from gen.scenario import Scenario, load_scenario
+from gen.scenario import Scenario, load_all, load_scenario
 
 FIXTURES = Path(__file__).parent / "fixtures" / "reports"
 RUNS_DIR = FIXTURES / "runs"
@@ -432,6 +432,7 @@ def test_name_as_a_dim_on_payments_still_scores_zero_since_it_names_no_true_dim(
 
 DEPLOY = load_scenario("deploy-regression-v260")
 EXCEPTIONS = load_scenario("error-surge-exceptions")
+ADYEN = load_scenario("checkout-error-surge-adyen")
 
 
 def dims_score(scenario: Scenario, dims: dict[str, str]) -> float:
@@ -483,12 +484,70 @@ def dims_score(scenario: Scenario, dims: dict[str, str]) -> float:
             {"payment.provider": "adyen", "error": "true", "exception.type": "ProviderDeclined"},
             1.0,
         ),
+        # The status code the root span carries on a failure is a symptom too.
+        (ADYEN, {"payment.provider": "adyen", "http.status_code": "500"}, 1.0),
+        # `500.0` is not `500`: no number is normalised, so this pair is in
+        # the union and the score is 1 over 2.
+        (ADYEN, {"payment.provider": "adyen", "http.status_code": "500.0"}, 0.5),
+        # Honeycomb renders the error column as `true` and a report may write
+        # it back as `True`. Same claim, so still neutral.
+        (ADYEN, {"payment.provider": "adyen", "error": "True"}, 1.0),
+        # A red herring dressed in the fault's symptoms is still the herring.
+        (
+            ADYEN,
+            {"cloud.region": "us-east-1", "error": "true", "name": "payments.charge"},
+            0.0,
+        ),
+        # A latency fault sets no exact duration, so a duration is never a
+        # symptom and this claim stays in the union: 1 over 2.
+        (
+            load_scenario("trigger-checkout-latency"),
+            {"cart.size": ">=8", "duration_ms": ">1000"},
+            0.5,
+        ),
     ],
 )
 def test_a_symptom_pair_is_neither_right_nor_wrong(
     scenario: Scenario, dims: dict[str, str], expected: float
 ) -> None:
     assert dims_score(scenario, dims) == pytest.approx(expected)
+
+
+def _herring_pair(scenario: Scenario) -> dict[str, str]:
+    """One clause from the scenario's first red herring, or nothing."""
+    for herring in scenario.red_herrings:
+        for key, value in herring.where.items():
+            if key != "service.component":
+                return {key: value}
+    return {}
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [s for s in load_all() if s.ground_truth.incident_present],
+    ids=lambda s: s.id,
+)
+def test_deleting_the_symptom_pairs_leaves_the_score_where_it_was(scenario: Scenario) -> None:
+    """The invariant in `evals/grader.md`: a neutral pair leaves the numerator
+    and the union both, so a report scores what it would score without its
+    symptom pairs. A pair a scenario declares as an equivalent selector is
+    scored as that selector against that candidate, so it is not deleted."""
+    truth = scenario.ground_truth
+    symptoms = scenario.symptom_dims
+    reported = {
+        **_herring_pair(scenario),
+        **truth.root_cause_dims,
+        "http.route": "/checkout/gift",
+        **symptoms,
+    }
+    selectors = set(truth.root_cause_dims) | {k for e in truth.equivalent_dims for k in e}
+    stripped = {
+        key: value
+        for key, value in reported.items()
+        if not (key in symptoms and value == symptoms[key] and key not in selectors)
+    }
+    assert stripped != reported
+    assert dims_score(scenario, reported) == pytest.approx(dims_score(scenario, stripped))
 
 
 def test_a_control_has_no_symptoms_and_scores_as_before() -> None:

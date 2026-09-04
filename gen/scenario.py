@@ -440,22 +440,26 @@ class Scenario(BaseModel):
 
     @property
     def symptom_dims(self) -> dict[str, str]:
-        """Pairs that are true of the requests the fault touched, derived from the fault.
+        """Pairs the generator wrote somewhere in the trace of a request the fault
+        slowed or failed, derived from the fault.
 
         These are not the cause. They are what the fault looks like on the
         wire, and the generator can vouch for every one of them because it
         wrote them: the span the effect names, the service that runs that
         span, and, when the effect fails the span, the error flag, the status
         code the root span carries on a failure, and whatever `error.type` or
-        `exception.type` the effect attached. A control has none.
+        `exception.type` the effect attached. The error pairs describe the
+        requests the effect actually failed, which at an `error_rate` below 1
+        is a part of the population the fault selected, not all of it. A
+        control has none.
 
         No scenario file may write these. A file that declares `symptom_dims`
-        is rejected by `extra="forbid"` on `Scenario` and on `GroundTruth`,
-        which is the point: a hand-written symptom set would be a second,
-        unchecked ground truth, and the grader would be scoring the file's
-        say-so instead of the fault. `evals/grader.py` treats a reported pair
-        that appears here and is not in `root_cause_dims` as neither right nor
-        wrong; see `evals/grader.md`.
+        is rejected by `extra="forbid"` on `Scenario` and on `GroundTruth`. A
+        hand-written symptom set would be a second, unchecked ground truth,
+        and the grader would be scoring the file's say-so instead of the
+        fault. `evals/grader.py` treats a reported pair that appears here and
+        is not in `root_cause_dims` as neither right nor wrong; see
+        `evals/grader.md`.
         """
         if self.fault is None:
             return {}

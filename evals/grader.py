@@ -83,6 +83,9 @@ FLOOR = -1.0
 # that has none: nothing is neutral.
 _NO_SYMPTOMS: Mapping[str, str] = MappingProxyType({})
 
+# The only values `_satisfies` compares case-insensitively.
+_BOOLEANS = frozenset({"true", "false"})
+
 # A ground-truth value like ">=8": an operator and a number.
 _RANGE = re.compile(r"^\s*(>=|<=|>|<)\s*(-?\d+(?:\.\d+)?)\s*$")
 
@@ -411,7 +414,16 @@ def _best_dims_jaccard(
 
 
 def _satisfies(value: str, want: str) -> bool:
+    """Whether a reported value meets a truth or symptom value.
+
+    Equality is exact, except for the two booleans: Honeycomb renders the
+    `error` column as `true` and a report may write it back as `True`, and
+    that is the same claim. Nothing else is casefolded, and no numbers are
+    normalised, so `500.0` is not `500`.
+    """
     if value.strip() == want.strip():
+        return True
+    if want.strip().lower() in _BOOLEANS and value.strip().lower() == want.strip().lower():
         return True
     rng = _RANGE.match(want)
     if rng is None:

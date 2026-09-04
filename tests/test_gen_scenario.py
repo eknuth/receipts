@@ -674,11 +674,15 @@ def test_every_symptom_names_a_span_the_topology_runs() -> None:
         assert symptoms["service.component"] == topology.SPAN_SERVICE[symptoms["name"]]
 
 
-def test_the_generator_emits_the_symptoms_a_failing_fault_declares() -> None:
-    """The two claims the derivation makes about a failure: the root span
-    carries `error` and a 500, and the failing span carries the effect's
-    `error.type`. Checked on generated spans rather than taken on trust."""
-    data = _dependency_dict()
+@pytest.mark.parametrize(
+    "scenario_id", ["dependency-inventory-db-timeouts", "error-surge-exceptions"]
+)
+def test_the_generator_emits_the_symptoms_a_failing_fault_declares(scenario_id: str) -> None:
+    """The claims the derivation makes about a failure, checked on generated
+    spans rather than taken on trust: the failing span runs in the service the
+    set names and carries the effect's `error.type` or `exception.type`, and
+    the root span above it carries `error` and a 500."""
+    data = _scenario_dict(scenario_id)
     data["baseline"] = {"rps": 20, "minutes": 2}
     data["fault"]["onset_min"] = 1
     data["red_herrings"] = []
@@ -689,24 +693,27 @@ def test_the_generator_emits_the_symptoms_a_failing_fault_declares() -> None:
     for request in topology.generate_requests(scenario, seed=1):
         if not request.faulted:
             continue
-        failing = [
-            span
-            for span in request.root.walk()
-            if span.name == symptoms["name"] and span.attributes.get("error.type") is not None
-        ]
-        if not failing:
-            continue
-        checked += 1
-        assert failing[0].attributes["error.type"] == symptoms["error.type"]
-        assert str(request.root.attributes["error"]).lower() == symptoms["error"]
-        assert str(request.root.attributes["http.status_code"]) == symptoms["http.status_code"]
+        for span in request.root.walk():
+            if span.name != symptoms["name"] or not span.error:
+                continue
+            marked = span.attributes.get("error.type") or span.exception_type
+            if not marked:
+                continue  # an ordinary baseline failure on the same span
+            checked += 1
+            assert span.attributes["service.component"] == symptoms["service.component"]
+            if "error.type" in symptoms:
+                assert span.attributes["error.type"] == symptoms["error.type"]
+            if "exception.type" in symptoms:
+                assert span.exception_type == symptoms["exception.type"]
+            assert str(request.root.attributes["error"]).lower() == symptoms["error"]
+            assert str(request.root.attributes["http.status_code"]) == symptoms["http.status_code"]
     assert checked > 0
 
 
-def _dependency_dict() -> dict:
+def _scenario_dict(scenario_id: str) -> dict:
     import yaml
 
-    return yaml.safe_load((SCENARIO_DIR / "dependency-inventory-db-timeouts.yml").read_text())
+    return yaml.safe_load((SCENARIO_DIR / f"{scenario_id}.yml").read_text())
 
 
 def test_a_file_declaring_symptom_dims_is_rejected() -> None:
