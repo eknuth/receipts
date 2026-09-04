@@ -402,12 +402,18 @@ def emit(
     now_s: float | None = None,
     on_progress: Callable[[int], None] | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.time,
 ) -> EmitResult:
-    """Generate and ship one run of `scenario`. Returns the run's manifest."""
+    """Generate and ship one run of `scenario`. Returns the run's manifest.
+
+    `clock` is what a real-time run measures its delays against. It is
+    injectable so a test can hold it still and assert exact sleeps instead
+    of racing the wall clock.
+    """
     if not dry_run and make_exporter is None:
         _require_ingest_key(settings)  # fail before generating anything, not mid-run
     run_id = run_id or new_run_id()
-    now_s = time.time() if now_s is None else now_s
+    now_s = clock() if now_s is None else now_s
     window = window_bounds(now_s, scenario.baseline.minutes, backdate=backdate, lag_s=lag_s)
 
     requests = topology.generate_requests(scenario, seed=seed)
@@ -434,7 +440,7 @@ def emit(
         for request in requests:
             if window.mode == "realtime":
                 due = window.at(request.offset_s)
-                delay = due - time.time()
+                delay = due - clock()
                 if delay > 0:
                     sleep(delay)
             _emit_span(tracer, request.root, None, window.at(request.offset_s), 0.0, common)
