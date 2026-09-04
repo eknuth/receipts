@@ -3,7 +3,7 @@ narrative: >-
   inventory-db started timing out at the ten minute mark. 40% of db.query calls hit a
   5000ms deadline and fail, in every region and on every provider, because every
   request touches this database. eu-west-1 has been a little slow at checkout all
-  along, unrelated to the database, which is not this.
+  along, a steady regional cost on a separate span from the database timeout.
 baseline: {rps: 15, minutes: 20}
 fault:
   onset_min: 10
@@ -18,4 +18,4 @@ red_herrings:
   - where: {cloud.region: "eu-west-1"}
     effect: {span: "checkout.process", latency_add_ms: 150}
     onset_min: 0
-    note: eu-west-1 has been a little slower at checkout all along, on a different span than the database timeout, not the incident
+    note: eu-west-1 has been a little slower at checkout all along, a steady regional cost on a different span than the database timeout

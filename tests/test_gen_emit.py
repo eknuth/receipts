@@ -233,9 +233,10 @@ def test_the_manifest_counts_span_events(
 def test_an_exception_event_carries_its_attributes_the_run_id_and_the_span_end_time(
     emitted_with_exceptions: tuple[E.EmitResult, list],
 ) -> None:
-    """scenario.run_id has to be on the event's own attributes, not just the
-    span it hangs off: every query in the project scopes to the run id, and
-    an event row does not inherit the span's attributes in Honeycomb."""
+    """scenario.run_id has to be its own attribute on the event, separate
+    from the span it hangs off: every query in the project scopes to the run
+    id, and an event row does not inherit the span's attributes in
+    Honeycomb."""
     result, spans = emitted_with_exceptions
     charges_with_events = [s for s in spans if s.name == "payments.charge" and s.events]
     assert charges_with_events

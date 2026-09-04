@@ -472,23 +472,111 @@ def test_the_whale_holds_about_a_third_of_all_errors() -> None:
     assert error_share == pytest.approx(0.30, abs=0.05)
 
 
-def test_sigma_scale_widens_the_spread_without_moving_the_median() -> None:
-    baseline = load_scenario("control-quiet")
+def test_the_whales_own_error_share_is_not_steady_across_onset() -> None:
+    """The whale's 30% share of all errors is a whole-window number, not a
+    steady one: adyen's surge after onset dilutes the whale's own share of
+    errors from 66% before onset to 24% after, even as the whale's own error
+    rate itself climbs (its errors are a shrinking share of a bigger pool).
+    Excluding the whale, adyen's own step still holds; excluding adyen, the
+    whale's own rate does not step, which is what makes the whale a red
+    herring and adyen the incident."""
+    scenario = load_scenario("herring-customer-whale")
+    requests = topology.generate_requests(scenario, seed=0)
+    whale = "cust-00007"
+    onset_s = scenario.fault.onset_min * 60.0
+
+    def share(attr: str, value: str, before: bool) -> float:
+        window = [r for r in requests if (r.offset_s < onset_s) is before]
+        errored = [r for r in window if r.root.error]
+        hits = [r for r in errored if r.root.attributes[attr] == value]
+        return len(hits) / len(errored)
+
+    assert share("customer.id", whale, before=True) == pytest.approx(0.663, abs=0.01)
+    assert share("customer.id", whale, before=False) == pytest.approx(0.236, abs=0.01)
+
+    def own_error_rate(attr: str, value: str, before: bool) -> float:
+        window = [
+            r
+            for r in requests
+            if (r.offset_s < onset_s) is before and r.root.attributes[attr] == value
+        ]
+        return sum(1 for r in window if r.root.error) / len(window)
+
+    assert own_error_rate("customer.id", whale, before=True) == pytest.approx(0.049, abs=0.005)
+    assert own_error_rate("customer.id", whale, before=False) == pytest.approx(0.106, abs=0.005)
+
+    def excl_error_rate(attr: str, value: str, before: bool) -> float:
+        window = [
+            r
+            for r in requests
+            if (r.offset_s < onset_s) is before and r.root.attributes[attr] != value
+        ]
+        return sum(1 for r in window if r.root.error) / len(window)
+
+    # Excluding the whale (customer.id != cust-00007): adyen's step survives.
+    excl_whale_before = excl_error_rate("customer.id", whale, before=True)
+    excl_whale_after = excl_error_rate("customer.id", whale, before=False)
+    assert excl_whale_before == pytest.approx(0.0045, abs=0.001)
+    assert excl_whale_after == pytest.approx(0.0594, abs=0.005)
+    assert excl_whale_after / excl_whale_before > 10  # steps hard, the whale was not carrying it
+
+    # Excluding adyen (payment.provider != adyen): the rate stays flat.
+    excl_adyen_before = excl_error_rate("payment.provider", "adyen", before=True)
+    excl_adyen_after = excl_error_rate("payment.provider", "adyen", before=False)
+    assert excl_adyen_before == pytest.approx(0.0099, abs=0.002)
+    assert excl_adyen_after == pytest.approx(0.0134, abs=0.003)
+    assert excl_adyen_after / excl_adyen_before < 2  # no real step, unlike excluding the whale
+
+
+def _self_ms(span: topology.SpanRecord) -> float:
+    """A span's own time: its duration minus every child's."""
+    return span.duration_ms - sum(child.duration_ms for child in span.children)
+
+
+def _self_times_by_name(requests: list[topology.Request]) -> dict[str, list[float]]:
+    times: dict[str, list[float]] = {}
+    for request in requests:
+        for span in request.root.walk():
+            times.setdefault(span.name, []).append(_self_ms(span))
+    return times
+
+
+def test_sigma_scale_widens_the_spread_without_moving_each_spans_own_median() -> None:
+    """sigma_scale widens the log-normal draw for each span's own time, and
+    each span's own median holds. The fair comparison is control-noisy
+    against an in-memory copy of itself with sigma_scale reset to 1.0:
+    comparing against control-quiet, as an earlier version of this test did,
+    compares against a scenario with its own red herring on db.query, a
+    confound that happened to make the old, looser assertion pass."""
     noisy = load_scenario("control-noisy")
     assert noisy.baseline.sigma_scale == pytest.approx(2.0)
+    flat = noisy.model_copy(deep=True)
+    flat.baseline.sigma_scale = 1.0
 
-    base_requests = topology.generate_requests(baseline, seed=0)
-    noisy_requests = topology.generate_requests(noisy, seed=0)
+    noisy_times = _self_times_by_name(topology.generate_requests(noisy, seed=0))
+    flat_times = _self_times_by_name(topology.generate_requests(flat, seed=0))
 
-    def root_ms(requests: list[topology.Request]) -> list[float]:
-        return [r.duration_ms for r in requests]
+    for name in topology.SPAN_NAMES:
+        ratio = _median(noisy_times[name]) / _median(flat_times[name])
+        assert 0.9 <= ratio <= 1.1, (name, ratio)
 
-    assert _median(root_ms(noisy_requests)) == pytest.approx(
-        _median(root_ms(base_requests)), rel=0.1
-    )
-    base_spread = max(root_ms(base_requests)) - min(root_ms(base_requests))
-    noisy_spread = max(root_ms(noisy_requests)) - min(root_ms(noisy_requests))
-    assert noisy_spread > base_spread
+    noisy_root = noisy_times[topology.ROOT_SPAN]
+    flat_root = flat_times[topology.ROOT_SPAN]
+    assert (max(noisy_root) - min(noisy_root)) > (max(flat_root) - min(flat_root))
+
+
+def test_sigma_scale_still_moves_the_root_median_because_durations_sum() -> None:
+    """The root span's duration is its own time plus every descendant's, so
+    widening each span's spread compounds: a sum of wider log-normals has a
+    heavier right tail, and the root median shifts even though no individual
+    span's own median does (the test above)."""
+    noisy = load_scenario("control-noisy")
+    flat = noisy.model_copy(deep=True)
+    flat.baseline.sigma_scale = 1.0
+
+    noisy_root = _median([r.duration_ms for r in topology.generate_requests(noisy, seed=0)])
+    flat_root = _median([r.duration_ms for r in topology.generate_requests(flat, seed=0)])
+    assert noisy_root / flat_root > 1.1
 
 
 def test_a_red_herring_burst_only_fires_inside_its_window() -> None:

@@ -440,9 +440,9 @@ def _effects_for(
 ) -> tuple[list[_ActiveEffect], bool, bool]:
     """The effects in force for one request, plus fault population and fault flags.
 
-    `attributes` is the full per-request draw (the three propagated dims plus
-    `customer.id`, `cart.size`, and the rest), not just the propagated three,
-    because a `where` clause may select on any of them.
+    `attributes` is the full per-request draw, the three propagated dims
+    plus `customer.id`, `cart.size`, and the rest, because a `where` clause
+    may select on any of them.
     """
     active: list[_ActiveEffect] = []
     in_population = False

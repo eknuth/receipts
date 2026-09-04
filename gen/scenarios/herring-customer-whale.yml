@@ -1,10 +1,13 @@
 id: herring-customer-whale
 narrative: >-
   adyen started failing a fifth of its charges at the ten minute mark. One customer,
-  cust-00007, is a whale who alone makes 15% of all traffic and, because their own
-  failure rate has always run higher, about 30% of all errors over the whole window,
-  before and after onset. Breaking down on customer.id surfaces the whale; breaking
-  down on payment.provider surfaces adyen and the step at onset.
+  cust-00007, is a whale who alone makes 15% of all traffic and about 30% of all errors
+  over the whole window: their own error rate ran about 11x the rest of the traffic
+  before onset (0.049 against 0.0045), and climbed further after, since they use adyen
+  a quarter of the time. Excluding the whale, adyen's error rate still steps about 13x
+  at onset; excluding adyen, the whale's own error rate stays flat across onset.
+  Breaking down on customer.id surfaces the whale; breaking down on payment.provider
+  surfaces adyen and the step.
 baseline: {rps: 15, minutes: 20}
 dimensions:
   customer.id: {"cust-00007": 0.15}
@@ -21,4 +24,4 @@ red_herrings:
   - where: {customer.id: "cust-00007"}
     effect: {span: "payments.charge", error_rate: 0.043}
     onset_min: 0
-    note: cust-00007 is 15% of all traffic and holds about 30% of all errors over the window, present before onset, not the incident
+    note: cust-00007 is 15% of all traffic and about 30% of all errors over the window, present before onset, with its own error rate running about 11x the rest of the traffic; excluding adyen, that rate stays flat across onset, which marks it as a red herring

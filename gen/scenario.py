@@ -42,7 +42,10 @@ class Baseline(BaseModel):
     minutes: float = Field(gt=0)
     # Multiplies every span's log-normal sigma. 1.0 (the default) is the
     # ordinary spread; a control can widen it to look noisier without moving
-    # any median, which is a different thing from a fault stepping a median.
+    # any span's own median, which is a different thing from a fault stepping
+    # a median at onset. The root span's median still shifts, because its
+    # duration sums its own time and every descendant's, and a sum of wider
+    # log-normals has a heavier right tail; see gen/README.md.
     sigma_scale: float = Field(default=1.0, gt=0)
 
     @property
@@ -229,6 +232,17 @@ class Scenario(BaseModel):
                 )
             if herring.where == self.fault.where and herring.effect.span == self.fault.effect.span:
                 raise ValueError(f"{label} hits the same population and span as the fault")
+            if (
+                self.fault.effect.timeout_ms is not None
+                and herring.effect.span == self.fault.effect.span
+                and herring.effect.latency_add_ms
+            ):
+                raise ValueError(
+                    f"{label} adds latency to {herring.effect.span!r}, the same span "
+                    "fault.effect.timeout_ms replaces outright; for any request the herring "
+                    "also matches, its jitter would land on top of what is supposed to be an "
+                    "exact deadline"
+                )
 
     def _check_dimension_overrides(self) -> None:
         for name, weights in self.dimensions.items():

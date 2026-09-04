@@ -345,6 +345,30 @@ def test_a_timeout_with_an_error_rate_and_error_type_loads(tmp_path: Path) -> No
     assert scenario.fault.effect.error_type == "timeout"
 
 
+def _dependency_dict() -> dict:
+    import yaml
+
+    return yaml.safe_load((SCENARIO_DIR / "dependency-inventory-db-timeouts.yml").read_text())
+
+
+def test_a_latency_herring_on_a_timeouts_own_span_is_rejected() -> None:
+    """The herring in the file targets checkout.process, a different span
+    than the fault's db.query timeout, on purpose. Retargeting it to db.query
+    with latency_add_ms would jitter the exact 5000ms deadline for any
+    request the herring also matches."""
+    data = _dependency_dict()
+    data["red_herrings"][0]["effect"] = {"span": "db.query", "latency_add_ms": 150}
+    with pytest.raises(ValidationError, match="replaces outright"):
+        Scenario.model_validate(data)
+
+
+def test_the_dependency_scenarios_actual_herring_loads() -> None:
+    """Confirms the rejection above is about the span, not the file: the
+    real herring, on checkout.process, is unaffected by the timeout."""
+    scenario = load_scenario("dependency-inventory-db-timeouts")
+    assert scenario.red_herrings[0].effect.span == "checkout.process"
+
+
 def test_sigma_scale_defaults_to_one() -> None:
     scenario = load_scenario("payments-stripe-v251-uswest")
     assert scenario.baseline.sigma_scale == 1.0

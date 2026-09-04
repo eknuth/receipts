@@ -1,10 +1,10 @@
 id: control-noisy
 narrative: >-
   Twenty noisy minutes, but nothing is actually wrong. Every span's own time has
-  twice its ordinary spread, so the heatmap looks busier than usual without any
-  median moving. paypal throws a 30 second burst of errors at the four minute mark
-  and then stops on its own; it never repeats. The right answer is still that there
-  is no incident.
+  twice its ordinary spread, so the heatmap looks busier than usual while each
+  span's own median holds. paypal throws a one minute burst of errors at the
+  four minute mark and then stops on its own; it never repeats. The right answer
+  is still that there is no incident.
 baseline: {rps: 15, minutes: 20, sigma_scale: 2.0}
 ground_truth:
   incident_present: false
@@ -13,5 +13,5 @@ red_herrings:
   - where: {payment.provider: "paypal"}
     effect: {span: "payments.charge", error_rate: 0.5}
     onset_min: 4
-    duration_min: 0.5
-    note: a 30 second burst of paypal errors at minute 4 that resolves on its own and does not return
+    duration_min: 1.0
+    note: a one minute burst of paypal errors at minute 4 that resolves on its own and does not return

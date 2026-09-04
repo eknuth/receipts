@@ -85,7 +85,7 @@ query for one child span has to be able to filter on them:
 | `cloud.region` | `us-west-2` 50%, `us-east-1` 30%, `eu-west-1` 20% |
 | `payment.provider` | `stripe` 60%, `adyen` 25%, `paypal` 15% |
 | `service.component` | `gateway`, `checkout`, `payments`, `inventory-db` |
-| `scenario.run_id` | the run id, fresh per run. Every query scopes to it, and it rides on an `exception` span event too, not just its span, because Honeycomb gives an event row only its own attributes, not the span's. |
+| `scenario.run_id` | the run id, fresh per run. Every query scopes to it. An `exception` span event carries its own copy too: Honeycomb gives an event row only its own attributes, separate from the span it hangs off. |
 | `error` | true on a failing span and on every ancestor above it |
 
 On the root span, plus the child spans where they belong:
@@ -141,7 +141,7 @@ red_herrings:
 | `narrative` | yes | What happened, in one or two sentences. For the README and the report, never shown to the agent. |
 | `baseline.rps` | yes | Requests per second across the whole window. |
 | `baseline.minutes` | yes | Length of the window. `rps * minutes * 60` requests, five spans each. |
-| `baseline.sigma_scale` | no, defaults to 1.0 | Multiplies every span's log-normal sigma (its spread, not its median). A control can use this to look noisier than usual without any median actually moving, which is a different thing from a fault stepping a median. |
+| `baseline.sigma_scale` | no, defaults to 1.0 | Multiplies every span's log-normal sigma (its spread). A control can use this to look noisier than usual while each span's own median holds, a different thing from a fault stepping a median at onset. The root span's median is the exception: its duration sums its own time and every descendant's, and a sum of wider log-normals has a heavier right tail, so `control-noisy`'s root median at `sigma_scale: 2.0` runs about 1.19x `sigma_scale: 1.0`'s even though every individual span's own median (gateway, checkout.process, payments.charge, inventory.reserve, db.query) stays within a few percent. |
 | `dimensions` | no | Overrides the weights for one or more of `deployment.version`, `cloud.region`, `payment.provider`, or pins one or more `customer.id` values to a fixed share (see below). A value that appears nowhere else, such as `2.6.0`, exists only because a scenario declares it here. Weights are normalised, so they need not sum to one. |
 | `dimensions.customer.id` | no | `{"cust-00007": 0.15}`-style: pins that customer to exactly 15% of traffic. The remaining share is spread over the rest of the 2,000 Zipf ids in their normal proportions. A `where` clause may only name a customer id that is pinned here. |
 | `fault` | only when there is an incident | The incident. |
@@ -161,7 +161,7 @@ red_herrings:
 | `ground_truth.affected_share` | when there is an incident | The share of all requests in the run that match `fault.where`. This is the population share over the whole window, not the share that were actually slowed: onset splits the window in time, it does not change who is in the population. |
 | `red_herrings` | no | Other effects that are not the incident. Same shape as a fault, plus a `note`. |
 | `red_herrings[].onset_min` | no, defaults to 0 | A red herring is normally present for the whole window, so a before-and-after comparison separates it from the fault. |
-| `red_herrings[].duration_min` | no, defaults to unset | Unset means "the rest of the window" (the original behaviour). Set it to make the herring a burst: active from `onset_min` for `duration_min`, then off, on its own, with no further intervention. `onset_min + duration_min` must stay inside the window. |
+| `red_herrings[].duration_min` | no, defaults to unset | Unset means "the rest of the window" (the original behaviour). Set it to make the herring a burst: active from `onset_min` for `duration_min`, then off, on its own, with no further intervention. `onset_min + duration_min` must stay inside the window. Keep it wide enough to clear the verifier's own row-count floor (100 rows, `MIN_ROWS` in `gen/verify.py`): 30 seconds at 15rps on a 15% population holds about 64 rows, too thin to judge, which is why `control-noisy` uses 1.0 minute (about 135 rows) instead. |
 | `trigger` | no | A Honeycomb trigger this scenario expects to fire, created by hand in the UI. `{id, name, threshold_ms, window_min, frequency_s, note}`. The UI allows a duration of at most 4x the frequency, in whole minutes, so a 5 minute window runs every 2 minutes at the fastest (120s in `trigger-checkout-latency`; the issue asked for 60s). `gen/verify.py` calls `get_triggers` and checks the row for `id` reports `triggered: true`. |
 
 The models reject a file that does not hold together: an incident with no fault, `root_cause_dims`
@@ -182,7 +182,7 @@ than producing a run that quietly verifies nothing.
 | `control-quiet` | control | none | n/a | the same eu-west-1 `db.query` +150ms |
 | `dependency-inventory-db-timeouts` | dependency failure | `db.query` under inventory-db times out (5000ms exactly) for 40% of calls, every request, from minute 10 | 100% | eu-west-1 `checkout.process` +150ms, whole window |
 | `trigger-checkout-latency` | trigger fired | `checkout.process` +1400ms for `cart.size >= 8`, from minute 10; a trigger on root P99 > 1500ms should fire after onset | 10.5% | paypal `payments.charge` +100ms, whole window |
-| `control-noisy` | control | none; every span's spread doubled | n/a | 30s burst of paypal `payments.charge` errors at minute 4, resolves on its own |
+| `control-noisy` | control | none; every span's spread doubled | n/a | one minute burst of paypal `payments.charge` errors at minute 4, resolves on its own |
 | `herring-region-vs-version` | red herring stronger by count | `checkout.process` +600ms on v2.6.1, from minute 10 | 8% | us-east-1 `checkout.process` +120ms, 45% of traffic, whole window |
 | `herring-customer-whale` | red herring stronger by count | `payments.charge` fails 20% on adyen, from minute 10 | 25% | cust-00007, 15% of traffic and about 30% of all errors, whole window |
 | `error-surge-exceptions` | error surge, with exceptions | `payments.charge` fails 25% on adyen with a `ProviderDeclined` exception event, from minute 10 | 25% | us-east-1 `payments.charge` fails 3%, no exception, whole window |
@@ -267,7 +267,8 @@ other, and every query goes through the hosted Honeycomb MCP client in `agent/mc
 For every scenario:
 
 - **ingest.** At least 98% of the manifest's root spans are queryable in the window.
-- **row counts.** At least 100 rows in each half of the window, inside and outside the population.
+- **row counts.** At least 100 rows in each half of the window, inside and outside the population,
+  and in every red herring burst window (see "control" below).
 - **affected share.** The measured population share is within 0.02 of `ground_truth.affected_share`.
 
 For a latency fault:
@@ -283,12 +284,26 @@ For an error fault:
 - The error rate outside `where` moves by less than 3x.
 
 For a dependency fault (`where` names only `service.component`, so the population is the whole
-run and there is no "outside" to compare):
+run and there is no "outside" for the checks above to compare against):
 
 - The inside latency and error checks above still run.
-- In place of the outside checks: P99 of a different, unrelated span (`payments.charge`) moves by
-  less than 1.5x across the same onset. That is the verify-by-negation for a fault whose own
-  population has nothing outside it.
+- The population query itself is different: scoped only to the run id, it counts root spans for
+  the total and the fault's own span, filtered to the service it runs on, for "inside". That is a
+  real measurement, so a run that dropped the fault's own span fails the affected-share check
+  instead of passing 1.000 against 1.000 by construction.
+- In place of the outside checks, one negation stands in for both: P99 of a different, unrelated
+  span (`payments.charge`) moves by less than 1.5x across the same onset.
+
+For every fault with a red herring, one check per herring: **the fault's step survives excluding
+the herring.** Filtering the fault's own span to the herring's `where`, before and after onset,
+and reading the OUTSIDE numbers (the complement of the herring's population) proves the incident
+holds with the herring's population excluded, and is not an artifact of it. A latency fault needs
+the outside P99 to step by 2x; an error fault needs the outside error rate to step by 5x, which
+needs its own outside-errors query per window, the same way the main measurement does. Two
+`run_query` calls per herring for a latency fault, four for an error fault. This is what makes
+`herring-customer-whale` honest: the whale holds about 30% of all errors over the window, but
+excluding the whale, adyen's error rate still steps about 13x at onset, which is the check that
+proves the incident is adyen and not the whale.
 
 For a control:
 
@@ -298,23 +313,29 @@ For a control:
   clears half its injected rate and steps at least 5x above its rate in the rest of the window
   (one check), and its rate from the end of the burst to the end of the window falls back under
   3x its rate before the burst (a second check). Together these two checks prove the burst
-  happened and then stopped on its own, so the mean is not merely a little higher across the
-  window. `control-noisy`'s whole verification stays at or under seven `run_query` calls.
+  happened and then stopped on its own, distinct from a mean that just runs a little higher across
+  the whole window. `control-noisy`'s whole verification stays at or under seven `run_query` calls.
 
 For a scenario with a `trigger` block: one `get_triggers` call (list mode, `environment_slug`
 only, it takes no `dataset_slug`, unlike `run_query`) after everything else, checking that the
-row for the trigger's `id` reports `triggered: true`. A run where it did not fire is NOT VERIFIED.
+row for the trigger's `id` reports `triggered: true`. This reads the trigger's current state, not
+a history: a run passes if any run fired it, this one included, and fails if verify runs after
+the triggered window has passed. A run where it never fired is NOT VERIFIED.
 
-For a fault whose effect carries an `exception`, two checks. First: one `run_query` breaking down
+For a fault whose effect carries an `exception`, two checks. First, one `run_query` breaking down
 on `trace.trace_id` (filtered to the fault's population and span, `error = true`, after onset,
-`limit: 1`), then one `get_trace` on that id with `show_events: true`; a live check found that
-Honeycomb renders a span event as its own row, with a `name`, an `annotation_type` of
-`span_event`, and a `parent_id` pointing at the span it hangs off, but none of the event's own
-attributes, so this check can only confirm a `span_event` row named `exception` hangs off a
-failed span named `fault.effect.span`, not its `exception.type`. Second, and where the type is
-actually proven: one more `run_query`, scoped to the run and filtered to `name = exception` and
-`exception.type = <the configured type>` (a real filter: Honeycomb copies an event's attributes
-onto its parent span's row too, not only its own), whose `COUNT` must equal `manifest.span_events`
-exactly, the same exactness the ingest check uses.
+`limit: 1`), then one `get_trace` on that id with `show_events: true`. A live check found that
+Honeycomb renders a span event as its own row with a `name`, an `annotation_type` of
+`span_event`, and a `parent_id` pointing at the span it hangs off, and renders none of the
+event's attributes, so this check confirms that a `span_event` row named `exception` hangs off a
+failed span named `fault.effect.span` and stops there. Second, the type: one more `run_query`,
+scoped to the run and filtered to `name = exception` and `exception.type = <the configured type>`,
+which reads the event rows themselves (each carries its own attributes, and the emitter puts the
+run id on it), and whose `COUNT` must equal `manifest.span_events` exactly, the same exactness the
+ingest check uses. Honeycomb also copies `exception.type` and `exception.message` onto the parent
+span's row, so a run-scoped breakdown on `exception.type` over `name = payments.charge` gives the
+same number. That query extends `to` ten seconds past the window's own end: an event sits at its
+span's end time, and a span starting just before the window closes still runs its full duration,
+so a failure in the last fraction of a second could otherwise land past `to` and be missed.
 
 Five `run_query` calls at most for a plain fault or control, all inside the MCP client's pacing.

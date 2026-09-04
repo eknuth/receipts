@@ -21,7 +21,7 @@ import pytest
 
 from gen import verify as V
 from gen.emit import EmitResult, iso
-from gen.scenario import Scenario, load_scenario
+from gen.scenario import RedHerring, Scenario, load_scenario
 
 FIXTURES = Path(__file__).parent / "fixtures" / "gen"
 
@@ -371,6 +371,29 @@ def test_too_few_rows_fails_before_any_ratio_is_believed() -> None:
     assert verdicts(checks)["row counts"] is False
 
 
+def test_a_thin_burst_window_fails_row_counts() -> None:
+    """control-noisy's burst is a minute wide, about 135 rows at 15rps; a
+    burst under `MIN_ROWS` is too few to judge, the same as any other window."""
+    scenario = load_scenario("control-noisy")
+    m = measurement(
+        before={"inside_count": 8985, "inside_errors": 43, "inside_p99": 316.5},
+        after={"inside_count": 9001, "inside_errors": 34, "inside_p99": 329.5},
+        inside=0.0,
+    )
+    m.bursts = [
+        V.BurstMeasurement(
+            herring=scenario.red_herrings[0],
+            before=V.WindowStats(label="before", inside_count=500, inside_errors=3),
+            burst=V.WindowStats(label="burst", inside_count=64, inside_errors=30),  # under MIN_ROWS
+            after=V.WindowStats(label="after", inside_count=8500, inside_errors=40),
+        )
+    ]
+    checks = V.decide(scenario, manifest(scenario, onset=False), m)
+    row_check = next(c for c in checks if c.name == "row counts")
+    assert row_check.ok is False
+    assert "burst window" in row_check.detail
+
+
 def test_an_error_fault_that_landed_passes() -> None:
     scenario = load_scenario("checkout-error-surge-adyen")
     checks = V.decide(
@@ -599,26 +622,47 @@ def test_is_full_population_ignores_affected_share() -> None:
     assert V._is_full_population(bad)
 
 
-def test_population_query_where_is_empty_for_a_full_population_fault() -> None:
+def test_full_population_query_spec_counts_root_spans_and_the_faults_own_span() -> None:
     """The live bug: root spans do not carry service.component=inventory-db
     (their own service.component is always "gateway"), so ANDing the fault's
-    where onto the population query measured zero instead of the whole run."""
-    where = {"service.component": "inventory-db"}
-    assert V._population_query_where(True, where) == {}
-    assert V._population_query_where(False, where) == where
+    where onto a population query built around root spans measured zero
+    instead of the whole run. This query counts two different things
+    instead: root spans for the total, and the fault's own span on the
+    service it runs for the inside, scoped only to the run id."""
+    spec = V.full_population_query_spec(
+        "run-1", "HTTP POST /checkout", "db.query", "inventory-db", start="A", end="B"
+    )
+    assert spec["filters"] == [{"column": "scenario.run_id", "op": "=", "value": "run-1"}]
+    assert calc(spec, "total_count")["filters"] == [
+        {"column": "name", "op": "=", "value": "HTTP POST /checkout"}
+    ]
+    assert calc(spec, "inside_count")["filters"] == [
+        {"column": "name", "op": "=", "value": "db.query"},
+        {"column": "service.component", "op": "=", "value": "inventory-db"},
+    ]
+    assert spec["from"] == "A"
+    assert spec["to"] == "B"
 
 
-def test_population_query_where_does_not_mutate_its_input() -> None:
-    where = {"payment.provider": "adyen"}
-    result = V._population_query_where(False, where)
-    result["payment.provider"] = "stripe"
-    assert where == {"payment.provider": "adyen"}
-
-
-def test_population_inside_matches_the_total_for_a_full_population_fault() -> None:
-    assert V._population_inside(True, 18000.0, 0.0) == 18000.0
-    assert V._population_inside(True, 18000.0, 999.0) == 18000.0  # ignores whatever the query said
-    assert V._population_inside(False, 18000.0, 2221.0) == 2221.0
+def test_a_full_population_fault_that_dropped_its_own_span_fails_the_share_check() -> None:
+    """A run that dropped every db.query span (the fault's own span) now
+    fails the affected-share check instead of passing 1.000 against 1.000
+    by construction: inside_count is a real measurement, not a copy of the
+    total."""
+    scenario = load_scenario("dependency-inventory-db-timeouts")
+    checks = V.decide(
+        scenario,
+        manifest(scenario),
+        measurement(
+            before={"inside_count": 8000, "inside_p99": 41.0, "inside_errors": 5},
+            after={"inside_count": 8000, "inside_p99": 5000.0, "inside_errors": 3180},
+            inside=0.0,  # db.query spans never came back
+            total=18000.0,
+            negation_before_p99=190.0,
+            negation_after_p99=195.0,
+        ),
+    )
+    assert verdicts(checks)["affected share"] is False
 
 
 def test_a_full_population_fault_skips_the_outside_checks_and_adds_a_negation() -> None:
@@ -638,9 +682,12 @@ def test_a_full_population_fault_skips_the_outside_checks_and_adds_a_negation() 
     verdicts_ = verdicts(checks)
     assert verdicts_["affected share"] is True
     assert verdicts_["latency step inside the population"] is True
-    assert verdicts_["no latency step outside the population"] is True
+    assert "no latency step outside the population" not in verdicts_
+    assert "no error step outside the population" not in verdicts_
     assert verdicts_["no latency step on payments.charge (verify by negation)"] is True
-    assert verdicts_["no error step outside the population"] is True
+    # Exactly one negation check, not one per effect kind (this fault has both
+    # a timeout and an error_rate, and the negation stands in for both).
+    assert sum(1 for c in checks if c.name.startswith("no latency step on")) == 1
 
 
 def test_the_negation_check_fails_when_the_unrelated_span_also_moved() -> None:
@@ -673,6 +720,90 @@ def test_the_negation_check_fails_when_it_never_ran() -> None:
         ),
     )
     assert verdicts(checks)["no latency step on payments.charge (verify by negation)"] is False
+
+
+# --------------------------------------------------------------------------
+# R5: the fault's step survives excluding the red herring
+# --------------------------------------------------------------------------
+
+
+def test_the_error_faults_step_survives_excluding_the_herring() -> None:
+    """herring-customer-whale's own numbers: excluding cust-00007,
+    payment.provider != adyen's error rate before/after onset still steps
+    well past ERROR_STEP_MIN (0.0045 to 0.0594 is about 13x)."""
+    scenario = load_scenario("herring-customer-whale")
+    herring = scenario.red_herrings[0]
+    survival = V.HerringSurvivalMeasurement(
+        herring=herring,
+        before=V.WindowStats(label="before", outside_count=6500, outside_errors=29),
+        after=V.WindowStats(label="after", outside_count=6500, outside_errors=386),
+    )
+    check = V._one_herring_survives_check(scenario, survival)
+    assert "fault step survives excluding the red herring" in check.name
+    assert check.ok is True
+
+
+def test_the_error_faults_step_does_not_survive_excluding_the_herring() -> None:
+    """If excluding the herring flattened the step, the herring would have
+    been carrying the incident, and the fault's own dims would be wrong."""
+    scenario = load_scenario("herring-customer-whale")
+    herring = scenario.red_herrings[0]
+    survival = V.HerringSurvivalMeasurement(
+        herring=herring,
+        before=V.WindowStats(label="before", outside_count=6500, outside_errors=29),
+        after=V.WindowStats(label="after", outside_count=6500, outside_errors=35),  # barely moved
+    )
+    check = V._one_herring_survives_check(scenario, survival)
+    assert check.ok is False
+
+
+def test_the_latency_faults_step_survives_excluding_the_herring() -> None:
+    scenario = load_scenario("payments-stripe-v251-uswest")
+    herring = scenario.red_herrings[0]
+    survival = V.HerringSurvivalMeasurement(
+        herring=herring,
+        before=V.WindowStats(label="before", outside_count=7900, outside_p99=198.0),
+        after=V.WindowStats(label="after", outside_count=7900, outside_p99=990.0),
+    )
+    check = V._one_herring_survives_check(scenario, survival)
+    assert check.ok is True
+
+
+def test_the_latency_faults_step_does_not_survive_excluding_the_herring() -> None:
+    scenario = load_scenario("payments-stripe-v251-uswest")
+    herring = scenario.red_herrings[0]
+    survival = V.HerringSurvivalMeasurement(
+        herring=herring,
+        before=V.WindowStats(label="before", outside_count=7900, outside_p99=198.0),
+        after=V.WindowStats(label="after", outside_count=7900, outside_p99=205.0),
+    )
+    check = V._one_herring_survives_check(scenario, survival)
+    assert check.ok is False
+
+
+def test_decide_runs_one_survives_check_per_herring() -> None:
+    scenario = load_scenario("herring-customer-whale")
+    m = measurement(
+        before={"inside_count": 2242, "inside_errors": 32, "outside_count": 6749},
+        after={"inside_count": 2232, "inside_errors": 583, "outside_count": 6768},
+        inside=4500.0,
+    )
+    m.herring_survival = [
+        V.HerringSurvivalMeasurement(
+            herring=scenario.red_herrings[0],
+            before=V.WindowStats(label="before", outside_count=6500, outside_errors=29),
+            after=V.WindowStats(label="after", outside_count=6500, outside_errors=386),
+        )
+    ]
+    checks = V.decide(scenario, manifest(scenario), m)
+    survives = [c for c in checks if c.name.startswith("fault step survives")]
+    assert len(survives) == 1
+    assert survives[0].ok is True
+
+
+def test_a_control_gets_no_survives_checks() -> None:
+    scenario = load_scenario("control-quiet")
+    assert V._herring_survives_checks(scenario, measurement()) == []
 
 
 def test_herring_windows_floors_and_ceils_to_whole_seconds() -> None:
@@ -749,6 +880,66 @@ def test_a_burst_that_does_not_resolve_fails() -> None:
     names = verdicts(checks)
     resolve_name = next(n for n in names if n.startswith("red herring resolves"))
     assert names[resolve_name] is False
+
+
+def _latency_herring() -> RedHerring:
+    return RedHerring.model_validate(
+        {
+            "where": {"cloud.region": "eu-west-1"},
+            "effect": {"span": "db.query", "latency_add_ms": 300},
+            "onset_min": 4,
+            "duration_min": 1.0,
+        }
+    )
+
+
+def test_a_latency_burst_that_happened_and_resolved_passes() -> None:
+    burst = V.BurstMeasurement(
+        herring=_latency_herring(),
+        before=V.WindowStats(label="before", inside_count=500, inside_p99=40.0),
+        burst=V.WindowStats(label="burst", inside_count=130, inside_p99=340.0),
+        after=V.WindowStats(label="after", inside_count=8500, inside_p99=42.0),
+    )
+    names = verdicts(V._one_burst_checks(burst))
+    step_name = next(n for n in names if n.startswith("red herring burst steps"))
+    resolve_name = next(n for n in names if n.startswith("red herring resolves"))
+    assert names[step_name] is True
+    assert names[resolve_name] is True
+
+
+def test_a_latency_burst_that_never_happened_fails() -> None:
+    burst = V.BurstMeasurement(
+        herring=_latency_herring(),
+        before=V.WindowStats(label="before", inside_count=500, inside_p99=40.0),
+        burst=V.WindowStats(label="burst", inside_count=130, inside_p99=41.0),  # no step
+        after=V.WindowStats(label="after", inside_count=8500, inside_p99=42.0),
+    )
+    names = verdicts(V._one_burst_checks(burst))
+    step_name = next(n for n in names if n.startswith("red herring burst steps"))
+    assert names[step_name] is False
+
+
+def test_a_latency_burst_that_does_not_resolve_fails() -> None:
+    burst = V.BurstMeasurement(
+        herring=_latency_herring(),
+        before=V.WindowStats(label="before", inside_count=500, inside_p99=40.0),
+        burst=V.WindowStats(label="burst", inside_count=130, inside_p99=340.0),
+        after=V.WindowStats(label="after", inside_count=8500, inside_p99=310.0),  # stayed high
+    )
+    names = verdicts(V._one_burst_checks(burst))
+    resolve_name = next(n for n in names if n.startswith("red herring resolves"))
+    assert names[resolve_name] is False
+
+
+def test_weighted_p99_weights_by_row_count() -> None:
+    before = V.WindowStats(label="before", inside_count=100, inside_p99=100.0)
+    after = V.WindowStats(label="after", inside_count=300, inside_p99=300.0)
+    assert V._weighted_p99(before, after) == pytest.approx(250.0)  # (100*100 + 300*300) / 400
+
+
+def test_weighted_p99_is_zero_with_no_rows() -> None:
+    empty = V.WindowStats(label="before")
+    assert V._weighted_p99(empty, empty) == 0.0
 
 
 def test_a_control_with_no_burst_herring_skips_the_burst_checks() -> None:

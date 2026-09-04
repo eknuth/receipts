@@ -32,10 +32,31 @@ What is checked, per scenario class:
 
   dependency fault (the fault's population is the whole run)
     A `where` naming only `service.component` selects every request, so there
-    is no "outside" to compare: the population and latency/error checks above
-    still run for the inside numbers, but the negation is a different query
-    entirely, P99 of a different, unrelated span (`payments.charge`) across
-    the same onset, which must stay under `OUTSIDE_STEP_MAX`.
+    is no "outside" for the checks above to compare against; the negation
+    below stands in for both. The population query itself changes shape too:
+    scoped only to the run id, it counts root spans for the total and the
+    fault's own span on the service it runs for "inside", a real measurement
+    rather than a copy of the total, so a run that dropped that span fails the
+    affected-share check.
+
+  every fault with a red herring: fault step survives excluding the herring
+    Filtering the fault's own span to the herring's `where`, before and after
+    onset, and reading the OUTSIDE numbers (the complement of the herring's
+    population) proves the fault's step holds with the herring's population
+    excluded, rather than merely present alongside it. A latency fault needs the
+    outside P99 to step by `LATENCY_STEP_MIN`; an error fault needs the
+    outside error rate to step by `ERROR_STEP_MIN`, which needs its own
+    outside-errors query per window, the same way the main measurement does.
+    This is what makes `herring-customer-whale` honest: the whale holds 30%
+    of all errors over the window, but excluding the whale, adyen's error
+    rate still steps 13x at onset, which is the fault surviving the herring's
+    exclusion.
+
+  dependency fault's own negation
+    P99 of a different, unrelated span (`payments.charge`) across the same
+    onset must stay under `OUTSIDE_STEP_MAX`. This is the "outside" check for
+    a fault whose own population has no outside, standing in for both the
+    latency and the error version of that check.
 
   control
     No latency step and no error step on the root span between the first half
@@ -44,25 +65,32 @@ What is checked, per scenario class:
     half its injected rate and steps well above the rest of the window, and
     its rate from the end of the burst to the end of the window falls back
     under `OUTSIDE_ERROR_STEP_MAX` times its rate before the burst, proving
-    the burst resolved on its own rather than just tailing off in the mean.
+    the burst resolved on its own rather than just tailing off across the
+    whole window. The row-count check covers the burst window too.
 
   trigger
     When the scenario names a Honeycomb trigger, `get_triggers` is called
     once after everything else and the row for that trigger id must report
-    `triggered` as true. A run where it did not fire is NOT VERIFIED.
+    `triggered` as true. This reads the trigger's current state, not its
+    history: a run where some other run fired it passes on that basis, and a
+    run where verify runs after the triggered window has passed fails on
+    that basis. A run where it never fired is NOT VERIFIED.
 
   exception
     When the fault's effect carries an `exception`, a trace with a failure in
     the fault's population is looked up (`run_query` breaking down on
     `trace.trace_id`, one row) and then fetched with `get_trace(show_events=
     true)`; a span_event row named `exception` must hang off the failed
-    span (Honeycomb renders the event as its own row, with only its own
-    attributes: no `exception.type` in that table, which is why the second
-    check exists). A second `run_query`, scoped to the run and filtered to
-    `name = exception` and `exception.type = <configured type>` (Honeycomb
-    also copies the event's attributes onto the parent span row, so this is
-    a real filter, not a guess), must return exactly `manifest.span_events`
-    rows, the same exactness the ingest check uses.
+    span. Honeycomb renders the event as its own row, carrying only its own
+    attributes and no `exception.type` in that table, which is why a second
+    check exists: one more `run_query`, scoped to the run and filtered to
+    `name = exception` and `exception.type = <configured type>` (a real
+    filter, since Honeycomb also copies the event's attributes onto the
+    parent span's row), must return exactly `manifest.span_events` rows, the
+    same exactness the ingest check uses. That query extends `to` ten
+    seconds past the window's own end, since an event sits at its span's end
+    time and a span starting just before the window closes still runs its
+    full duration.
 
   every scenario
     The number of root spans matches the manifest, so a partial export fails
@@ -159,6 +187,17 @@ class BurstMeasurement:
 
 
 @dataclass
+class HerringSurvivalMeasurement:
+    """The fault's span, outside one red herring's population, before and
+    after onset: does the fault's own step survive with the herring's
+    population excluded."""
+
+    herring: RedHerring
+    before: WindowStats
+    after: WindowStats
+
+
+@dataclass
 class Measurement:
     """Everything one verification read out of Honeycomb."""
 
@@ -174,6 +213,8 @@ class Measurement:
     negation_after_p99: float | None = None
     # One entry per red herring that has a `duration_min`.
     bursts: list[BurstMeasurement] = field(default_factory=list)
+    # One entry per red herring on an incident scenario.
+    herring_survival: list[HerringSurvivalMeasurement] = field(default_factory=list)
     # The raw `get_triggers` text, when the scenario names a trigger.
     trigger_text: str | None = None
     # The trace looked up for the exception check, when the fault carries one.
@@ -353,6 +394,53 @@ def population_query_spec(
     }
 
 
+def full_population_query_spec(
+    run_id: str,
+    root_span: str,
+    fault_span: str,
+    service: str,
+    *,
+    start: str,
+    end: str,
+) -> dict[str, Any]:
+    """The population query for a fault whose `where` selects the whole run.
+
+    `where` names only `service.component`, which root spans do not carry a
+    matching value for (every root span's own `service.component` is
+    `"gateway"`, whatever service the fault names): ANDing it onto the usual
+    population query measures zero root spans instead of the whole run,
+    which is the bug a live run against `dependency-inventory-db-timeouts`
+    found (affected share came back 0.000 against a ground truth of 1.000).
+
+    So the total counts root spans, scoped only to the run id, and the
+    "inside" count is a real measurement of its own: every span the fault's
+    own `fault.effect.span` on the service it runs. Every request builds
+    exactly one of each, so a run that dropped that span, or emitted it
+    under the wrong service, comes back short and fails the affected-share
+    check instead of passing 1.000 against 1.000 by construction.
+    """
+    return {
+        "calculations": [
+            {
+                "op": "COUNT",
+                "name": "total_count",
+                "filters": [{"column": "name", "op": "=", "value": root_span}],
+            },
+            {
+                "op": "COUNT",
+                "name": "inside_count",
+                "filters": [
+                    {"column": "name", "op": "=", "value": fault_span},
+                    {"column": "service.component", "op": "=", "value": service},
+                ],
+            },
+        ],
+        "filters": [{"column": "scenario.run_id", "op": "=", "value": run_id}],
+        "from": start,
+        "to": end,
+    }
+
+
 # --------------------------------------------------------------------------
 # Reading numbers back out
 # --------------------------------------------------------------------------
@@ -410,31 +498,6 @@ def _is_full_population(scenario: Scenario) -> bool:
     return scenario.fault is not None and set(scenario.fault.where) == {"service.component"}
 
 
-def _population_query_where(full_population: bool, where: Mapping[str, str]) -> dict[str, str]:
-    """The `where` to send to `population_query_spec`.
-
-    A full-population fault's `where` names `service.component`, and root
-    spans do not carry a matching value for it: every root span's own
-    `service.component` is `"gateway"`, whatever service the fault names.
-    ANDing that clause onto the population query measures zero root spans
-    instead of the whole run, which is the bug a live run against
-    `dependency-inventory-db-timeouts` found (affected share came back
-    0.000 against a ground truth of 1.000). An empty `where` asks the query
-    for only the total, and `_population_inside` supplies the rest.
-    """
-    return {} if full_population else dict(where)
-
-
-def _population_inside(full_population: bool, total: float, measured_inside: float) -> float:
-    """The `inside_root_spans` to record.
-
-    A full-population fault's population is the whole run by construction
-    (see `_population_query_where`), so it is set to match the total
-    directly rather than read from a query that cannot measure it.
-    """
-    return total if full_population else measured_inside
-
-
 def decide(scenario: Scenario, manifest: EmitResult, measurement: Measurement) -> list[Check]:
     """Every check for this scenario, from numbers that are already measured."""
     checks: list[Check] = [
@@ -458,6 +521,9 @@ def decide(scenario: Scenario, manifest: EmitResult, measurement: Measurement) -
                 checks += _error_checks_full_population(scenario, measurement)
             else:
                 checks += _error_checks(scenario, measurement)
+        if full_population:
+            checks.append(_dependency_negation_check(measurement))
+        checks += _herring_survives_checks(scenario, measurement)
         checks += _check_exception(scenario, manifest, measurement)
     trigger_check = _check_trigger(scenario, measurement)
     if trigger_check is not None:
@@ -489,6 +555,9 @@ def _check_rows(measurement: Measurement) -> Check:
     if measurement.before.outside_count or measurement.after.outside_count:
         counts["before outside"] = measurement.before.outside_count
         counts["after outside"] = measurement.after.outside_count
+    for burst in measurement.bursts:
+        label = ", ".join(f"{k}={v}" for k, v in burst.herring.where.items())
+        counts[f"burst window ({label})"] = burst.burst.inside_count
     thin = [f"{label} {count:.0f}" for label, count in counts.items() if count < MIN_ROWS]
     return Check(
         name="row counts",
@@ -606,12 +675,13 @@ def _control_checks(measurement: Measurement) -> list[Check]:
 
 
 def _latency_checks_full_population(measurement: Measurement) -> list[Check]:
-    """The inside step, same as `_latency_checks`, plus the negation-by-a-
-    different-span check in place of an "outside the population" that does
-    not exist when the population is the whole run."""
+    """The inside step, same as `_latency_checks`. `decide` adds the
+    negation-by-a-different-span check separately, once, since it stands in
+    for the "outside the population" half of both the latency and error
+    checks, once, not once per effect kind."""
     before, after = measurement.before, measurement.after
     inside = _ratio(after.inside_p99, before.inside_p99)
-    checks = [
+    return [
         Check(
             name="latency step inside the population",
             ok=inside >= LATENCY_STEP_MIN,
@@ -620,20 +690,16 @@ def _latency_checks_full_population(measurement: Measurement) -> list[Check]:
                 f"{inside:.2f}x (need at least {LATENCY_STEP_MIN}x)"
             ),
         ),
-        Check(
-            name="no latency step outside the population",
-            ok=True,
-            detail=(
-                "the fault's population is the whole run (a service.component clause), "
-                "so there is nothing outside it to compare; see the negation check below"
-            ),
-        ),
     ]
-    checks.append(_dependency_negation_check(measurement))
-    return checks
 
 
 def _dependency_negation_check(measurement: Measurement) -> Check:
+    """Stands in for "no latency step outside the population" and "no error
+    step outside the population": the fault's population is the whole run
+    (a `service.component` clause), so there is no outside population for
+    either of those to compare against. This is the verify-by-negation query
+    for that case instead: a span the fault does not touch should not move.
+    """
     before_p99 = measurement.negation_before_p99
     after_p99 = measurement.negation_after_p99
     if before_p99 is None or after_p99 is None:
@@ -649,7 +715,8 @@ def _dependency_negation_check(measurement: Measurement) -> Check:
         detail=(
             f"{DEPENDENCY_NEGATION_SPAN} P99 {before_p99:.1f}ms before onset, "
             f"{after_p99:.1f}ms after, {step:.2f}x (must stay under {OUTSIDE_STEP_MAX}x); "
-            "a span the fault does not touch should not move"
+            "stands in for the outside-the-population checks, which have no population to "
+            "compare against here"
         ),
     )
 
@@ -678,14 +745,6 @@ def _error_checks_full_population(scenario: Scenario, measurement: Measurement) 
                 f"error rate {before.inside_error_rate:.4f} before onset, "
                 f"{after.inside_error_rate:.4f} after, {inside_step:.1f}x "
                 f"(need at least {ERROR_STEP_MIN}x)"
-            ),
-        ),
-        Check(
-            name="no error step outside the population",
-            ok=True,
-            detail=(
-                "the fault's population is the whole run, so there is nothing outside it to "
-                "compare; see the latency negation check"
             ),
         ),
     ]
@@ -768,6 +827,48 @@ def _weighted_p99(before: WindowStats, after: WindowStats) -> float:
     return (before.inside_p99 * before.inside_count + after.inside_p99 * after.inside_count) / total
 
 
+def _herring_survives_checks(scenario: Scenario, measurement: Measurement) -> list[Check]:
+    """One check per red herring on an incident scenario: excluding the
+    herring's population, the fault's own step still holds. Proves the
+    incident is not an artifact of the herring's population, the way
+    `herring-customer-whale`'s ground truth depends on it: the whale holds
+    30% of all errors over the window, but adyen's step is what survives
+    with the whale excluded."""
+    if scenario.fault is None:
+        return []
+    return [
+        _one_herring_survives_check(scenario, survival) for survival in measurement.herring_survival
+    ]
+
+
+def _one_herring_survives_check(scenario: Scenario, survival: HerringSurvivalMeasurement) -> Check:
+    assert scenario.fault is not None
+    effect = scenario.fault.effect
+    label = ", ".join(f"{k}={v}" for k, v in survival.herring.where.items())
+    name = f"fault step survives excluding the red herring ({label})"
+    before, after = survival.before, survival.after
+    if effect.error_rate:
+        step = _ratio(after.outside_error_rate, max(before.outside_error_rate, ERROR_RATE_FLOOR))
+        return Check(
+            name=name,
+            ok=step >= ERROR_STEP_MIN,
+            detail=(
+                f"excluding {label}: error rate {before.outside_error_rate:.4f} before onset, "
+                f"{after.outside_error_rate:.4f} after, {step:.1f}x (need at least "
+                f"{ERROR_STEP_MIN}x)"
+            ),
+        )
+    step = _ratio(after.outside_p99, before.outside_p99)
+    return Check(
+        name=name,
+        ok=step >= LATENCY_STEP_MIN,
+        detail=(
+            f"excluding {label}: P99 {before.outside_p99:.1f}ms before onset, "
+            f"{after.outside_p99:.1f}ms after, {step:.2f}x (need at least {LATENCY_STEP_MIN}x)"
+        ),
+    )
+
+
 def _check_trigger(scenario: Scenario, measurement: Measurement) -> Check | None:
     if scenario.trigger is None:
         return None
@@ -806,7 +907,9 @@ def _check_trigger(scenario: Scenario, measurement: Measurement) -> Check | None
         ok=triggered,
         detail=(
             f"trigger {scenario.trigger.id} ({scenario.trigger.name}): "
-            f"triggered={row[triggered_i]!r}"
+            f"triggered={row[triggered_i]!r}. This reads the trigger's current state, not its "
+            "history: it passes if any run fired it, this one included, and fails if verify "
+            "runs after the triggered window has passed."
         ),
     )
 
@@ -999,26 +1102,35 @@ async def measure(
 
     measurement = Measurement(before=windows[0], after=windows[1])
 
-    population = await _run(
-        mcp,
-        settings,
-        population_query_spec(
-            manifest.run_id, _population_query_where(full_population, where), start=start, end=end
-        ),
-    )
+    if full_population:
+        assert scenario.fault is not None
+        population_spec = full_population_query_spec(
+            manifest.run_id,
+            topology.ROOT_SPAN,
+            scenario.fault.effect.span,
+            topology.SPAN_SERVICE[scenario.fault.effect.span],
+            start=start,
+            end=end,
+        )
+    else:
+        population_spec = population_query_spec(manifest.run_id, where, start=start, end=end)
+    population = await _run(mcp, settings, population_spec)
     row = read_row(_result_text(population))
     measurement.total_root_spans = row.get("total_count", 0.0)
-    measurement.inside_root_spans = _population_inside(
-        full_population, measurement.total_root_spans, row.get("inside_count", 0.0)
-    )
+    measurement.inside_root_spans = row.get("inside_count", 0.0)
     _record_ids(measurement.query_ids, measurement.permalinks, population)
 
     if full_population:
         await _measure_negation(measurement, manifest, mcp, settings, start, split, end)
 
     for herring in scenario.red_herrings:
+        if scenario.fault is not None:
+            survival = await _measure_herring_survival(
+                scenario, herring, manifest, mcp, settings, start, split, end, measurement
+            )
+            measurement.herring_survival.append(survival)
         if herring.duration_min is not None:
-            burst = await _measure_burst(herring, manifest, mcp, settings)
+            burst = await _measure_burst(herring, manifest, mcp, settings, measurement)
             measurement.bursts.append(burst)
 
     if scenario.trigger is not None:
@@ -1077,6 +1189,7 @@ async def _measure_burst(
     manifest: EmitResult,
     mcp: HoneycombMCP,
     settings: Settings,
+    measurement: Measurement,
 ) -> BurstMeasurement:
     window_start, burst_start, burst_end, window_end = herring_windows(manifest, herring)
     stats: dict[str, WindowStats] = {}
@@ -1099,9 +1212,60 @@ async def _measure_burst(
             inside_p99=row.get("inside_p99", 0.0),
             inside_errors=row.get("inside_errors", 0.0),
         )
+        _record_ids(measurement.query_ids, measurement.permalinks, result)
     return BurstMeasurement(
         herring=herring, before=stats["before"], burst=stats["burst"], after=stats["after"]
     )
+
+
+async def _measure_herring_survival(
+    scenario: Scenario,
+    herring: RedHerring,
+    manifest: EmitResult,
+    mcp: HoneycombMCP,
+    settings: Settings,
+    start: str,
+    split: str,
+    end: str,
+    measurement: Measurement,
+) -> HerringSurvivalMeasurement:
+    """The fault's span, filtered to the herring's `where`, before and after
+    onset: the OUTSIDE numbers (the complement of the herring's population)
+    prove the fault's own step survives with the herring excluded. Two
+    `run_query` calls, or four when the fault raises the error rate (the
+    outside error count needs its own query per window, the same way
+    `measure`'s own `wants_outside_errors` does)."""
+    assert scenario.fault is not None
+    span = scenario.fault.effect.span
+    wants_errors = bool(scenario.fault.effect.error_rate)
+    stats: dict[str, WindowStats] = {}
+    for label, (from_time, to_time) in (("before", (start, split)), ("after", (split, end))):
+        result = await _run(
+            mcp,
+            settings,
+            window_query_spec(manifest.run_id, span, herring.where, start=from_time, end=to_time),
+        )
+        row = read_row(_result_text(result))
+        ws = WindowStats(
+            label=label,
+            outside_count=row.get("outside_count", 0.0),
+            outside_p99=row.get("outside_p99", 0.0),
+        )
+        _record_ids(measurement.query_ids, measurement.permalinks, result)
+
+        if wants_errors:
+            errors = await _run(
+                mcp,
+                settings,
+                outside_errors_query_spec(
+                    manifest.run_id, span, herring.where, start=from_time, end=to_time
+                ),
+            )
+            ws.outside_errors = read_row(_result_text(errors)).get("outside_errors", 0.0)
+            _record_ids(measurement.query_ids, measurement.permalinks, errors)
+
+        stats[label] = ws
+    return HerringSurvivalMeasurement(herring=herring, before=stats["before"], after=stats["after"])
 
 
 def _first_breakdown_value(text: str, column: str) -> str | None:
@@ -1194,8 +1358,16 @@ async def _measure_exception(
         measurement.exception_trace_text = _result_text(trace_result)
         _record_ids(measurement.query_ids, measurement.permalinks, trace_result)
 
+    # Events sit at their span's end time, which can fall a fraction of a
+    # second past the window's own ceiled end (a span that starts just before
+    # the window closes still runs its full duration). Ten seconds of slack
+    # on this one query keeps a right-at-the-edge exception from landing
+    # outside `to` and being missed.
+    count_end = iso(math.ceil(manifest.window_end_s) + 10.0)
     count_result = await _run(
-        mcp, settings, exception_count_query_spec(manifest.run_id, exc.type, start=start, end=end)
+        mcp,
+        settings,
+        exception_count_query_spec(manifest.run_id, exc.type, start=start, end=count_end),
     )
     measurement.exception_event_count = read_row(_result_text(count_result)).get(
         "exception_count", 0.0
