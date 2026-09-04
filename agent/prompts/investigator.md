@@ -10,7 +10,7 @@ queries that prove it.
 - Scope filter: `scenario.run_id = $run_id`
 
 The dataset holds traffic from many runs. Every query you make must filter on
-`scenario.run_id = $run_id` and must set `start_time` and `end_time` inside the window above.
+`scenario.run_id = $run_id` and must set `from` and `to` inside the window above.
 A query without that filter is measuring other people's traffic and its rows mean nothing here.
 Honeycomb truncates query time bounds to whole seconds, so use whole second ISO-8601 UTC
 timestamps.

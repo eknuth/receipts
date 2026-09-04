@@ -173,7 +173,21 @@ def test_truncation_cuts_at_a_line_boundary() -> None:
     assert all(len(ln) == 99 for ln in body.split("\n"))
 
 
-def test_query_spec_with_start_and_end_time_is_described() -> None:
+def test_query_spec_with_from_and_to_is_described() -> None:
+    args = {
+        "dataset_slug": "receipts-shop",
+        "query_spec": {
+            "calculations": [{"op": "COUNT"}],
+            "from": 1700000000,
+            "to": 1700001800,
+        },
+    }
+    text = "# Results\n\n| COUNT |\n| --- |\n| 1 |\n"
+    out = format_tool_result("run_query", text, args=args)
+    assert "time_range=1700000000..1700001800" in out
+
+
+def test_a_query_spec_recorded_with_the_old_start_and_end_time_names_still_renders() -> None:
     args = {
         "dataset_slug": "receipts-shop",
         "query_spec": {

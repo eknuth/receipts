@@ -230,7 +230,12 @@ def _describe_query_spec(args: dict[str, Any] | None) -> str:
     breakdowns = spec.get("breakdowns") or []
     breakdown_str = ", ".join(breakdowns) if breakdowns else "none"
 
-    if spec.get("start_time") or spec.get("end_time"):
+    # The hosted MCP names the bounds `from` and `to` (it renamed them from
+    # `start_time` and `end_time` on 2026-09-04); the old names still render
+    # so tool logs recorded before then read the same.
+    if spec.get("from") or spec.get("to"):
+        time_range = f"{spec.get('from', '?')}..{spec.get('to', '?')}"
+    elif spec.get("start_time") or spec.get("end_time"):
         time_range = f"{spec.get('start_time', '?')}..{spec.get('end_time', '?')}"
     else:
         time_range = spec.get("time_range", "default")
