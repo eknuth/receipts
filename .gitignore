@@ -8,3 +8,6 @@ evals/results/*
 !evals/results/runs.json
 *.egg-info/
 gen/runs/
+
+# Claude Code agent worktrees
+.claude/worktrees/
