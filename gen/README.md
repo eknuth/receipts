@@ -85,7 +85,7 @@ query for one child span has to be able to filter on them:
 | `cloud.region` | `us-west-2` 50%, `us-east-1` 30%, `eu-west-1` 20% |
 | `payment.provider` | `stripe` 60%, `adyen` 25%, `paypal` 15% |
 | `service.component` | `gateway`, `checkout`, `payments`, `inventory-db` |
-| `scenario.run_id` | the run id, fresh per run. Every query scopes to it. |
+| `scenario.run_id` | the run id, fresh per run. Every query scopes to it, and it rides on an `exception` span event too, not just its span, because Honeycomb gives an event row only its own attributes, not the span's. |
 | `error` | true on a failing span and on every ancestor above it |
 
 On the root span, plus the child spans where they belong:
@@ -141,24 +141,36 @@ red_herrings:
 | `narrative` | yes | What happened, in one or two sentences. For the README and the report, never shown to the agent. |
 | `baseline.rps` | yes | Requests per second across the whole window. |
 | `baseline.minutes` | yes | Length of the window. `rps * minutes * 60` requests, five spans each. |
-| `dimensions` | no | Overrides the weights for one or more of `deployment.version`, `cloud.region`, `payment.provider`. A value that appears nowhere else, such as `2.6.0`, exists only because a scenario declares it here. Weights are normalised, so they need not sum to one. |
+| `baseline.sigma_scale` | no, defaults to 1.0 | Multiplies every span's log-normal sigma (its spread, not its median). A control can use this to look noisier than usual without any median actually moving, which is a different thing from a fault stepping a median. |
+| `dimensions` | no | Overrides the weights for one or more of `deployment.version`, `cloud.region`, `payment.provider`, or pins one or more `customer.id` values to a fixed share (see below). A value that appears nowhere else, such as `2.6.0`, exists only because a scenario declares it here. Weights are normalised, so they need not sum to one. |
+| `dimensions.customer.id` | no | `{"cust-00007": 0.15}`-style: pins that customer to exactly 15% of traffic. The remaining share is spread over the rest of the 2,000 Zipf ids in their normal proportions. A `where` clause may only name a customer id that is pinned here. |
 | `fault` | only when there is an incident | The incident. |
 | `fault.onset_min` | yes | Minutes into the window at which the fault starts. Before this, the run is baseline. |
-| `fault.where` | yes | Which requests the fault hits, as an AND over dimension values. Every name must be a dimension the generator emits and every value must be one the scenario emits. |
+| `fault.where` | yes | Which requests the fault hits, as an AND over dimension values. Every name must be a dimension the generator emits and every value must be one the scenario emits, with two exceptions below (`service.component` and a numeric range). |
+| `fault.where` on `service.component` | no | Names the service that runs `fault.effect.span` (checked against the topology at load time). Every request touches every service, so this clause selects the whole run: population share 1.0, and there is no "outside" for the verifier to compare against (see "What verification checks"). |
+| `fault.where` on a numeric range | no | A value like `>=8`, `<5`, matching `^(>=|<=|>|<)\s*-?\d+(\.\d+)?$`. Only a numeric dimension accepts one; today that is `cart.size` only. The dimension must be one the effect's span actually carries. |
 | `fault.effect.span` | yes | Which span the fault acts on. Must be one of the five in the topology. |
-| `fault.effect.latency_add_ms` | one of the two | Milliseconds added to that span's own work, jittered by about 12% so the slow requests spread across a band of the heatmap instead of stacking on one value. |
-| `fault.effect.error_rate` | one of the two | Probability that span fails, per matching request, after onset. |
+| `fault.effect.latency_add_ms` | one of latency/error | Milliseconds added to that span's own work, jittered by about 12% so the slow requests spread across a band of the heatmap instead of stacking on one value. Exclusive with `timeout_ms`. |
+| `fault.effect.error_rate` | one of latency/error | Probability that span fails, per matching request, after onset. |
+| `fault.effect.timeout_ms` | no, requires `error_rate > 0` | On a span that failed because of this effect, its own time is replaced outright by this value, exactly, no jitter: a deadline does not vary. Exclusive with `latency_add_ms`. |
+| `fault.effect.error_type` | no, requires `error_rate > 0` | Written as the `error.type` attribute on a span that failed because of this effect, and only that span, not its ancestors. |
+| `fault.effect.exception` | no, requires `error_rate > 0` | `{type, message}`. A span that failed because of this effect gets an OTel span event named `exception` at its end time, with `exception.type`, `exception.message`, `exception.escaped=true`, and `scenario.run_id`. It lands in Honeycomb as its own row (`name = exception`, `meta.annotation_type = span_event`, `trace.parent_id` the failing span's id, carrying only its own attributes); a query filtered to the fault's span name still counts the span rows correctly, the event is a separate row alongside it. Honeycomb also copies `exception.type` and `exception.message` onto the parent span's own row (`error-surge-exceptions`: a run-scoped breakdown on `exception.type` over `name = payments.charge` and a count of `name = exception` rows both came back 570, matching the manifest's `span_events`), which is what makes filtering on `exception.type` a real query rather than a guess. Baseline failures and a red herring's failures never get one, only the fault's own. |
 | `ground_truth.incident_present` | yes | What the agent has to get right. False means a control, and a control may not carry a fault. |
 | `ground_truth.root_cause_dims` | when there is an incident | Must repeat `fault.where` exactly. |
 | `ground_truth.slow_or_failing_span` | when there is an incident | Must name `fault.effect.span`. |
 | `ground_truth.affected_share` | when there is an incident | The share of all requests in the run that match `fault.where`. This is the population share over the whole window, not the share that were actually slowed: onset splits the window in time, it does not change who is in the population. |
 | `red_herrings` | no | Other effects that are not the incident. Same shape as a fault, plus a `note`. |
 | `red_herrings[].onset_min` | no, defaults to 0 | A red herring is normally present for the whole window, so a before-and-after comparison separates it from the fault. |
+| `red_herrings[].duration_min` | no, defaults to unset | Unset means "the rest of the window" (the original behaviour). Set it to make the herring a burst: active from `onset_min` for `duration_min`, then off, on its own, with no further intervention. `onset_min + duration_min` must stay inside the window. |
+| `trigger` | no | A Honeycomb trigger this scenario expects to fire, created by hand in the UI. `{id, name, threshold_ms, window_min, frequency_s, note}`. The UI allows a duration of at most 4x the frequency, in whole minutes, so a 5 minute window runs every 2 minutes at the fastest (120s in `trigger-checkout-latency`; the issue asked for 60s). `gen/verify.py` calls `get_triggers` and checks the row for `id` reports `triggered: true`. |
 
 The models reject a file that does not hold together: an incident with no fault, `root_cause_dims`
 that disagree with `fault.where`, a span the topology does not have, a dimension value the scenario
-never emits, an effect that neither adds latency nor raises the error rate, an unknown key. A typo
-fails at load rather than producing a run that quietly verifies nothing.
+never emits, an effect that neither adds latency nor raises the error rate, a `timeout_ms` without
+a positive `error_rate` or alongside `latency_add_ms`, a `where` clause naming a dimension its span
+does not carry, a customer id in `where` that was not pinned in `dimensions.customer.id`, a red
+herring burst that runs past the end of the window, an unknown key. A typo fails at load rather
+than producing a run that quietly verifies nothing.
 
 ## The scenarios
 
@@ -168,14 +180,37 @@ fails at load rather than producing a run that quietly verifies nothing.
 | `checkout-error-surge-adyen` | error surge | `payments.charge` fails 25% of the time on adyen, from minute 10 | 25% | us-east-1 `payments.charge` fails 3%, whole window |
 | `deploy-regression-v260` | deployment regression | `checkout.process` +400ms on v2.6.0 in every region, from minute 10 | 35% | paypal `payments.charge` +120ms, whole window |
 | `control-quiet` | control | none | n/a | the same eu-west-1 `db.query` +150ms |
+| `dependency-inventory-db-timeouts` | dependency failure | `db.query` under inventory-db times out (5000ms exactly) for 40% of calls, every request, from minute 10 | 100% | eu-west-1 `checkout.process` +150ms, whole window |
+| `trigger-checkout-latency` | trigger fired | `checkout.process` +1400ms for `cart.size >= 8`, from minute 10; a trigger on root P99 > 1500ms should fire after onset | 10.5% | paypal `payments.charge` +100ms, whole window |
+| `control-noisy` | control | none; every span's spread doubled | n/a | 30s burst of paypal `payments.charge` errors at minute 4, resolves on its own |
+| `herring-region-vs-version` | red herring stronger by count | `checkout.process` +600ms on v2.6.1, from minute 10 | 8% | us-east-1 `checkout.process` +120ms, 45% of traffic, whole window |
+| `herring-customer-whale` | red herring stronger by count | `payments.charge` fails 20% on adyen, from minute 10 | 25% | cust-00007, 15% of traffic and about 30% of all errors, whole window |
+| `error-surge-exceptions` | error surge, with exceptions | `payments.charge` fails 25% on adyen with a `ProviderDeclined` exception event, from minute 10 | 25% | us-east-1 `payments.charge` fails 3%, no exception, whole window |
 
-The remaining scenarios in the plan (dependency failure, trigger fired, a second control, and two
-where a red herring is stronger in count than the true cause) are R5.
+A table with a "true cause / herring / expected agent answer" column per scenario lives in
+`gen/scenarios/README.md`.
 
 `deploy-regression-v260` is already the awkward one. Selecting the slow band on a root-span heatmap
 and running BubbleUp puts `deployment.version 2.6.0` first at 36.7% to 100%, and `payment.provider
 paypal` second at 15.4% to 67.8%. Both are real. Only one of them stepped at onset, and separating
 them means looking at the time dimension rather than at the ranking.
+
+The two herring scenarios were built on the premise that a BubbleUp over the whole window would
+rank the herring first because it is the larger population, and that a BubbleUp restricted to the
+post-onset window would rank the true cause first. Live runs on 2026-09-04 showed something else.
+BubbleUp ranks columns by how far the selection's distribution sits from the baseline's, and the
+selection band decides that, not the time window. On `herring-region-vs-version`, a root
+`duration_ms` band from 200 ms up ranks `cloud.region` first in both windows (whole window
+25% to 89%, post-onset 37% to 84%), and a band from 300 ms up ranks `deployment.version`
+first in both (whole window 4% to 72%, post-onset 4.5% to 85%); at 250 ms the two are within
+half a point of each other. On `herring-customer-whale`, a selection of `error = true` ranks
+`payment.provider` first and `customer.id` second in both windows (adyen 23% to 78% against
+the whale's 16% to 30% over the whole window). Restricting the window cannot demote a herring
+that is steady across it, because the herring's share of the band is the same on both sides of
+onset. What separates them in Honeycomb's method is the step in time: a heatmap shows the
+version's band appear at onset while the region's band is flat, and the negation query
+(`WHERE deployment.version != 2.6.1`) shows P99 flat across onset. The screenshots are in
+`docs/r5-herring-*.png`.
 
 ## Backdating
 
@@ -218,9 +253,11 @@ other number, and the count has to be exact. A partial run fails verification in
 halving the population and moving the percentiles.
 
 The count can be exact because the window edges sit on whole seconds. The hosted MCP truncates
-`start_time` and `end_time` to whole seconds, so a window that ended at 01:46:33.845 and was
+the query's `from` and `to` to whole seconds, so a window that ended at 01:46:33.845 and was
 queried to 01:46:33 came back a dozen requests short on every run until the emitter started
-flooring the edges.
+flooring the edges. Those bounds were called `start_time` and `end_time` in `query_spec` until
+2026-09-04, when a live check found the hosted MCP rejecting the old names with an error that
+says they were renamed. Every query here now sends `from` and `to`.
 
 ## What verification checks
 
@@ -245,9 +282,39 @@ For an error fault:
   5x its own before-onset rate.
 - The error rate outside `where` moves by less than 3x.
 
+For a dependency fault (`where` names only `service.component`, so the population is the whole
+run and there is no "outside" to compare):
+
+- The inside latency and error checks above still run.
+- In place of the outside checks: P99 of a different, unrelated span (`payments.charge`) moves by
+  less than 1.5x across the same onset. That is the verify-by-negation for a fault whose own
+  population has nothing outside it.
+
 For a control:
 
 - No latency step and no error step on the root span between the first half of the window and the
   second.
+- For every red herring with a `duration_min` (a burst): its own rate inside the burst window
+  clears half its injected rate and steps at least 5x above its rate in the rest of the window
+  (one check), and its rate from the end of the burst to the end of the window falls back under
+  3x its rate before the burst (a second check). Together these two checks prove the burst
+  happened and then stopped on its own, so the mean is not merely a little higher across the
+  window. `control-noisy`'s whole verification stays at or under seven `run_query` calls.
 
-Five `run_query` calls at most, all inside the MCP client's pacing.
+For a scenario with a `trigger` block: one `get_triggers` call (list mode, `environment_slug`
+only, it takes no `dataset_slug`, unlike `run_query`) after everything else, checking that the
+row for the trigger's `id` reports `triggered: true`. A run where it did not fire is NOT VERIFIED.
+
+For a fault whose effect carries an `exception`, two checks. First: one `run_query` breaking down
+on `trace.trace_id` (filtered to the fault's population and span, `error = true`, after onset,
+`limit: 1`), then one `get_trace` on that id with `show_events: true`; a live check found that
+Honeycomb renders a span event as its own row, with a `name`, an `annotation_type` of
+`span_event`, and a `parent_id` pointing at the span it hangs off, but none of the event's own
+attributes, so this check can only confirm a `span_event` row named `exception` hangs off a
+failed span named `fault.effect.span`, not its `exception.type`. Second, and where the type is
+actually proven: one more `run_query`, scoped to the run and filtered to `name = exception` and
+`exception.type = <the configured type>` (a real filter: Honeycomb copies an event's attributes
+onto its parent span's row too, not only its own), whose `COUNT` must equal `manifest.span_events`
+exactly, the same exactness the ingest check uses.
+
+Five `run_query` calls at most for a plain fault or control, all inside the MCP client's pacing.

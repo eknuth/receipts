@@ -25,6 +25,13 @@ NOW = 1_788_000_000.0  # a fixed "now" so every timestamp in these tests is exac
 
 
 def shrink(scenario_id: str, minutes: float = 2.0, rps: float = 5.0) -> Scenario:
+    """A copy of one scenario with a shorter, thinner baseline.
+
+    Mutates `baseline` in place rather than re-validating, so `minutes` has
+    to stay above the scenario's `fault.onset_min` (all of them are 10) or
+    the fault never crosses into its faulted window and every test built on
+    the result silently sees baseline-only traffic.
+    """
     scenario = load_scenario(scenario_id)
     scenario.baseline.minutes = minutes
     scenario.baseline.rps = rps
@@ -186,6 +193,82 @@ def test_the_resource_names_the_dataset_not_the_service(
     resource = spans[0].resource
     assert resource.attributes["service.name"] == settings_module.honeycomb_dataset
     assert {s.attributes["service.component"] for s in spans} == set(topology.SERVICES)
+
+
+# --------------------------------------------------------------------------
+# R5: exception span events
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def emitted_with_exceptions(settings_module: Settings) -> tuple[E.EmitResult, list]:
+    """One dry run of the scenario whose fault carries an exception.
+
+    `shrink` mutates `baseline` without re-validating, so onset_min (10) has
+    to stay inside the shrunk window or the fault never fires; 11 minutes
+    leaves one minute of faulted traffic after onset.
+    """
+    exporter = E.NullExporter()
+    result = E.emit(
+        shrink("error-surge-exceptions", minutes=11.0, rps=5.0),
+        settings_module,
+        dry_run=True,
+        run_id="run-fixed-exceptions",
+        now_s=NOW,
+        chunk_size=100,
+        make_exporter=lambda: exporter,
+    )
+    return result, exporter.spans
+
+
+def test_the_manifest_counts_span_events(
+    emitted_with_exceptions: tuple[E.EmitResult, list],
+) -> None:
+    result, spans = emitted_with_exceptions
+    charges_with_events = [s for s in spans if s.name == "payments.charge" and s.events]
+    assert result.span_events == len(charges_with_events)
+    assert result.span_events > 0
+
+
+def test_an_exception_event_carries_its_attributes_the_run_id_and_the_span_end_time(
+    emitted_with_exceptions: tuple[E.EmitResult, list],
+) -> None:
+    """scenario.run_id has to be on the event's own attributes, not just the
+    span it hangs off: every query in the project scopes to the run id, and
+    an event row does not inherit the span's attributes in Honeycomb."""
+    result, spans = emitted_with_exceptions
+    charges_with_events = [s for s in spans if s.name == "payments.charge" and s.events]
+    assert charges_with_events
+    for span in charges_with_events:
+        assert len(span.events) == 1
+        event = span.events[0]
+        assert event.name == "exception"
+        assert event.attributes["exception.type"] == "ProviderDeclined"
+        assert "adyen declined" in event.attributes["exception.message"]
+        assert event.attributes["exception.escaped"] is True
+        assert event.attributes["scenario.run_id"] == result.run_id
+        assert event.timestamp == span.end_time
+
+
+def test_only_faulted_payments_charge_spans_carry_an_event(
+    emitted_with_exceptions: tuple[E.EmitResult, list],
+) -> None:
+    """The us-east-1 herring also fails payments.charge, and baseline noise
+    can too, but neither carries the fault's exception event."""
+    _, spans = emitted_with_exceptions
+    charges = [s for s in spans if s.name == "payments.charge"]
+    with_events = [s for s in charges if s.events]
+    without_events = [s for s in charges if not s.events]
+    assert with_events and without_events
+    assert all(s.attributes.get("error") is True for s in with_events)
+    failed_without_events = [s for s in without_events if s.attributes.get("error") is True]
+    assert failed_without_events  # herring/baseline failures that get no event
+
+
+def test_non_exception_scenarios_emit_no_events(emitted: tuple[E.EmitResult, list]) -> None:
+    result, spans = emitted
+    assert result.span_events == 0
+    assert all(not s.events for s in spans)
 
 
 def test_a_realtime_run_sleeps_between_requests(settings_module: Settings) -> None:

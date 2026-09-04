@@ -348,6 +348,173 @@ def test_population_share_is_the_product_of_the_dimension_shares() -> None:
     assert sampler.population_share({"no.such.dim": "x"}) == 0.0
 
 
+def test_customer_weights_for_spreads_the_remaining_share_over_the_zipf_tail() -> None:
+    scenario = load_scenario("herring-customer-whale")
+    weights = topology.customer_weights_for(scenario)
+    chooser = topology.WeightedChoice(weights)
+    assert chooser.share("cust-00007") == pytest.approx(0.15)
+    assert sum(weights.values()) == pytest.approx(1.0, rel=1e-9)
+    # cust-00000, the busiest unpinned id, still outweighs a rare id: pinning
+    # cust-00007 did not flatten the Zipf shape of the rest of the tail.
+    assert chooser.share("cust-00000") > chooser.share("cust-01999")
+
+
+def test_customer_weights_for_is_unchanged_without_a_pin() -> None:
+    scenario = load_scenario(PAYMENTS)
+    assert topology.customer_weights_for(scenario) == topology.customer_weights()
+
+
+# --------------------------------------------------------------------------
+# R5: matches(), ranges, service.component, and timing windows
+# --------------------------------------------------------------------------
+
+
+def test_matches_treats_service_component_as_always_true() -> None:
+    """Every span carries service.component for its own node, not the request's,
+    so a where clause naming it is validated at load time and matches every
+    request here rather than being checked against `dims`."""
+    assert topology.matches({}, {"service.component": "inventory-db"})
+    assert topology.matches({"cart.size": 3}, {"service.component": "anything"})
+
+
+def test_matches_evaluates_a_numeric_range() -> None:
+    assert topology.matches({"cart.size": 8}, {"cart.size": ">=8"})
+    assert not topology.matches({"cart.size": 7}, {"cart.size": ">=8"})
+    assert topology.matches({"cart.size": 3}, {"cart.size": "<5"})
+    assert not topology.matches({"cart.size": 3}, {"cart.size": ">5"})
+
+
+def test_matches_still_does_plain_equality() -> None:
+    assert topology.matches({"payment.provider": "adyen"}, {"payment.provider": "adyen"})
+    assert not topology.matches({"payment.provider": "stripe"}, {"payment.provider": "adyen"})
+
+
+def test_a_dependency_fault_times_out_the_failing_span_exactly() -> None:
+    """The failing db.query calls hit a 5000ms deadline exactly, no jitter, and
+    only the ones the effect actually failed carry error.type=timeout; a
+    baseline noise failure that happens to land on db.query does not."""
+    scenario = load_scenario("dependency-inventory-db-timeouts")
+    requests = topology.generate_requests(scenario, seed=0)
+
+    def db_span(r: topology.Request) -> topology.SpanRecord:
+        return r.root.children[0].children[1].children[0]
+
+    faulted = [r for r in requests if r.faulted]
+    timed_out = [r for r in faulted if db_span(r).attributes.get("error.type") == "timeout"]
+    assert timed_out
+    assert {round(db_span(r).duration_ms, 6) for r in timed_out} == {5000.0}
+    for r in timed_out:
+        assert db_span(r).error is True
+
+    not_timed_out = [r for r in faulted if db_span(r).attributes.get("error.type") != "timeout"]
+    assert all("error.type" not in db_span(r).attributes for r in not_timed_out)
+
+
+def test_exception_event_lands_only_on_the_span_the_effect_failed() -> None:
+    scenario = load_scenario("error-surge-exceptions")
+    requests = topology.generate_requests(scenario, seed=0)
+    assert scenario.fault is not None
+    exc = scenario.fault.effect.exception
+    assert exc is not None
+
+    def charge_span(r: topology.Request) -> topology.SpanRecord:
+        return r.root.children[0].children[0]
+
+    with_exception = [r for r in requests if charge_span(r).exception_type is not None]
+    assert with_exception
+    for r in with_exception:
+        span = charge_span(r)
+        assert span.error is True
+        assert span.exception_type == exc.type
+        assert span.exception_message == exc.message
+        assert r.faulted  # only the fault's own failures get one, not baseline or herring noise
+
+    # The us-east-1 herring also fails payments.charge, with no exception.
+    herring_failures = [
+        r
+        for r in requests
+        if charge_span(r).error and not r.faulted and charge_span(r).exception_type is None
+    ]
+    assert herring_failures
+
+
+def test_a_cart_size_range_selects_the_documented_population() -> None:
+    scenario = load_scenario("trigger-checkout-latency")
+    sampler = topology.Sampler(scenario)
+    assert scenario.fault is not None
+    assert sampler.population_share(scenario.fault.where) == pytest.approx(0.1051, abs=0.001)
+
+
+def test_a_pinned_customer_id_draws_at_its_pinned_share() -> None:
+    scenario = load_scenario("herring-customer-whale")
+    requests = topology.generate_requests(scenario, seed=0)
+    ids = [r.root.attributes["customer.id"] for r in requests]
+    share = sum(1 for i in ids if i == "cust-00007") / len(ids)
+    assert share == pytest.approx(0.15, abs=0.02)
+
+
+def test_the_whale_holds_about_a_third_of_all_errors() -> None:
+    """cust-00007 is 15% of traffic; its own elevated failure rate makes it
+    about 30% of all errors over the window even though adyen, not the whale,
+    is the incident."""
+    scenario = load_scenario("herring-customer-whale")
+    requests = topology.generate_requests(scenario, seed=0)
+    whale = "cust-00007"
+
+    traffic_share = sum(1 for r in requests if r.root.attributes["customer.id"] == whale) / len(
+        requests
+    )
+    assert traffic_share == pytest.approx(0.15, abs=0.02)
+
+    errored = [r for r in requests if r.root.error]
+    whale_errors = sum(1 for r in errored if r.root.attributes["customer.id"] == whale)
+    error_share = whale_errors / len(errored)
+    assert error_share == pytest.approx(0.30, abs=0.05)
+
+
+def test_sigma_scale_widens_the_spread_without_moving_the_median() -> None:
+    baseline = load_scenario("control-quiet")
+    noisy = load_scenario("control-noisy")
+    assert noisy.baseline.sigma_scale == pytest.approx(2.0)
+
+    base_requests = topology.generate_requests(baseline, seed=0)
+    noisy_requests = topology.generate_requests(noisy, seed=0)
+
+    def root_ms(requests: list[topology.Request]) -> list[float]:
+        return [r.duration_ms for r in requests]
+
+    assert _median(root_ms(noisy_requests)) == pytest.approx(
+        _median(root_ms(base_requests)), rel=0.1
+    )
+    base_spread = max(root_ms(base_requests)) - min(root_ms(base_requests))
+    noisy_spread = max(root_ms(noisy_requests)) - min(root_ms(noisy_requests))
+    assert noisy_spread > base_spread
+
+
+def test_a_red_herring_burst_only_fires_inside_its_window() -> None:
+    scenario = load_scenario("control-noisy")
+    herring = scenario.red_herrings[0]
+    assert herring.duration_min is not None
+    requests = topology.generate_requests(scenario, seed=0)
+
+    def charge_span(r: topology.Request) -> topology.SpanRecord:
+        return r.root.children[0].children[0]
+
+    start_s = herring.onset_min * 60.0
+    end_s = start_s + herring.duration_min * 60.0
+    paypal = [r for r in requests if r.root.attributes["payment.provider"] == "paypal"]
+    before = [r for r in paypal if r.offset_s < start_s]
+    during = [r for r in paypal if start_s <= r.offset_s < end_s]
+    after = [r for r in paypal if r.offset_s >= end_s]
+    assert before and during and after
+
+    before_rate = sum(1 for r in before if charge_span(r).error) / len(before)
+    during_rate = sum(1 for r in during if charge_span(r).error) / len(during)
+    after_rate = sum(1 for r in after if charge_span(r).error) / len(after)
+    assert during_rate > 10 * max(before_rate, after_rate, 0.001)
+    assert after_rate == pytest.approx(before_rate, abs=0.05)
+
+
 def _median(values: list[float]) -> float:
     ordered = sorted(values)
     return ordered[len(ordered) // 2]

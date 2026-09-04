@@ -297,6 +297,9 @@ class EmitResult:
     fault_population: int
     faulted_requests: int
     errored_requests: int
+    # Defaults to 0, not required, so a manifest written before R5 (or a test
+    # in evals/ that builds an EmitResult by hand without it) still loads.
+    span_events: int = 0
     emitted_at: str = field(default_factory=lambda: iso(time.time()))
 
     def manifest_path(self, runs_dir: Path = RUNS_DIR) -> Path:
@@ -362,7 +365,25 @@ def _emit_span(
     child_context = trace.set_span_in_context(span)
     for child in record.children:
         _emit_span(tracer, child, child_context, trace_start_s, start_ms, common)
-    span.end(end_time=span_time_ns(trace_start_s, start_ms + record.duration_ms))
+    end_ns = span_time_ns(trace_start_s, start_ms + record.duration_ms)
+    if record.exception_type is not None:
+        # Lands in Honeycomb as its own row: name "exception",
+        # meta.annotation_type "span_event", with only its own attributes (no
+        # error.type or duration from the span it hangs off). scenario.run_id
+        # is carried explicitly (from `common`, not inherited from the span),
+        # because without it an agent that scopes every query to the run id
+        # would never see the event at all. See gen/README.md.
+        span.add_event(
+            "exception",
+            attributes={
+                **common,
+                "exception.type": record.exception_type,
+                "exception.message": record.exception_message or "",
+                "exception.escaped": True,
+            },
+            timestamp=end_ns,
+        )
+    span.end(end_time=end_ns)
 
 
 def emit(
@@ -443,6 +464,7 @@ def emit(
         fault_population=sum(1 for r in requests if r.in_fault_population),
         faulted_requests=sum(1 for r in requests if r.faulted),
         errored_requests=sum(1 for r in requests if r.root.error),
+        span_events=topology.exception_event_count(requests),
     )
     return result
 
@@ -542,6 +564,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"in fault population: {result.fault_population}")
     print(f"faulted requests:    {result.faulted_requests}")
     print(f"errored requests:    {result.errored_requests}")
+    print(f"span events:         {result.span_events}")
 
     if result.failed_batches:
         print(f"error: {result.failed_batches} export batches failed", file=sys.stderr)

@@ -1,0 +1,30 @@
+id: trigger-checkout-latency
+narrative: >-
+  Big carts got slow at checkout at the ten minute mark: cart.size 8 and up gained
+  about 1400ms. paypal has always been a touch slower on payments, unrelated to cart
+  size. A Honeycomb trigger watches root P99 over 1500ms and should fire after onset.
+baseline: {rps: 15, minutes: 20}
+fault:
+  onset_min: 10
+  where: {cart.size: ">=8"}
+  effect: {span: "checkout.process", latency_add_ms: 1400}
+ground_truth:
+  incident_present: true
+  root_cause_dims: {cart.size: ">=8"}
+  slow_or_failing_span: checkout.process
+  affected_share: 0.105
+red_herrings:
+  - where: {payment.provider: "paypal"}
+    effect: {span: "payments.charge", latency_add_ms: 100}
+    onset_min: 0
+    note: paypal has always been a touch slower on payments, present before onset, not the incident
+trigger:
+  id: bhuYLpkRKnv
+  name: checkout root P99 over 1500ms
+  threshold_ms: 1500
+  window_min: 5
+  frequency_s: 120
+  note: >-
+    Root span P99(duration_ms) over the last 5 minutes exceeded 1500ms in
+    receipts-shop. The UI would not accept a 60s frequency against a 5 minute
+    window (its rule is duration <= 4x frequency), so the frequency is 120s.

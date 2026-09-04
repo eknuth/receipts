@@ -12,6 +12,11 @@ The queries go through the hosted Honeycomb MCP (`agent/mcp_client.py`), which
 is what is already authenticated here, and they are scoped to `scenario.run_id`
 so two runs of the same scenario never contaminate each other.
 
+`run_query`'s `query_spec` takes its time bounds as `from`/`to`; a live check
+on 2026-09-04 found the hosted MCP now rejects the `start_time`/`end_time`
+names this file used to send, with an error naming the rename. Every query
+spec here uses `from`/`to`.
+
 What is checked, per scenario class:
 
   latency fault
@@ -25,9 +30,39 @@ What is checked, per scenario class:
     injected rate and at least five times its own before-onset rate, and the
     rate outside the population does not step.
 
+  dependency fault (the fault's population is the whole run)
+    A `where` naming only `service.component` selects every request, so there
+    is no "outside" to compare: the population and latency/error checks above
+    still run for the inside numbers, but the negation is a different query
+    entirely, P99 of a different, unrelated span (`payments.charge`) across
+    the same onset, which must stay under `OUTSIDE_STEP_MAX`.
+
   control
     No latency step and no error step on the root span between the first half
-    of the window and the second.
+    of the window and the second. A red herring with a `duration_min` (a
+    burst) gets two more checks: its own rate inside its burst window clears
+    half its injected rate and steps well above the rest of the window, and
+    its rate from the end of the burst to the end of the window falls back
+    under `OUTSIDE_ERROR_STEP_MAX` times its rate before the burst, proving
+    the burst resolved on its own rather than just tailing off in the mean.
+
+  trigger
+    When the scenario names a Honeycomb trigger, `get_triggers` is called
+    once after everything else and the row for that trigger id must report
+    `triggered` as true. A run where it did not fire is NOT VERIFIED.
+
+  exception
+    When the fault's effect carries an `exception`, a trace with a failure in
+    the fault's population is looked up (`run_query` breaking down on
+    `trace.trace_id`, one row) and then fetched with `get_trace(show_events=
+    true)`; a span_event row named `exception` must hang off the failed
+    span (Honeycomb renders the event as its own row, with only its own
+    attributes: no `exception.type` in that table, which is why the second
+    check exists). A second `run_query`, scoped to the run and filtered to
+    `name = exception` and `exception.type = <configured type>` (Honeycomb
+    also copies the event's attributes onto the parent span row, so this is
+    a real filter, not a guess), must return exactly `manifest.span_events`
+    rows, the same exactness the ingest check uses.
 
   every scenario
     The number of root spans matches the manifest, so a partial export fails
@@ -42,6 +77,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import math
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -51,8 +87,8 @@ from typing import Any
 from agent import format as fmt
 from agent.mcp_client import HoneycombMCP, ToolResult
 from gen import topology
-from gen.emit import RUNS_DIR, EmitResult, load_manifest
-from gen.scenario import Scenario, available_scenarios, load_scenario
+from gen.emit import RUNS_DIR, EmitResult, iso, load_manifest
+from gen.scenario import ExceptionEffect, RedHerring, Scenario, available_scenarios, load_scenario
 from receipts.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -72,6 +108,11 @@ ERROR_RATE_FLOOR = 0.001
 SHARE_TOLERANCE = 0.02
 # Below this many rows in a window, the numbers are not worth believing.
 MIN_ROWS = 100
+
+# A dependency fault's population is the whole run (a `where` naming only
+# `service.component`), so there is nothing outside it to compare. The
+# negation instead watches a span the fault does not touch.
+DEPENDENCY_NEGATION_SPAN = "payments.charge"
 # How much of the manifest's root spans must be queryable.
 
 
@@ -108,6 +149,16 @@ class WindowStats:
 
 
 @dataclass
+class BurstMeasurement:
+    """Before/burst/after windows for one red herring with a `duration_min`."""
+
+    herring: RedHerring
+    before: WindowStats
+    burst: WindowStats
+    after: WindowStats
+
+
+@dataclass
 class Measurement:
     """Everything one verification read out of Honeycomb."""
 
@@ -117,6 +168,19 @@ class Measurement:
     inside_root_spans: float = 0.0
     query_ids: list[str] = field(default_factory=list)
     permalinks: list[str] = field(default_factory=list)
+    # Set only for a dependency fault, whose population is the whole run: P99
+    # of a different, unrelated span across the same onset.
+    negation_before_p99: float | None = None
+    negation_after_p99: float | None = None
+    # One entry per red herring that has a `duration_min`.
+    bursts: list[BurstMeasurement] = field(default_factory=list)
+    # The raw `get_triggers` text, when the scenario names a trigger.
+    trigger_text: str | None = None
+    # The trace looked up for the exception check, when the fault carries one.
+    exception_trace_id: str | None = None
+    exception_trace_text: str | None = None
+    # COUNT of exception rows of the configured type, over the whole run.
+    exception_event_count: float | None = None
 
     @property
     def measured_share(self) -> float:
@@ -140,13 +204,45 @@ class VerifyResult:
 # --------------------------------------------------------------------------
 
 
+# The complement of each range operator, for `_ne_filters` on a range clause:
+# NOT(x >= 8) is x < 8, and so on.
+_RANGE_COMPLEMENT: dict[str, str] = {">=": "<", "<=": ">", ">": "<=", "<": ">="}
+
+
+def _eq_filter(column: str, value: str) -> dict[str, Any]:
+    """One `where` clause as a Honeycomb filter.
+
+    A plain value is an `=` filter. A range value like `>=8` (see
+    `topology.RANGE_RE`) becomes the range's own operator with a numeric
+    value: Honeycomb's `=` operator would compare the string `">=8"`
+    literally, not evaluate it as a comparison.
+    """
+    rng = topology.RANGE_RE.match(str(value))
+    if rng is not None:
+        return {"column": column, "op": rng.group(1), "value": float(rng.group(2))}
+    return {"column": column, "op": "=", "value": value}
+
+
+def _ne_filter(column: str, value: str) -> dict[str, Any]:
+    """The complement of one `where` clause, by De Morgan for a plain value
+    (`!=`) or by flipping the comparison for a range value."""
+    rng = topology.RANGE_RE.match(str(value))
+    if rng is not None:
+        return {
+            "column": column,
+            "op": _RANGE_COMPLEMENT[rng.group(1)],
+            "value": float(rng.group(2)),
+        }
+    return {"column": column, "op": "!=", "value": value}
+
+
 def _eq_filters(where: Mapping[str, str]) -> list[dict[str, Any]]:
-    return [{"column": column, "op": "=", "value": value} for column, value in where.items()]
+    return [_eq_filter(column, value) for column, value in where.items()]
 
 
 def _ne_filters(where: Mapping[str, str]) -> list[dict[str, Any]]:
     """The complement of `where`, by De Morgan: NOT(a AND b) is (not a) OR (not b)."""
-    return [{"column": column, "op": "!=", "value": value} for column, value in where.items()]
+    return [_ne_filter(column, value) for column, value in where.items()]
 
 
 def window_query_spec(
@@ -196,8 +292,8 @@ def window_query_spec(
             {"column": "scenario.run_id", "op": "=", "value": run_id},
             {"column": "name", "op": "=", "value": span_name},
         ],
-        "start_time": start,
-        "end_time": end,
+        "from": start,
+        "to": end,
     }
 
 
@@ -229,8 +325,8 @@ def outside_errors_query_spec(
             {"column": "name", "op": "=", "value": span_name},
             {"column": "error", "op": "=", "value": True},
         ],
-        "start_time": start,
-        "end_time": end,
+        "from": start,
+        "to": end,
     }
 
 
@@ -252,8 +348,8 @@ def population_query_spec(
             {"column": "scenario.run_id", "op": "=", "value": run_id},
             {"column": "name", "op": "=", "value": topology.ROOT_SPAN},
         ],
-        "start_time": start,
-        "end_time": end,
+        "from": start,
+        "to": end,
     }
 
 
@@ -302,6 +398,43 @@ def _ratio(after: float, before: float) -> float:
     return float("inf") if after else 0.0
 
 
+def _is_full_population(scenario: Scenario) -> bool:
+    """True when the fault's `where` selects the whole run: every clause names
+    `service.component`, so there is no "outside" population to compare
+    against.
+
+    Decided from the shape of `where`, not from `ground_truth.affected_share`,
+    so a mistyped share cannot flip which checks the verifier runs out from
+    under it; `_check_affected_share` is what catches that mismatch.
+    """
+    return scenario.fault is not None and set(scenario.fault.where) == {"service.component"}
+
+
+def _population_query_where(full_population: bool, where: Mapping[str, str]) -> dict[str, str]:
+    """The `where` to send to `population_query_spec`.
+
+    A full-population fault's `where` names `service.component`, and root
+    spans do not carry a matching value for it: every root span's own
+    `service.component` is `"gateway"`, whatever service the fault names.
+    ANDing that clause onto the population query measures zero root spans
+    instead of the whole run, which is the bug a live run against
+    `dependency-inventory-db-timeouts` found (affected share came back
+    0.000 against a ground truth of 1.000). An empty `where` asks the query
+    for only the total, and `_population_inside` supplies the rest.
+    """
+    return {} if full_population else dict(where)
+
+
+def _population_inside(full_population: bool, total: float, measured_inside: float) -> float:
+    """The `inside_root_spans` to record.
+
+    A full-population fault's population is the whole run by construction
+    (see `_population_query_where`), so it is set to match the total
+    directly rather than read from a query that cannot measure it.
+    """
+    return total if full_population else measured_inside
+
+
 def decide(scenario: Scenario, manifest: EmitResult, measurement: Measurement) -> list[Check]:
     """Every check for this scenario, from numbers that are already measured."""
     checks: list[Check] = [
@@ -310,12 +443,25 @@ def decide(scenario: Scenario, manifest: EmitResult, measurement: Measurement) -
     ]
     if scenario.fault is None:
         checks += _control_checks(measurement)
+        checks += _burst_checks(measurement)
     else:
         checks.append(_check_affected_share(scenario, measurement))
-        if scenario.fault.effect.latency_add_ms:
-            checks += _latency_checks(measurement)
-        if scenario.fault.effect.error_rate:
-            checks += _error_checks(scenario, measurement)
+        full_population = _is_full_population(scenario)
+        effect = scenario.fault.effect
+        if effect.latency_add_ms or effect.timeout_ms:
+            if full_population:
+                checks += _latency_checks_full_population(measurement)
+            else:
+                checks += _latency_checks(measurement)
+        if effect.error_rate:
+            if full_population:
+                checks += _error_checks_full_population(scenario, measurement)
+            else:
+                checks += _error_checks(scenario, measurement)
+        checks += _check_exception(scenario, manifest, measurement)
+    trigger_check = _check_trigger(scenario, measurement)
+    if trigger_check is not None:
+        checks.append(trigger_check)
     return checks
 
 
@@ -459,6 +605,311 @@ def _control_checks(measurement: Measurement) -> list[Check]:
     ]
 
 
+def _latency_checks_full_population(measurement: Measurement) -> list[Check]:
+    """The inside step, same as `_latency_checks`, plus the negation-by-a-
+    different-span check in place of an "outside the population" that does
+    not exist when the population is the whole run."""
+    before, after = measurement.before, measurement.after
+    inside = _ratio(after.inside_p99, before.inside_p99)
+    checks = [
+        Check(
+            name="latency step inside the population",
+            ok=inside >= LATENCY_STEP_MIN,
+            detail=(
+                f"P99 {before.inside_p99:.1f}ms before onset, {after.inside_p99:.1f}ms after, "
+                f"{inside:.2f}x (need at least {LATENCY_STEP_MIN}x)"
+            ),
+        ),
+        Check(
+            name="no latency step outside the population",
+            ok=True,
+            detail=(
+                "the fault's population is the whole run (a service.component clause), "
+                "so there is nothing outside it to compare; see the negation check below"
+            ),
+        ),
+    ]
+    checks.append(_dependency_negation_check(measurement))
+    return checks
+
+
+def _dependency_negation_check(measurement: Measurement) -> Check:
+    before_p99 = measurement.negation_before_p99
+    after_p99 = measurement.negation_after_p99
+    if before_p99 is None or after_p99 is None:
+        return Check(
+            name=f"no latency step on {DEPENDENCY_NEGATION_SPAN} (verify by negation)",
+            ok=False,
+            detail="the negation query did not run",
+        )
+    step = _ratio(after_p99, before_p99)
+    return Check(
+        name=f"no latency step on {DEPENDENCY_NEGATION_SPAN} (verify by negation)",
+        ok=step < OUTSIDE_STEP_MAX,
+        detail=(
+            f"{DEPENDENCY_NEGATION_SPAN} P99 {before_p99:.1f}ms before onset, "
+            f"{after_p99:.1f}ms after, {step:.2f}x (must stay under {OUTSIDE_STEP_MAX}x); "
+            "a span the fault does not touch should not move"
+        ),
+    )
+
+
+def _error_checks_full_population(scenario: Scenario, measurement: Measurement) -> list[Check]:
+    """`_error_checks` minus the "outside" comparison, which does not exist
+    when the fault's population is the whole run."""
+    assert scenario.fault is not None
+    injected = scenario.fault.effect.error_rate
+    before, after = measurement.before, measurement.after
+    inside_step = _ratio(after.inside_error_rate, max(before.inside_error_rate, ERROR_RATE_FLOOR))
+    floor = injected * ERROR_RATE_FRACTION_MIN
+    return [
+        Check(
+            name="error rate inside the population reaches the injected rate",
+            ok=after.inside_error_rate >= floor,
+            detail=(
+                f"{after.inside_error_rate:.3f} after onset against an injected {injected:.3f} "
+                f"(need at least {floor:.3f})"
+            ),
+        ),
+        Check(
+            name="error step inside the population",
+            ok=inside_step >= ERROR_STEP_MIN,
+            detail=(
+                f"error rate {before.inside_error_rate:.4f} before onset, "
+                f"{after.inside_error_rate:.4f} after, {inside_step:.1f}x "
+                f"(need at least {ERROR_STEP_MIN}x)"
+            ),
+        ),
+        Check(
+            name="no error step outside the population",
+            ok=True,
+            detail=(
+                "the fault's population is the whole run, so there is nothing outside it to "
+                "compare; see the latency negation check"
+            ),
+        ),
+    ]
+
+
+def _burst_checks(measurement: Measurement) -> list[Check]:
+    """Two checks per red herring with a `duration_min`: the burst happened,
+    and it stopped on its own. `measurement.bursts` is empty for a scenario
+    with no such herring, so this is a no-op for control-quiet."""
+    checks: list[Check] = []
+    for burst in measurement.bursts:
+        checks.extend(_one_burst_checks(burst))
+    return checks
+
+
+def _one_burst_checks(burst: BurstMeasurement) -> list[Check]:
+    effect = burst.herring.effect
+    label = ", ".join(f"{k}={v}" for k, v in burst.herring.where.items())
+    if effect.error_rate:
+        rest_errors = burst.before.inside_errors + burst.after.inside_errors
+        rest_count = burst.before.inside_count + burst.after.inside_count
+        rest_rate = rest_errors / rest_count if rest_count else 0.0
+        burst_rate = burst.burst.inside_error_rate
+        floor = effect.error_rate * ERROR_RATE_FRACTION_MIN
+        step = _ratio(burst_rate, max(rest_rate, ERROR_RATE_FLOOR))
+        decay = _ratio(
+            burst.after.inside_error_rate, max(burst.before.inside_error_rate, ERROR_RATE_FLOOR)
+        )
+        return [
+            Check(
+                name=f"red herring burst reaches its rate and steps above the rest ({label})",
+                ok=(burst_rate >= floor) and (step >= ERROR_STEP_MIN),
+                detail=(
+                    f"burst error rate {burst_rate:.3f} (floor {floor:.3f}), {step:.1f}x the "
+                    f"rest-of-window rate {rest_rate:.4f} (need at least {ERROR_STEP_MIN}x)"
+                ),
+            ),
+            Check(
+                name=f"red herring resolves after the burst ({label})",
+                ok=decay < OUTSIDE_ERROR_STEP_MAX,
+                detail=(
+                    f"error rate {burst.before.inside_error_rate:.4f} before the burst, "
+                    f"{burst.after.inside_error_rate:.4f} after, {decay:.2f}x "
+                    f"(must stay under {OUTSIDE_ERROR_STEP_MAX}x)"
+                ),
+            ),
+        ]
+    # A latency burst: the same shape, on P99 instead of the error rate.
+    rest_p99 = _weighted_p99(burst.before, burst.after)
+    step = _ratio(burst.burst.inside_p99, rest_p99)
+    decay = _ratio(burst.after.inside_p99, burst.before.inside_p99)
+    return [
+        Check(
+            name=f"red herring burst steps above the rest of the window ({label})",
+            ok=step >= LATENCY_STEP_MIN,
+            detail=(
+                f"burst P99 {burst.burst.inside_p99:.1f}ms, {step:.2f}x the rest-of-window "
+                f"P99 {rest_p99:.1f}ms (need at least {LATENCY_STEP_MIN}x)"
+            ),
+        ),
+        Check(
+            name=f"red herring resolves after the burst ({label})",
+            ok=decay < OUTSIDE_STEP_MAX,
+            detail=(
+                f"P99 {burst.before.inside_p99:.1f}ms before the burst, "
+                f"{burst.after.inside_p99:.1f}ms after, {decay:.2f}x "
+                f"(must stay under {OUTSIDE_STEP_MAX}x)"
+            ),
+        ),
+    ]
+
+
+def _weighted_p99(before: WindowStats, after: WindowStats) -> float:
+    """A rough P99 for "the rest of the window": the two halves' P99s, weighted
+    by row count. Approximate on purpose, it only needs to be a baseline the
+    burst clearly steps above."""
+    total = before.inside_count + after.inside_count
+    if not total:
+        return 0.0
+    return (before.inside_p99 * before.inside_count + after.inside_p99 * after.inside_count) / total
+
+
+def _check_trigger(scenario: Scenario, measurement: Measurement) -> Check | None:
+    if scenario.trigger is None:
+        return None
+    text = measurement.trigger_text
+    if not text:
+        return Check(
+            name="trigger fired",
+            ok=False,
+            detail=f"get_triggers did not run for trigger {scenario.trigger.id}",
+        )
+    table = fmt.parse_results_table(text, heading="# Triggers")
+    if table is None:
+        return Check(
+            name="trigger fired",
+            ok=False,
+            detail="could not parse a triggers table out of get_triggers' result",
+        )
+    headers, rows = table
+    if "id" not in headers or "triggered" not in headers:
+        return Check(
+            name="trigger fired",
+            ok=False,
+            detail=f"the triggers table has no id/triggered column: {headers}",
+        )
+    id_i, triggered_i = headers.index("id"), headers.index("triggered")
+    row = next((r for r in rows if len(r) > id_i and r[id_i] == scenario.trigger.id), None)
+    if row is None:
+        return Check(
+            name="trigger fired",
+            ok=False,
+            detail=f"trigger {scenario.trigger.id} ({scenario.trigger.name}) not in get_triggers",
+        )
+    triggered = row[triggered_i].strip().lower() == "true"
+    return Check(
+        name="trigger fired",
+        ok=triggered,
+        detail=(
+            f"trigger {scenario.trigger.id} ({scenario.trigger.name}): "
+            f"triggered={row[triggered_i]!r}"
+        ),
+    )
+
+
+def _check_exception(
+    scenario: Scenario, manifest: EmitResult, measurement: Measurement
+) -> list[Check]:
+    """Two checks, only when the fault's effect carries an `exception`.
+
+    The first reads the one trace fetched with `get_trace(show_events=true)`:
+    Honeycomb renders a span event as its own row, with `name` the event's
+    name and `annotation_type = span_event`, hanging off the failed span by
+    `parent_id`, but carrying none of the event's own attributes in that
+    table. So this check can only confirm the event exists, not its type;
+    the second check, a `run_query` filtered on `exception.type`, is what
+    proves the type and is exact against `manifest.span_events`, the same
+    way the ingest check is exact.
+    """
+    if scenario.fault is None or scenario.fault.effect.exception is None:
+        return []
+    exc = scenario.fault.effect.exception
+    return [
+        _check_exception_event(scenario, measurement),
+        _check_exception_count(manifest, measurement, exc),
+    ]
+
+
+def _check_exception_event(scenario: Scenario, measurement: Measurement) -> Check:
+    assert scenario.fault is not None
+    trace_id = measurement.exception_trace_id
+    text = measurement.exception_trace_text
+    span_name = scenario.fault.effect.span
+    if not text:
+        return Check(
+            name="exception event recorded",
+            ok=False,
+            detail="no failed trace in the fault's population was found to inspect",
+        )
+    table = fmt.parse_results_table(text, heading=None)
+    if table is None:
+        return Check(
+            name="exception event recorded",
+            ok=False,
+            detail=f"trace {trace_id}: could not parse a span table out of get_trace's result",
+        )
+    headers, rows = table
+    needed = {"span_id", "parent_id", "name", "error", "annotation_type"}
+    if not needed <= set(headers):
+        return Check(
+            name="exception event recorded",
+            ok=False,
+            detail=f"trace {trace_id}: get_trace's table is missing columns from {sorted(needed)}",
+        )
+    index = {name: i for i, name in enumerate(headers)}
+
+    def cell(row: list[str], key: str) -> str:
+        i = index[key]
+        return row[i] if i < len(row) else ""
+
+    failed_span_ids = {
+        cell(row, "span_id")
+        for row in rows
+        if cell(row, "name") == span_name and cell(row, "error").strip().lower() == "true"
+    }
+    hit = next(
+        (
+            row
+            for row in rows
+            if cell(row, "annotation_type") == "span_event"
+            and cell(row, "name") == "exception"
+            and cell(row, "parent_id") in failed_span_ids
+        ),
+        None,
+    )
+    return Check(
+        name="exception event recorded",
+        ok=hit is not None,
+        detail=(
+            f"trace {trace_id}: "
+            + (
+                f"a span_event named 'exception' hangs off a failed {span_name} span"
+                if hit is not None
+                else f"no span_event named 'exception' under a failed {span_name} span"
+            )
+        ),
+    )
+
+
+def _check_exception_count(
+    manifest: EmitResult, measurement: Measurement, exc: ExceptionEffect
+) -> Check:
+    expected = float(manifest.span_events)
+    measured = measurement.exception_event_count
+    return Check(
+        name="exception event count matches the manifest",
+        ok=measured is not None and measured == expected,
+        detail=(
+            f"{measured if measured is not None else '?'} rows named exception with "
+            f"exception.type={exc.type!r}, manifest says {expected:.0f} span events"
+        ),
+    )
+
+
 # --------------------------------------------------------------------------
 # Measuring, over MCP
 # --------------------------------------------------------------------------
@@ -476,10 +927,6 @@ def split_points(scenario: Scenario, manifest: EmitResult) -> tuple[str, str, st
     the manifest says was emitted, and the split is floored so the two halves
     meet where the MCP will actually cut them.
     """
-    import math
-
-    from gen.emit import iso
-
     split = manifest.onset_s
     if split is None:
         split = (manifest.window_start_s + manifest.window_end_s) / 2.0
@@ -511,7 +958,12 @@ async def measure(
     where = dict(scenario.fault.where) if scenario.fault else {}
     span_name = scenario.fault.effect.span if scenario.fault else topology.ROOT_SPAN
     start, split, end = split_points(scenario, manifest)
-    wants_outside_errors = bool(where) and bool(scenario.fault and scenario.fault.effect.error_rate)
+    full_population = _is_full_population(scenario)
+    wants_outside_errors = (
+        bool(where)
+        and not full_population
+        and bool(scenario.fault and scenario.fault.effect.error_rate)
+    )
 
     windows: list[WindowStats] = []
     for label, (from_time, to_time) in (
@@ -548,14 +1000,207 @@ async def measure(
     measurement = Measurement(before=windows[0], after=windows[1])
 
     population = await _run(
-        mcp, settings, population_query_spec(manifest.run_id, where, start=start, end=end)
+        mcp,
+        settings,
+        population_query_spec(
+            manifest.run_id, _population_query_where(full_population, where), start=start, end=end
+        ),
     )
     row = read_row(_result_text(population))
     measurement.total_root_spans = row.get("total_count", 0.0)
-    measurement.inside_root_spans = row.get("inside_count", 0.0)
+    measurement.inside_root_spans = _population_inside(
+        full_population, measurement.total_root_spans, row.get("inside_count", 0.0)
+    )
     _record_ids(measurement.query_ids, measurement.permalinks, population)
 
+    if full_population:
+        await _measure_negation(measurement, manifest, mcp, settings, start, split, end)
+
+    for herring in scenario.red_herrings:
+        if herring.duration_min is not None:
+            burst = await _measure_burst(herring, manifest, mcp, settings)
+            measurement.bursts.append(burst)
+
+    if scenario.trigger is not None:
+        result = await mcp.call("get_triggers", {"environment_slug": settings.honeycomb_env})
+        measurement.trigger_text = _result_text(result)
+        _record_ids(measurement.query_ids, measurement.permalinks, result)
+
+    if scenario.fault is not None and scenario.fault.effect.exception is not None:
+        await _measure_exception(measurement, scenario, manifest, mcp, settings, start, split, end)
+
     return measurement
+
+
+async def _measure_negation(
+    measurement: Measurement,
+    manifest: EmitResult,
+    mcp: HoneycombMCP,
+    settings: Settings,
+    start: str,
+    split: str,
+    end: str,
+) -> None:
+    """P99 of a span the fault does not touch, before and after onset: the
+    verify-by-negation query for a fault whose population is the whole run."""
+    for attr, from_time, to_time in (
+        ("negation_before_p99", start, split),
+        ("negation_after_p99", split, end),
+    ):
+        result = await _run(
+            mcp,
+            settings,
+            window_query_spec(
+                manifest.run_id, DEPENDENCY_NEGATION_SPAN, {}, start=from_time, end=to_time
+            ),
+        )
+        setattr(measurement, attr, read_row(_result_text(result)).get("inside_p99", 0.0))
+        _record_ids(measurement.query_ids, measurement.permalinks, result)
+
+
+def herring_windows(manifest: EmitResult, herring: RedHerring) -> tuple[str, str, str, str]:
+    """Before-start, burst-start, burst-end, and window-end, floored/ceiled to
+    whole seconds the way `split_points` does, for one red herring's burst."""
+    assert herring.duration_min is not None
+    burst_start = manifest.window_start_s + herring.onset_min * 60.0
+    burst_end = burst_start + herring.duration_min * 60.0
+    return (
+        iso(math.floor(manifest.window_start_s)),
+        iso(math.floor(burst_start)),
+        iso(math.floor(burst_end)),
+        iso(math.ceil(manifest.window_end_s)),
+    )
+
+
+async def _measure_burst(
+    herring: RedHerring,
+    manifest: EmitResult,
+    mcp: HoneycombMCP,
+    settings: Settings,
+) -> BurstMeasurement:
+    window_start, burst_start, burst_end, window_end = herring_windows(manifest, herring)
+    stats: dict[str, WindowStats] = {}
+    for label, (from_time, to_time) in (
+        ("before", (window_start, burst_start)),
+        ("burst", (burst_start, burst_end)),
+        ("after", (burst_end, window_end)),
+    ):
+        result = await _run(
+            mcp,
+            settings,
+            window_query_spec(
+                manifest.run_id, herring.effect.span, herring.where, start=from_time, end=to_time
+            ),
+        )
+        row = read_row(_result_text(result))
+        stats[label] = WindowStats(
+            label=label,
+            inside_count=row.get("inside_count", 0.0),
+            inside_p99=row.get("inside_p99", 0.0),
+            inside_errors=row.get("inside_errors", 0.0),
+        )
+    return BurstMeasurement(
+        herring=herring, before=stats["before"], burst=stats["burst"], after=stats["after"]
+    )
+
+
+def _first_breakdown_value(text: str, column: str) -> str | None:
+    """The first row's value for a breakdown column, from a `# Results` table.
+
+    `read_row` only keeps numeric cells; a trace id is not one.
+    """
+    table = fmt.parse_results_table(text)
+    if table is None:
+        return None
+    headers, rows = table
+    if column not in headers or not rows:
+        return None
+    return rows[0][headers.index(column)]
+
+
+def exception_count_query_spec(
+    run_id: str,
+    exception_type: str,
+    *,
+    start: str,
+    end: str,
+) -> dict[str, Any]:
+    """How many `exception` span_event rows this run has, of the configured type.
+
+    Honeycomb copies a span event's own attributes onto the row it lands as
+    (`name = exception`, no `scenario.run_id`, see the module docstring), but
+    it also copies them onto the parent span's row, so `exception.type` is a
+    real filter on the event rows themselves. Compared against
+    `manifest.span_events` for exactness, the same way the ingest check is
+    exact.
+    """
+    return {
+        "calculations": [{"op": "COUNT", "name": "exception_count"}],
+        "filters": [
+            {"column": "scenario.run_id", "op": "=", "value": run_id},
+            {"column": "name", "op": "=", "value": "exception"},
+            {"column": "exception.type", "op": "=", "value": exception_type},
+        ],
+        "from": start,
+        "to": end,
+    }
+
+
+async def _measure_exception(
+    measurement: Measurement,
+    scenario: Scenario,
+    manifest: EmitResult,
+    mcp: HoneycombMCP,
+    settings: Settings,
+    start: str,
+    split: str,
+    end: str,
+) -> None:
+    """Find one trace the fault failed after onset and fetch it with events,
+    then count every exception row of the configured type over the run."""
+    assert scenario.fault is not None
+    exc = scenario.fault.effect.exception
+    assert exc is not None
+    spec = {
+        "calculations": [{"op": "COUNT"}],
+        "filters": [
+            {"column": "scenario.run_id", "op": "=", "value": manifest.run_id},
+            {"column": "name", "op": "=", "value": scenario.fault.effect.span},
+            {"column": "error", "op": "=", "value": True},
+            *_eq_filters(scenario.fault.where),
+        ],
+        "breakdowns": ["trace.trace_id"],
+        "orders": [{"op": "COUNT", "order": "descending"}],
+        "limit": 1,
+        "from": split,
+        "to": end,
+    }
+    result = await _run(mcp, settings, spec)
+    _record_ids(measurement.query_ids, measurement.permalinks, result)
+    trace_id = _first_breakdown_value(_result_text(result), "trace.trace_id")
+    if trace_id is not None:
+        measurement.exception_trace_id = trace_id
+        trace_result = await mcp.call(
+            "get_trace",
+            {
+                "environment_slug": settings.honeycomb_env,
+                "trace_id": trace_id,
+                "show_events": True,
+                "view_mode": "full",
+                "from": split,
+                "to": end,
+            },
+        )
+        measurement.exception_trace_text = _result_text(trace_result)
+        _record_ids(measurement.query_ids, measurement.permalinks, trace_result)
+
+    count_result = await _run(
+        mcp, settings, exception_count_query_spec(manifest.run_id, exc.type, start=start, end=end)
+    )
+    measurement.exception_event_count = read_row(_result_text(count_result)).get(
+        "exception_count", 0.0
+    )
+    _record_ids(measurement.query_ids, measurement.permalinks, count_result)
 
 
 def _record_ids(query_ids: list[str], permalinks: list[str], result: ToolResult) -> None:
@@ -570,7 +1215,15 @@ async def verify(
     manifest: EmitResult,
     settings: Settings | None = None,
 ) -> VerifyResult:
-    """Measure the run and decide. One MCP session, at most five queries."""
+    """Measure the run and decide. One MCP session.
+
+    Five `run_query` calls at most for a plain fault or control. A control
+    with a burst herring adds three; a dependency fault (a full-population
+    `where`) adds two for its negation query and drops two by skipping the
+    now-meaningless outside-errors query; a trigger scenario adds one
+    `get_triggers` call; a fault whose effect carries an `exception` adds one
+    `run_query` and one `get_trace`. All inside the MCP client's pacing.
+    """
     settings = settings or Settings()
     async with HoneycombMCP(settings=settings) as mcp:
         measurement = await measure(scenario, manifest, mcp, settings)

@@ -1,0 +1,11 @@
+{
+  "tool": "get_triggers",
+  "args": {
+    "environment_slug": "receipts-demo"
+  },
+  "structured_content": null,
+  "content_texts": [
+    "# Triggers\n\n| id | name | description | environment | dataset | environment_wide | disabled | frequency | alert_type | threshold_operator | threshold_value | baseline | triggered | recipients | created_at | updated_at | tags |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n| bhuYLpkRKnv | checkout root P99 over 1500ms | Root span P99(duration_ms) over the last 5 minutes exceeded 1500 ms in receipts-shop. Used by the Receipts eval scenario trigger-checkout-latency. Investigate with a heatmap of root duration_ms and BubbleUp on the slow band. | receipts-demo | receipts-shop | false | false | 120 | on_change | > | 1500 |  | false |  | 2026-09-04T04:26:25Z | 2026-09-04T04:26:25Z |  |\n\n\n---\nMetadata:\n  environment: receipts-demo\n  items_per_page: 50\n  page: 1\n  total_items: 1\n  total_pages: 1\n"
+  ],
+  "is_error": false
+}

@@ -1,0 +1,24 @@
+id: error-surge-exceptions
+narrative: >-
+  Adyen started rejecting a quarter of charges at the ten minute mark, and each
+  failed charge records a ProviderDeclined exception. us-east-1 has had a low
+  background failure rate on payments since before the window opened, which is not
+  this, and its failures carry no exception.
+baseline: {rps: 15, minutes: 20}
+fault:
+  onset_min: 10
+  where: {payment.provider: "adyen"}
+  effect:
+    span: "payments.charge"
+    error_rate: 0.25
+    exception: {type: "ProviderDeclined", message: "adyen declined the charge (refusal reason: 'Refused')"}
+ground_truth:
+  incident_present: true
+  root_cause_dims: {payment.provider: "adyen"}
+  slow_or_failing_span: payments.charge
+  affected_share: 0.25
+red_herrings:
+  - where: {cloud.region: "us-east-1"}
+    effect: {span: "payments.charge", error_rate: 0.03}
+    onset_min: 0
+    note: pre-existing low failure rate in us-east-1, larger than baseline but steady, no exception event
