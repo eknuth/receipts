@@ -8,7 +8,6 @@ the wire.
 from __future__ import annotations
 
 import json
-import time
 from concurrent.futures import Future
 from pathlib import Path
 
@@ -276,7 +275,7 @@ def test_a_realtime_run_sleeps_between_requests(settings_module: Settings) -> No
     """With the window starting in the future, every request waits its turn."""
     slept: list[float] = []
     scenario = shrink("control-quiet", minutes=1, rps=2)
-    start = time.time() + 30.0
+    start = NOW + 30.0
     E.emit(
         scenario,
         settings_module,
@@ -284,14 +283,16 @@ def test_a_realtime_run_sleeps_between_requests(settings_module: Settings) -> No
         backdate=False,
         now_s=start,
         sleep=slept.append,
+        clock=lambda: NOW,
     )
-    # 120 requests over 60 s; the injected sleep never actually waits, so each
-    # delay is measured from the same real clock and the last one is about 90 s.
+    # 120 requests over 60 s; the injected sleep never waits and the injected
+    # clock never moves, so each delay is exactly the request's own offset
+    # from a window that opens 30 s from "now".
+    offsets = [r.offset_s for r in topology.generate_requests(scenario, seed=0)]
     assert len(slept) == scenario.baseline.request_count
     assert all(delay > 0 for delay in slept)
     assert slept == sorted(slept)
-    assert slept[-1] == pytest.approx(30.0 + 60.0, abs=2.0)
-    assert slept[0] == pytest.approx(30.0, abs=2.0)
+    assert slept == pytest.approx([30.0 + offset for offset in offsets], abs=1e-6)
 
 
 def test_a_realtime_run_does_not_sleep_for_requests_already_due(
