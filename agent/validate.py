@@ -5,7 +5,9 @@ against the tool log. Nothing in this module trusts a field the model wrote.
 
   Receipts. Every hypothesis carries at least one `run_query` that was made in
   this run, and, when negation is required, a query that was made in this run
-  and that actually excluded one of the dimensions the hypothesis claims. Every
+  and that actually excluded one of the dimensions the hypothesis claims. A
+  range claim such as `cart.size: ">= 8"` is negated by its complementary
+  comparison (`cart.size < 8`) at the same bound, rather than by `!=`. Every
   `query_id` in the report has to appear in the log against the tool that
   returned it.
 
@@ -37,7 +39,7 @@ that failed its own rules is a result the grader should see and punish.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from agent.report import (
@@ -47,6 +49,7 @@ from agent.report import (
     ReportDraft,
     ToolCall,
 )
+from gen.topology import RANGE_RE
 
 # Tools whose arguments name columns and values, which is what "was queried"
 # means for the not-checked list. Discovery calls such as `find_columns` are
@@ -71,6 +74,12 @@ EXCLUDING_OPS: frozenset[str] = frozenset(
 # Argument keys that carry a column name or a filter value.
 _COLUMN_KEYS: frozenset[str] = frozenset({"column", "columns", "breakdowns", "group_by"})
 _VALUE_KEYS: frozenset[str] = frozenset({"value", "values"})
+
+# The complementary comparison for each range operator: what negates a claim
+# of `>= 8` is `< 8` at the same bound, not `!=`. `RANGE_RE` (from
+# `gen.topology`, the one definition of what a range value looks like) is
+# what tells a range claim like "cart.size: >= 8" apart from an exact one.
+_COMPLEMENT_OP: dict[str, str] = {">=": "<", ">": "<=", "<=": ">", "<": ">="}
 
 # Identifier-shaped words inside a free-text `not_checked` entry. A match has
 # to carry a dot, an underscore, or a hyphen, which is what separates
@@ -172,12 +181,77 @@ def queried_terms(tool_log: Sequence[ToolCall], *, run_id: str | None = None) ->
     return terms
 
 
-def excluded_columns(calls: Sequence[ToolCall]) -> set[str]:
-    """The columns these calls filtered out, by any operator that excludes."""
+def excluded_columns(
+    calls: Sequence[ToolCall], *, dims: Mapping[str, str] | None = None
+) -> set[str]:
+    """The columns these calls filtered out, by any operator that excludes.
+
+    With `dims`, a filter on a claimed dimension whose claimed value is a
+    numeric range (matches `RANGE_RE`, e.g. ">= 8") also counts when the
+    filter's operator is the complement at the same bound (`< 8`), even
+    though `<` is not itself in `EXCLUDING_OPS`: the complement is what
+    negates a range claim, the way `!=` negates an exact one. Plain values
+    are unaffected. `dims` defaults to None, which is the old behaviour.
+
+    A complement on a column the same query measures does not count. A
+    claim of `duration_ms > 1000` negated by `P99(duration_ms) WHERE
+    duration_ms <= 1000` says that fast requests are fast. That is a second
+    look at the symptom, not a test of a cause, and the review of the first
+    version of this rule found a stored run that would have been credited
+    for exactly that. The population a negation excludes has to be one the
+    measurement can move on.
+    """
     out: set[str] = set()
     for call in calls:
-        _collect_exclusions(call.args, out)
+        _collect_exclusions(call.args, out, dims=dims, measured=_measured_columns(call.args))
     return out
+
+
+def _measured_columns(args: Mapping[str, object]) -> frozenset[str]:
+    """The columns a `run_query`'s calculations are computed over."""
+    spec = args.get("query_spec")
+    if not isinstance(spec, dict):
+        return frozenset()
+    calculations = spec.get("calculations")
+    if not isinstance(calculations, list):
+        return frozenset()
+    return frozenset(
+        calc["column"]
+        for calc in calculations
+        if isinstance(calc, dict) and isinstance(calc.get("column"), str)
+    )
+
+
+def _parse_number(value: object) -> float | None:
+    """`value` as a float, or None when it is not one.
+
+    A filter's bound may arrive as a number or as a numeric string; a value
+    such as "eight" does not parse and does not match. Booleans are excluded
+    even though `bool` is an `int` subclass: `True` is not a bound.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _range_complement_match(claimed_value: str, op: str, filter_value: object) -> bool:
+    """True when `op filter_value` is the complement of a range claim, at the same bound."""
+    claimed = RANGE_RE.match(claimed_value)
+    if claimed is None:
+        return False
+    if op != _COMPLEMENT_OP[claimed.group(1)]:
+        return False
+    bound = _parse_number(filter_value)
+    if bound is None:
+        return False
+    return bound == float(claimed.group(2))
 
 
 def _collect(node: object, key: str | None, out: set[str]) -> None:
@@ -197,22 +271,38 @@ def _collect(node: object, key: str | None, out: set[str]) -> None:
         out.add(node)
 
 
-def _collect_exclusions(node: object, out: set[str]) -> None:
+def _collect_exclusions(
+    node: object,
+    out: set[str],
+    *,
+    dims: Mapping[str, str] | None = None,
+    measured: frozenset[str] = frozenset(),
+) -> None:
     """Walk one arguments tree for filter clauses that exclude a population.
 
     Per-calculation filters count. A query that measures the population and
     its complement in one shot is the shape Honeycomb's own guidance asks for.
+    `measured` names the columns the query calculates over; a range
+    complement on one of them is not an exclusion (see `excluded_columns`).
     """
     if isinstance(node, dict):
         op = node.get("op")
         column = node.get("column")
-        if isinstance(op, str) and isinstance(column, str) and op in EXCLUDING_OPS:
-            out.add(column)
+        if isinstance(op, str) and isinstance(column, str):
+            if op in EXCLUDING_OPS:
+                out.add(column)
+            elif (
+                dims
+                and column in dims
+                and column not in measured
+                and _range_complement_match(dims[column], op, node.get("value"))
+            ):
+                out.add(column)
         for value in node.values():
-            _collect_exclusions(value, out)
+            _collect_exclusions(value, out, dims=dims, measured=measured)
     elif isinstance(node, list):
         for item in node:
-            _collect_exclusions(item, out)
+            _collect_exclusions(item, out, dims=dims, measured=measured)
 
 
 def validate_draft(
@@ -392,7 +482,9 @@ def _check_negation(
             )
         ]
 
-    excluded = excluded_columns(index.calls_for(negation.query_id, tool=PRIMARY_EVIDENCE_TOOL))
+    excluded = excluded_columns(
+        index.calls_for(negation.query_id, tool=PRIMARY_EVIDENCE_TOOL), dims=hypothesis.dims
+    )
     claimed = set(hypothesis.dims)
     if not (excluded & claimed):
         return [
@@ -400,7 +492,9 @@ def _check_negation(
                 "partial",
                 f"{label} negation query {negation.query_id!r} excludes {sorted(excluded)} and "
                 f"the claim rests on {sorted(claimed)}. Run the same measurement with a "
-                "!= or not-in on at least one of the dimensions in dims.",
+                "!= or not-in on at least one of the dimensions in dims, or, for a range "
+                "value such as >= 8, the complementary comparison (< 8) at the same bound "
+                "on a column the query does not itself calculate over.",
             )
         ]
     return []
