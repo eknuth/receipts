@@ -8,17 +8,17 @@ Every number here is read from a `grade.json` under `evals/results/`, written by
 
 | scenario | full total | full outcome | full top right |
 | --- | --- | --- | --- |
-| checkout-error-surge-adyen | 0.78 (-0.25 to 1.00) | 0.61 (0.00 to 0.75) | 5 of 6 |
-| control-noisy | 0.27 (-0.40 to 1.00) | 0.38 (0.00 to 0.75) | 3 of 6 |
-| control-quiet | 0.55 (-0.60 to 1.00) | 0.55 (0.00 to 0.75) | 8 of 11 |
-| dependency-inventory-db-timeouts | 0.60 (0.35 to 1.00) | 0.72 (0.65 to 0.75) | 6 of 6 |
-| deploy-regression-v260 | 0.53 (-0.60 to 0.90) | 0.45 (0.00 to 0.65) | 4 of 6 |
-| error-surge-exceptions | 0.92 (0.65 to 1.00) | 0.73 (0.65 to 0.75) | 6 of 6 |
-| herring-customer-whale | 0.78 (0.55 to 1.00) | 0.70 (0.65 to 0.75) | 6 of 6 |
-| herring-region-vs-version | 0.78 (0.25 to 1.00) | 0.59 (0.00 to 0.75) | 5 of 6 |
-| payments-stripe-v251-uswest | 0.42 (-0.25 to 1.00) | 0.49 (0.00 to 0.75) | 4 of 8 |
-| trigger-checkout-latency | 0.48 (-0.10 to 0.90) | 0.54 (0.15 to 0.75) | 4 of 6 |
-| all scenarios | 0.60 (-0.60 to 1.00) | 0.57 (0.00 to 0.75) | 51 of 67 |
+| checkout-error-surge-adyen | 1.00 (1.00 to 1.00) | 0.75 (0.75 to 0.75) | 3 of 3 |
+| control-noisy | 1.00 (1.00 to 1.00) | 0.75 (0.75 to 0.75) | 3 of 3 |
+| control-quiet | 0.88 (0.65 to 1.00) | 0.75 (0.75 to 0.75) | 3 of 3 |
+| dependency-inventory-db-timeouts | 0.75 (0.60 to 1.00) | 0.75 (0.75 to 0.75) | 3 of 3 |
+| deploy-regression-v260 | 1.00 (1.00 to 1.00) | 0.75 (0.75 to 0.75) | 3 of 3 |
+| error-surge-exceptions | 1.00 (1.00 to 1.00) | 0.75 (0.75 to 0.75) | 3 of 3 |
+| herring-customer-whale | 0.87 (0.60 to 1.00) | 0.75 (0.75 to 0.75) | 3 of 3 |
+| herring-region-vs-version | 1.00 (1.00 to 1.00) | 0.75 (0.75 to 0.75) | 3 of 3 |
+| payments-stripe-v251-uswest | 0.64 (-0.08 to 1.00) | 0.67 (0.52 to 0.75) | 2 of 3 |
+| trigger-checkout-latency | 1.00 (1.00 to 1.00) | 0.75 (0.75 to 0.75) | 3 of 3 |
+| all scenarios | 0.91 (-0.08 to 1.00) | 0.74 (0.52 to 0.75) | 29 of 30 |
 
 ## Process by config
 
@@ -26,7 +26,7 @@ Means over every run in the config, crashes included. `passes theirs, fails ours
 
 | config | runs | crashed | mean calls | mean tokens in | mean tokens out | mean cost USD | mean wall s | coerced | passes theirs, fails ours (total < 0.50) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| full | 67 | 0 | 36.4 | 617 | 12,022 | 0.66 | 223 | 2 | 18 of 67 |
+| full | 30 | 0 | 27.0 | 542 | 9,596 | 0.47 | 177 | 11 | 1 of 30 |
 
 ## Runs
 
@@ -34,70 +34,33 @@ One row per investigation. `query` links to the first evidence query of the top 
 
 | scenario | config | n | run id | model | total | outcome | receipts | top confidence | stopped by | calls | cost USD | wall s | theirs | query |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| checkout-error-surge-adyen | full | 1 | run-974f4e6bd0ed | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 37 | 0.68 | 235 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/3Sm7JmdikB9) |
-| checkout-error-surge-adyen | full | 2 | run-974f4e6bd0ed | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 39 | 0.61 | 212 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/JmM58U9fxY9) |
-| checkout-error-surge-adyen | full | 3 | run-974f4e6bd0ed | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 33 | 0.59 | 220 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/hdxgqdVFqsY) |
-| checkout-error-surge-adyen | full | 4 | run-974f4e6bd0ed | claude-sonnet-4-5 | -0.25 | 0.00 | 0.00 |  | report (validation failed) | 33 | 0.61 | 197 | 1.00 pass |  |
-| checkout-error-surge-adyen | full | 5 | run-974f4e6bd0ed | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 31 | 0.60 | 186 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/dF3AatDxpG2) |
-| checkout-error-surge-adyen | full | 6 | run-974f4e6bd0ed | claude-sonnet-4-5 | 0.90 | 0.65 | 0.25 | high | report | 34 | 0.62 | 203 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/cYsgzGjvuxe) |
-| control-noisy | full | 1 | run-ae8e20c5f076 | claude-sonnet-4-5 | -0.25 | 0.00 | 0.25 | high | report | 32 | 0.60 | 208 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/zc1J5wCwzJd) |
-| control-noisy | full | 2 | run-ae8e20c5f076 | claude-sonnet-4-5 | -0.25 | 0.00 | 0.25 | high | report | 40 | 0.73 | 260 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/FcaY8b9BL5N) |
-| control-noisy | full | 3 | run-ae8e20c5f076 | claude-sonnet-4-5 | -0.40 | 0.00 | 0.10 | medium | report (validation failed) | 40 | 0.69 | 242 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/ceBA1su15QM) |
-| control-noisy | full | 4 | run-ae8e20c5f076 | claude-sonnet-4-5 | 0.50 | 0.75 | 0.00 |  | report (validation failed) | 36 | 0.71 | 220 | 1.00 pass |  |
-| control-noisy | full | 5 | run-ae8e20c5f076 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 |  | report | 39 | 0.69 | 208 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/CG7YBbo6nFu) |
-| control-noisy | full | 6 | run-ae8e20c5f076 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 |  | report | 38 | 0.65 | 226 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/2ESnats8zqk) |
-| control-quiet | full | 1 | run-ebc9c1e4be3d | claude-sonnet-4-5 | -0.25 | 0.00 | 0.25 | high | report | 28 | 0.47 | 179 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/nuLWfLwdr6i) |
-| control-quiet | full | 2 | run-ebc9c1e4be3d | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 |  | report | 38 | 0.58 | 249 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/gMTLyFqM3cE) |
-| control-quiet | full | 3 | run-ebc9c1e4be3d | claude-sonnet-4-5 | 0.50 | 0.75 | 0.00 |  | report (validation failed) | 40 | 0.68 | 271 | 1.00 pass |  |
-| control-quiet | full | 4 | run-ebc9c1e4be3d | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 |  | report | 36 | 0.67 | 211 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/qtvUKayzcUj) |
-| control-quiet | full | 5 | run-ebc9c1e4be3d | claude-sonnet-4-5 | -0.60 | 0.00 | 0.15 | high | report (validation failed) | 35 | 0.66 | 229 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/cq7AbWj3x6y) |
-| control-quiet | full | 6 | run-a265adf6e322 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 |  | report | 38 | 0.60 | 228 | 0.95 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/e1uwRGrEgUR) |
-| control-quiet | full | 7 | run-a265adf6e322 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 |  | report | 36 | 0.60 | 198 | 0.95 pass |  |
-| control-quiet | full | 8 | run-a265adf6e322 | claude-sonnet-4-5 | -0.25 | 0.00 | 0.25 | high | report | 32 | 0.57 | 187 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/pfHzmykxwzs) |
-| control-quiet | full | 9 | run-a265adf6e322 | claude-sonnet-4-5 | 0.65 | 0.75 | 0.15 |  | report (validation failed) | 34 | 0.57 | 209 | 0.75 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/fCUmtY5FT57) |
-| control-quiet | full | 10 | run-a265adf6e322 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 |  | report | 35 | 0.56 | 191 | 0.95 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/qwMS3V6ZF3) |
-| control-quiet | full | 11 | run-a265adf6e322 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 |  | report | 40 | 0.77 | 261 | 0.75 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/qiWUbLiBYrf) |
-| dependency-inventory-db-timeouts | full | 1 | run-e10b6c1bf2dc | claude-sonnet-4-5 | 0.35 | 0.65 | 0.00 | medium | report (validation failed) | 40 | 0.73 | 252 | 0.80 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/bWUeN27N6Lp) |
-| dependency-inventory-db-timeouts | full | 2 | run-e10b6c1bf2dc | claude-sonnet-4-5 | 0.60 | 0.75 | 0.10 | high | report (validation failed) | 38 | 0.69 | 262 | 0.80 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/q8YsYg8ufXo) |
-| dependency-inventory-db-timeouts | full | 3 | run-e10b6c1bf2dc | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 35 | 0.65 | 207 | 0.80 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/mDP2jcAp3xf) |
-| dependency-inventory-db-timeouts | full | 4 | run-e10b6c1bf2dc | claude-sonnet-4-5 | 0.35 | 0.65 | 0.00 | medium | report (validation failed) | 40 | 0.78 | 245 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/BVhQ3G7763e) |
-| dependency-inventory-db-timeouts | full | 5 | run-e10b6c1bf2dc | claude-sonnet-4-5 | 0.65 | 0.75 | 0.15 | high | report (validation failed) | 38 | 0.69 | 236 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/jH73B9963dM) |
-| dependency-inventory-db-timeouts | full | 6 | run-e10b6c1bf2dc | claude-sonnet-4-5 | 0.65 | 0.75 | 0.15 | high | report (validation failed) | 40 | 0.77 | 250 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/kDBjV42Ctyf) |
-| deploy-regression-v260 | full | 1 | run-2ef344b96d57 | claude-sonnet-4-5 | 0.25 | 0.00 | 0.25 |  | report | 37 | 0.66 | 201 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/iRoyqV6VDuM) |
-| deploy-regression-v260 | full | 2 | run-2ef344b96d57 | claude-sonnet-4-5 | 0.90 | 0.65 | 0.25 | high | report | 40 | 0.79 | 273 | 0.80 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/ivwmpkdjiKA) |
-| deploy-regression-v260 | full | 3 | run-2ef344b96d57 | claude-sonnet-4-5 | 0.90 | 0.65 | 0.25 | high | report | 36 | 0.65 | 218 | 0.80 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/n7LtFezpB9s) |
-| deploy-regression-v260 | full | 4 | run-2ef344b96d57 | claude-sonnet-4-5 | 0.90 | 0.65 | 0.25 | high | report | 34 | 0.62 | 207 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/cVTZ1hqVVP) |
-| deploy-regression-v260 | full | 5 | run-2ef344b96d57 | claude-sonnet-4-5 | -0.60 | 0.15 | 0.00 | high | report (validation failed) | 33 | 0.69 | 223 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/37e4Dra84Vg) |
-| deploy-regression-v260 | full | 6 | run-2ef344b96d57 | claude-sonnet-4-5 | 0.82 | 0.57 | 0.25 | high | report | 36 | 0.68 | 216 | 0.80 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/pYjE5DzGvA3) |
-| error-surge-exceptions | full | 1 | run-a6353e4f46f8 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 34 | 0.62 | 212 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/mw23Pa6PKeu) |
-| error-surge-exceptions | full | 2 | run-a6353e4f46f8 | claude-sonnet-4-5 | 0.65 | 0.75 | 0.15 | high | report (validation failed) | 36 | 0.66 | 225 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/8qcQ7jyhfTw) |
-| error-surge-exceptions | full | 3 | run-a6353e4f46f8 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 39 | 0.61 | 216 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/7QMaErkbMcC) |
-| error-surge-exceptions | full | 4 | run-a6353e4f46f8 | claude-sonnet-4-5 | 0.90 | 0.65 | 0.25 | high | report | 34 | 0.57 | 186 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/rVkCTW8LtXk) |
-| error-surge-exceptions | full | 5 | run-a6353e4f46f8 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 36 | 0.65 | 215 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/dR8GMJq6E4p) |
-| error-surge-exceptions | full | 6 | run-a6353e4f46f8 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 38 | 0.65 | 214 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/2tex6wArBJ4) |
-| herring-customer-whale | full | 1 | run-29580981edf1 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 39 | 0.65 | 221 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/ADWPrjtEnG8) |
-| herring-customer-whale | full | 2 | run-29580981edf1 | claude-sonnet-4-5 | 0.55 | 0.65 | 0.15 | high | report (validation failed) | 32 | 0.59 | 197 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/adGg8zouda5) |
-| herring-customer-whale | full | 3 | run-29580981edf1 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 33 | 0.59 | 203 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/CwaZtqiYjLY) |
-| herring-customer-whale | full | 4 | run-29580981edf1 | claude-sonnet-4-5 | 0.55 | 0.65 | 0.15 | high | report (validation failed) | 36 | 0.68 | 209 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/hABUgBhcbNH) |
-| herring-customer-whale | full | 5 | run-29580981edf1 | claude-sonnet-4-5 | 0.90 | 0.65 | 0.25 | high | report | 39 | 0.70 | 210 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/z3dcnDhsB6h?tab=bubbleup&bubbleup_result=oBfHMMQjtWL) |
-| herring-customer-whale | full | 6 | run-29580981edf1 | claude-sonnet-4-5 | 0.65 | 0.75 | 0.15 | high | report (validation failed) | 31 | 0.60 | 202 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/yeWU5vjGeby) |
-| herring-region-vs-version | full | 1 | run-cd1ec0dcfc51 | claude-sonnet-4-5 | 0.90 | 0.65 | 0.25 | high | report | 40 | 0.74 | 248 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/37sdEEGHWeF) |
-| herring-region-vs-version | full | 2 | run-cd1ec0dcfc51 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 40 | 0.70 | 243 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/jnrp2GFGAVX) |
-| herring-region-vs-version | full | 3 | run-cd1ec0dcfc51 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 35 | 0.63 | 214 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/fxcQ3phN8Q9) |
-| herring-region-vs-version | full | 4 | run-cd1ec0dcfc51 | claude-sonnet-4-5 | 0.55 | 0.65 | 0.15 | high | report (validation failed) | 37 | 0.73 | 256 | 0.80 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/vcBSR2Qf6Rd) |
-| herring-region-vs-version | full | 5 | run-cd1ec0dcfc51 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 36 | 0.64 | 202 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/kB5h8zMi31f) |
-| herring-region-vs-version | full | 6 | run-cd1ec0dcfc51 | claude-sonnet-4-5 | 0.25 | 0.00 | 0.25 |  | report | 34 | 0.65 | 212 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/6R3jKHx16kE) |
-| payments-stripe-v251-uswest | full | 1 | run-4155490e2a44 | claude-sonnet-4-5 | -0.10 | 0.00 | 0.15 |  | report (validation failed) | 35 | 0.65 | 222 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/eRVtrJcodnJ) |
-| payments-stripe-v251-uswest | full | 2 | run-4155490e2a44 | claude-sonnet-4-5 | 0.27 | 0.52 | 0.25 | high | report | 40 | 0.61 | 232 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/5UG9bVevB4J) |
-| payments-stripe-v251-uswest | full | 3 | run-f0d47eec0615 | claude-sonnet-4-5 | -0.25 | 0.00 | 0.00 |  | report (validation failed) | 40 | 0.76 | 251 | 1.00 pass |  |
-| payments-stripe-v251-uswest | full | 4 | run-f0d47eec0615 | claude-sonnet-4-5 | 0.88 | 0.63 | 0.25 | high | report | 39 | 0.75 | 240 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/CA8hyxMGknh) |
-| payments-stripe-v251-uswest | full | 5 | run-f0d47eec0615 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 40 | 0.70 | 238 | 0.80 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/Du2bqcUE6C9) |
-| payments-stripe-v251-uswest | full | 6 | run-f0d47eec0615 | claude-sonnet-4-5 | 0.65 | 0.75 | 0.15 | high | report (validation failed) | 40 | 0.66 | 250 | 0.80 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/gozRGqtyg7o) |
-| payments-stripe-v251-uswest | full | 7 | run-f0d47eec0615 | claude-sonnet-4-5 | -0.08 | 0.52 | 0.15 | high | report (validation failed) | 40 | 0.72 | 220 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/fVy3sgwDp4k) |
-| payments-stripe-v251-uswest | full | 8 | run-f0d47eec0615 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 39 | 0.78 | 237 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/jtbznGgShWu) |
-| trigger-checkout-latency | full | 1 | run-79b76551ad21 | claude-sonnet-4-5 | -0.10 | 0.15 | 0.25 | high | report | 37 | 0.67 | 222 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/nTKevJaww2P) |
-| trigger-checkout-latency | full | 2 | run-144995228783 | claude-sonnet-4-5 | 0.00 | 0.40 | 0.10 | medium | report (validation failed) | 40 | 0.76 | 274 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/b84MCiLnH1k) |
-| trigger-checkout-latency | full | 3 | run-f861e813c59d | claude-sonnet-4-5 | 0.65 | 0.75 | 0.15 | high | report (validation failed) | 37 | 0.74 | 237 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/upMSkCRXk16) |
-| trigger-checkout-latency | full | 4 | run-a232e6fc98b6 | claude-sonnet-4-5 | 0.90 | 0.65 | 0.25 | high | report | 27 | 0.56 | 196 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/JCk5bAmqQ2K) |
-| trigger-checkout-latency | full | 5 | run-26b0a1192bb6 | claude-sonnet-4-5 | 0.50 | 0.65 | 0.10 | high | report (validation failed) | 38 | 0.71 | 209 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/fLCdz6MoDZ8) |
-| trigger-checkout-latency | full | 6 | run-c70845570362 | claude-sonnet-4-5 | 0.90 | 0.65 | 0.25 | high | report | 30 | 0.59 | 204 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/tbisbxbbkaU) |
+| checkout-error-surge-adyen | full | 1 | run-974f4e6bd0ed | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 28 | 0.46 | 171 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/2Tpa5HhgeHU) |
+| checkout-error-surge-adyen | full | 2 | run-974f4e6bd0ed | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 25 | 0.45 | 184 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/wwNY97kTFDU) |
+| checkout-error-surge-adyen | full | 3 | run-974f4e6bd0ed | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 28 | 0.40 | 204 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/DUpWnhUW2id) |
+| control-noisy | full | 1 | run-ae8e20c5f076 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 |  | report | 30 | 0.57 | 183 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/wP3rSjvDqWX) |
+| control-noisy | full | 2 | run-ae8e20c5f076 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 |  | report | 30 | 0.48 | 173 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/gx9rbT2NzZq) |
+| control-noisy | full | 3 | run-ae8e20c5f076 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 |  | report | 30 | 0.44 | 180 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/uUMYWQ3LHme) |
+| control-quiet | full | 1 | run-a265adf6e322 | claude-sonnet-4-5 | 0.65 | 0.75 | 0.15 |  | report (validation failed) | 22 | 0.44 | 148 | 0.90 pass |  |
+| control-quiet | full | 2 | run-a265adf6e322 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 |  | report | 25 | 0.35 | 145 | 0.90 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/cwtK4iazydJ) |
+| control-quiet | full | 3 | run-a265adf6e322 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 |  | report | 24 | 0.44 | 161 | 0.90 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/Xbxw7aDReQ) |
+| dependency-inventory-db-timeouts | full | 1 | run-e10b6c1bf2dc | claude-sonnet-4-5 | 0.65 | 0.75 | 0.15 | high | report (validation failed) | 35 | 0.73 | 238 | 0.80 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/p3h54LL8hoX) |
+| dependency-inventory-db-timeouts | full | 2 | run-e10b6c1bf2dc | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 32 | 0.58 | 216 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/B3UbiLr1sD2) |
+| dependency-inventory-db-timeouts | full | 3 | run-e10b6c1bf2dc | claude-sonnet-4-5 | 0.60 | 0.75 | 0.10 | high | report (validation failed) | 26 | 0.50 | 196 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/oguTfibLx26) |
+| deploy-regression-v260 | full | 1 | run-2ef344b96d57 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 23 | 0.46 | 132 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/4HXpb12o9Kd) |
+| deploy-regression-v260 | full | 2 | run-2ef344b96d57 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 23 | 0.35 | 151 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/9UoHjp6eFvC) |
+| deploy-regression-v260 | full | 3 | run-2ef344b96d57 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 24 | 0.47 | 173 | 0.68 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/H3sGe4J25k5) |
+| error-surge-exceptions | full | 1 | run-a6353e4f46f8 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 26 | 0.45 | 168 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/JfPDVvrfMKe) |
+| error-surge-exceptions | full | 2 | run-a6353e4f46f8 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 29 | 0.43 | 198 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/9eQunNnfjrm) |
+| error-surge-exceptions | full | 3 | run-a6353e4f46f8 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 30 | 0.50 | 191 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/DqJFdvVSvxi) |
+| herring-customer-whale | full | 1 | run-29580981edf1 | claude-sonnet-4-5 | 0.60 | 0.75 | 0.10 | high | report (validation failed) | 31 | 0.60 | 207 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/EoQThdX7f4D) |
+| herring-customer-whale | full | 2 | run-29580981edf1 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 23 | 0.33 | 144 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/J58XEoCd86) |
+| herring-customer-whale | full | 3 | run-29580981edf1 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 31 | 0.49 | 193 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/m9nG3yE9aEf) |
+| herring-region-vs-version | full | 1 | run-cd1ec0dcfc51 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 24 | 0.48 | 145 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/DNBda6iD6Bx) |
+| herring-region-vs-version | full | 2 | run-cd1ec0dcfc51 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 26 | 0.38 | 150 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/E8shbo3NRzM) |
+| herring-region-vs-version | full | 3 | run-cd1ec0dcfc51 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 21 | 0.35 | 159 | 0.80 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/qYEErEomFPp) |
+| payments-stripe-v251-uswest | full | 1 | run-f0d47eec0615 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 37 | 0.77 | 247 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/sHUM7CdweoD) |
+| payments-stripe-v251-uswest | full | 2 | run-f0d47eec0615 | claude-sonnet-4-5 | -0.08 | 0.52 | 0.15 | high | report (validation failed) | 24 | 0.40 | 170 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/o96Fh29Dw4m) |
+| payments-stripe-v251-uswest | full | 3 | run-f0d47eec0615 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 34 | 0.58 | 226 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/2KcQi8z7Q9s) |
+| trigger-checkout-latency | full | 1 | run-160da8a5c092 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 26 | 0.45 | 165 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/m3Cy5ZSdyYJ) |
+| trigger-checkout-latency | full | 2 | run-697e3ee9e27d | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 22 | 0.45 | 150 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/nznMQwAcac5) |
+| trigger-checkout-latency | full | 3 | run-403f1573b841 | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 20 | 0.43 | 149 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/hcGZw4Eat2p) |

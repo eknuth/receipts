@@ -125,6 +125,27 @@
       "emitted_at": "2026-09-04T22:27:52.957263Z",
       "window_start": "2026-09-04T22:06:16Z",
       "window_end": "2026-09-04T22:26:16Z"
+    },
+    {
+      "run_id": "run-160da8a5c092",
+      "scenario_id": "trigger-checkout-latency",
+      "emitted_at": "2026-09-05T07:53:12.014195Z",
+      "window_start": "2026-09-05T07:31:35Z",
+      "window_end": "2026-09-05T07:51:35Z"
+    },
+    {
+      "run_id": "run-697e3ee9e27d",
+      "scenario_id": "trigger-checkout-latency",
+      "emitted_at": "2026-09-05T07:56:35.411216Z",
+      "window_start": "2026-09-05T07:34:58Z",
+      "window_end": "2026-09-05T07:54:58Z"
+    },
+    {
+      "run_id": "run-403f1573b841",
+      "scenario_id": "trigger-checkout-latency",
+      "emitted_at": "2026-09-05T07:59:43.560234Z",
+      "window_start": "2026-09-05T07:38:07Z",
+      "window_end": "2026-09-05T07:58:07Z"
     }
   ]
 }
