@@ -127,6 +127,69 @@
       "window_end": "2026-09-04T22:26:16Z"
     },
     {
+      "run_id": "run-bfe1ea3b5226",
+      "scenario_id": "trigger-checkout-latency",
+      "emitted_at": "2026-09-05T01:00:40.213043Z",
+      "window_start": "2026-09-05T00:39:03Z",
+      "window_end": "2026-09-05T00:59:03Z"
+    },
+    {
+      "run_id": "run-7a9a45f32ac2",
+      "scenario_id": "trigger-checkout-latency",
+      "emitted_at": "2026-09-05T01:04:42.252986Z",
+      "window_start": "2026-09-05T00:43:05Z",
+      "window_end": "2026-09-05T01:03:05Z"
+    },
+    {
+      "run_id": "run-3f92cef4675b",
+      "scenario_id": "trigger-checkout-latency",
+      "emitted_at": "2026-09-05T01:09:00.170934Z",
+      "window_start": "2026-09-05T00:47:23Z",
+      "window_end": "2026-09-05T01:07:23Z"
+    },
+    {
+      "run_id": "run-455195ad82b8",
+      "scenario_id": "trigger-checkout-latency",
+      "emitted_at": "2026-09-05T02:51:05.088496Z",
+      "window_start": "2026-09-05T02:29:28Z",
+      "window_end": "2026-09-05T02:49:28Z"
+    },
+    {
+      "run_id": "run-3fbf3a4b4e5a",
+      "scenario_id": "trigger-checkout-latency",
+      "emitted_at": "2026-09-05T02:55:04.685112Z",
+      "window_start": "2026-09-05T02:33:28Z",
+      "window_end": "2026-09-05T02:53:28Z"
+    },
+    {
+      "run_id": "run-06a590d1c229",
+      "scenario_id": "trigger-checkout-latency",
+      "emitted_at": "2026-09-05T02:59:46.517784Z",
+      "window_start": "2026-09-05T02:38:10Z",
+      "window_end": "2026-09-05T02:58:10Z"
+    },
+    {
+      "run_id": "run-5ea10a478030",
+      "scenario_id": "trigger-checkout-latency",
+      "emitted_at": "2026-09-05T04:39:11.120707Z",
+      "window_start": "2026-09-05T04:17:34Z",
+      "window_end": "2026-09-05T04:37:34Z"
+    },
+    {
+      "run_id": "run-8fc75f41eed8",
+      "scenario_id": "trigger-checkout-latency",
+      "emitted_at": "2026-09-05T04:42:57.691179Z",
+      "window_start": "2026-09-05T04:21:21Z",
+      "window_end": "2026-09-05T04:41:21Z"
+    },
+    {
+      "run_id": "run-7f81fef63ea2",
+      "scenario_id": "trigger-checkout-latency",
+      "emitted_at": "2026-09-05T04:46:25.653647Z",
+      "window_start": "2026-09-05T04:24:49Z",
+      "window_end": "2026-09-05T04:44:49Z"
+    },
+    {
       "run_id": "run-160da8a5c092",
       "scenario_id": "trigger-checkout-latency",
       "emitted_at": "2026-09-05T07:53:12.014195Z",
