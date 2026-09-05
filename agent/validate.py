@@ -20,6 +20,12 @@ against the tool log. Nothing in this module trusts a field the model wrote.
   broke down on is a false claim about the run's own coverage, which is worse
   than an empty list.
 
+  Partially checked. Every entry in `partially_checked` names a subject that a
+  query did use, checked the other way round from `not_checked`: its `subject`
+  has to appear among the terms the run queried, the same set. It is the slot
+  for a column that was measured but not read one particular way, which is
+  neither absent from the log nor a candidate that was ruled out.
+
 A citation is a pair, not a string. The hosted MCP returns the same `query_id`
 from `run_query`, from a `run_bubbleup` built on that query, and from
 `get_query_results` reading it back. Matching on the identifier alone therefore
@@ -46,6 +52,7 @@ from agent.report import (
     PRIMARY_EVIDENCE_TOOL,
     Evidence,
     Hypothesis,
+    PartialCheck,
     ReportDraft,
     ToolCall,
 )
@@ -108,7 +115,8 @@ class Issue:
     """One reason a report was rejected."""
 
     code: str
-    """`unsupported`, `partial`, `not_checked_empty`, or `not_checked_false`."""
+    """`unsupported`, `partial`, `not_checked_empty`, `not_checked_false`, or
+    `partially_checked_false`."""
 
     message: str
     """What is wrong, addressed to the model, so it can be handed straight back."""
@@ -320,6 +328,7 @@ def validate_draft(
 
     issues += _check_hypotheses(draft, index, terms, require_negation=require_negation)
     issues += _check_baseline(draft, index)
+    issues += partially_checked_issues(draft.partially_checked, terms)
     if require_not_checked:
         issues += not_checked_issues(draft.not_checked, terms)
     return issues
@@ -580,7 +589,20 @@ def not_checked_issues(not_checked: Sequence[str], terms: set[str]) -> list[Issu
     issues: list[Issue] = []
     for entry in not_checked:
         named = sorted({token for token in _candidates(entry) if token.lower() in lowered})
-        if named:
+        if not named:
+            continue
+        if _has_qualifier(entry, named):
+            issues.append(
+                Issue(
+                    "not_checked_false",
+                    f"not_checked entry {entry!r} names {named}, which your own queries "
+                    "used. The rest of the entry describes a reading of it that was not "
+                    "run, and that is not what not_checked is for. Move it to "
+                    f"partially_checked, with {named} as the subject, what you ran on it "
+                    "in queried_as, and what you did not in not_run.",
+                )
+            )
+        else:
             issues.append(
                 Issue(
                     "not_checked_false",
@@ -589,6 +611,45 @@ def not_checked_issues(not_checked: Sequence[str], terms: set[str]) -> list[Issu
                 )
             )
     return issues
+
+
+_TRIVIAL_REMAINDER = re.compile(r"^[\s\-:,;.'\"`]*$")
+
+
+def _has_qualifier(entry: str, named: Sequence[str]) -> bool:
+    """True when `entry` says more than the bare names in `named`.
+
+    Every name is stripped out of the entry, case-insensitively, along with
+    any quoting around it. What is left is checked against nothing but
+    whitespace and light punctuation; any word beyond that is a qualifier,
+    the reading the entry describes that a bare name would not carry.
+    """
+    remainder = entry
+    for name in named:
+        remainder = re.sub(re.escape(name), "", remainder, flags=re.IGNORECASE)
+    return _TRIVIAL_REMAINDER.match(remainder) is None
+
+
+def partially_checked_issues(entries: Sequence[PartialCheck], terms: set[str]) -> list[Issue]:
+    """Why the partially-checked list is not truthful. Empty means it is.
+
+    The only thing checked is `subject`: it has to be one of the terms this
+    run's queries actually named, the same set `not_checked` is checked
+    against, compared case-insensitively. `queried_as` and `not_run` are the
+    model's own account of what it ran and what it did not, and there is no
+    log entry to check either sentence against, so neither is.
+    """
+    lowered = {term.lower() for term in terms}
+    return [
+        Issue(
+            "partially_checked_false",
+            f"partially_checked entry names {entry.subject!r}, and no query in this "
+            "session used that column, span, service, or window. It was never "
+            "queried, so it belongs in not_checked instead.",
+        )
+        for entry in entries
+        if entry.subject.lower() not in lowered
+    ]
 
 
 def _candidates(entry: str) -> set[str]:
@@ -614,8 +675,13 @@ def _candidates(entry: str) -> set[str]:
     return found
 
 
-def rejection_message(issues: Sequence[Issue]) -> str:
-    """The text handed back to the model after a rejected report."""
+def rejection_message(issues: Sequence[Issue], terms: Iterable[str]) -> str:
+    """The text handed back to the model after a rejected report.
+
+    `terms` is the same set `not_checked` and `partially_checked` are checked
+    against, so the model can fix either list by reading the line at the end
+    rather than by recalling what it queried.
+    """
     lines = [
         "The report was rejected. Every claim in it is checked against the log of the tool "
         "calls you made in this session, and these did not hold up:",
@@ -626,5 +692,11 @@ def rejection_message(issues: Sequence[Issue]) -> str:
         "",
         "Fix the report and call submit_report again. Run whatever queries you still need "
         "first, within the remaining budget.",
+        "",
     ]
+    sorted_terms = sorted(terms)
+    if sorted_terms:
+        lines.append(f"Columns and values your queries used: {', '.join(sorted_terms)}")
+    else:
+        lines.append("Columns and values your queries used: none yet.")
     return "\n".join(lines)

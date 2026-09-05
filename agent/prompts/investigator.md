@@ -176,6 +176,10 @@ The list is checked against your tool calls. An entry may not name any column or
 appears in the arguments of a query you ran. If you broke down by a column, that column has been
 checked and does not belong on this list. Write what you left alone, not what you covered.
 
+An entry here is a bare name: the column, span, service, or window, nothing about how it might
+have been read. A column you broke down on is not on this list whatever you did not do with it;
+that goes in `partially_checked`.
+
 An empty list is not an answer. There is always something you did not look at.
 
 <!-- end -->
@@ -220,3 +224,11 @@ If you looked at something that turned out not to be the incident, put it in
 `rejected_candidates` with the reason and the query that ruled it out. That is the place for a
 number you measured and decided against, which is not the same as `not_checked`: one is what you
 examined and rejected, the other is what you never examined at all.
+
+The three lists are different things. `not_checked` is what you never queried at all.
+`partially_checked` is what you queried and did not read one particular way: the column or value
+as `subject`, exactly as the query named it, what you ran on it in `queried_as`, and the reading
+you did not run in `not_run`.
+`rejected_candidates` is what you measured and ruled out. The "Queried so far" line under every
+query result is the set `not_checked` and `partially_checked` are both checked against, so write
+them from that line rather than from memory.

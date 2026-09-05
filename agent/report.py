@@ -200,6 +200,33 @@ class RejectedCandidate(BaseModel):
         return _coerce_json_container(value, list, info)
 
 
+class PartialCheck(BaseModel):
+    """Something you queried, and one reading of it you did not run.
+
+    `not_checked` and `rejected_candidates` do not have a slot for this. A
+    column you broke down on was queried, so an entry naming it on
+    `not_checked` is false and the validator rejects it; but "I broke down on
+    `cart.size` and did not look at individual values below 8" is a true
+    statement, not a rejected candidate either, since nothing was measured and
+    ruled out. This is that slot: the column, what was run on it, and what
+    was not.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    subject: str = Field(
+        description=(
+            "The column, span, service, or value exactly as it appears in the "
+            "arguments of a query you ran, for example cart.size, payments.charge, or "
+            "us-west-2. It has to be something the run queried; a subject you never "
+            "queried belongs in not_checked instead. A time window is not a subject "
+            "here: a window you did not query goes in not_checked."
+        )
+    )
+    queried_as: str = Field(description="The measurement that was run on it, one sentence.")
+    not_run: str = Field(description="The reading of it that was not run, one sentence.")
+
+
 class ReportDraft(BaseModel):
     """What the model submits. The process fields are not its to write."""
 
@@ -242,9 +269,22 @@ class ReportDraft(BaseModel):
             "everything you did not check, which is what not_checked is for."
         ),
     )
+    partially_checked: list[PartialCheck] = Field(
+        default_factory=list,
+        description=(
+            "Something you queried and did not read a particular way: the column, what "
+            "you ran on it, and what you did not. A subject that was never queried at "
+            "all belongs in not_checked, not here."
+        ),
+    )
 
     @field_validator(
-        "hypotheses", "not_checked", "baseline_evidence", "rejected_candidates", mode="before"
+        "hypotheses",
+        "not_checked",
+        "baseline_evidence",
+        "rejected_candidates",
+        "partially_checked",
+        mode="before",
     )
     @classmethod
     def _coerce_lists(cls, value: Any, info: ValidationInfo) -> Any:
@@ -331,6 +371,7 @@ class Report(BaseModel):
     not_checked: list[str] = Field(default_factory=list)
     baseline_evidence: list[Evidence] = Field(default_factory=list)
     rejected_candidates: list[RejectedCandidate] = Field(default_factory=list)
+    partially_checked: list[PartialCheck] = Field(default_factory=list)
 
     tool_calls: int = 0
     model_turns: int = 0

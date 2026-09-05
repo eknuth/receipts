@@ -501,9 +501,19 @@ class _RunState:
                 coerced=list(result.coerced),
                 hinted=result.hinted,
             )
-            return ToolResultBlock(
-                tool_use_id=use.id, content=result.text, is_error=result.is_error
-            )
+            content = result.text
+            if not result.is_error and use.name in validate.QUERY_TOOLS:
+                # The model writes not_checked and partially_checked from what it
+                # remembers querying, and memory drifts from the log the validator
+                # checks them against. This puts the exact set in front of the model
+                # right after every call that could grow it, on the loop's own copy
+                # of the formatted result, so the report is written from this line
+                # rather than from recall. Not stored in the tool log: the log
+                # records what was asked and returned, not this text.
+                terms = validate.queried_terms(self.tool_log, run_id=self.run.run_id)
+                listing = ", ".join(sorted(terms)) if terms else "(nothing yet)"
+                content = f"{content}\n\nQueried so far: {listing}"
+            return ToolResultBlock(tool_use_id=use.id, content=content, is_error=result.is_error)
 
     def _log(
         self,
@@ -581,7 +591,8 @@ class _RunState:
 
             self.rejections += 1
             self.issues = issues
-            self.last_rejection = validate.rejection_message(issues)
+            terms = validate.queried_terms(self.tool_log, run_id=self.run.run_id)
+            self.last_rejection = validate.rejection_message(issues, terms)
             span.record_validation_rejection(self.last_rejection)
             if self.rejections > 1:
                 # Kept and flagged rather than discarded. The grader punishes it.
