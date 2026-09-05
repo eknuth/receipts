@@ -42,6 +42,16 @@ REPORT_PATH = Path(__file__).resolve().parent / "report.md"
 # hypothesis (`WRONG_BELOW` on the dims component).
 OUTCOME_FAIL_BELOW = 0.5
 
+# The grader's own weight (`evals/grader.py` WEIGHTS) for the rule each
+# ablation config removes: `no-negation` costs the receipts component and
+# `no-notchecked` costs the not_checked component. A config not listed here
+# maps to 0.0, so the "inside the rule's own weight" sentence in the
+# ablation section never fires for it.
+ABLATION_WEIGHTS: dict[str, float] = {
+    "no-negation": 0.15,
+    "no-notchecked": 0.10,
+}
+
 
 def num(value: float, places: int) -> str:
     """The one rounding function. Thousands separated, fixed decimals.
@@ -52,6 +62,12 @@ def num(value: float, places: int) -> str:
     """
     value = round(value, places) or 0.0
     return f"{value:,.{places}f}"
+
+
+def _signed(value: float, places: int) -> str:
+    """A delta, always carrying its sign: `+0.000`, `-0.039`."""
+    rounded = round(value, places) or 0.0
+    return f"{rounded:+,.{places}f}"
 
 
 def read_results(results_dir: Path = RESULTS_DIR) -> tuple[list[GradedRun], list[str]]:
@@ -132,6 +148,8 @@ def render(runs: Sequence[GradedRun], unreadable: Sequence[str] = ()) -> str:
         lines.append(_row(cells))
     lines.append("")
 
+    lines += _ablation_section(runs, configs)
+
     lines += [
         "## Process by config",
         "",
@@ -148,7 +166,9 @@ def render(runs: Sequence[GradedRun], unreadable: Sequence[str] = ()) -> str:
         "kinds of fix, across every attempt and every tool call in the config: submit_report "
         "fields decoded from a JSON-encoded string or unwrapped from a stray wrapper key "
         "around the whole report, and BubbleUp group values the MCP client retyped from the "
-        "column schema rather than sending on as the model wrote them; blank when none were.",
+        "column schema rather than sending on as the model wrote them; blank when none were. "
+        "`total cost USD` sums the same cost column instead of averaging it, and the line "
+        "under the table sums that column again across every config.",
         "",
     ]
     header = [
@@ -159,18 +179,22 @@ def render(runs: Sequence[GradedRun], unreadable: Sequence[str] = ()) -> str:
         "mean tokens in",
         "mean tokens out",
         "mean cost USD",
+        "total cost USD",
         "mean wall s",
         "coerced",
         f"passes theirs, fails ours (total < {num(OUTCOME_FAIL_BELOW, 2)})",
     ]
     lines.append(_row(header))
     lines.append(_row(["---"] * len(header)))
+    total_spend = 0.0
     for config in configs:
         cell = [item for item in runs if item.config == config]
         contrast = sum(
             1 for item in cell if item.honeycomb_process_passed and item.total < OUTCOME_FAIL_BELOW
         )
         coerced = sum(len(item.coerced_fields) for item in cell)
+        config_spend = sum(item.cost_usd for item in cell)
+        total_spend += config_spend
         lines.append(
             _row(
                 [
@@ -181,12 +205,17 @@ def render(runs: Sequence[GradedRun], unreadable: Sequence[str] = ()) -> str:
                     _mean(cell, lambda item: item.tokens_in, 0),
                     _mean(cell, lambda item: item.tokens_out, 0),
                     _mean(cell, lambda item: item.cost_usd, 2),
+                    num(config_spend, 2),
                     _mean(cell, lambda item: item.wall_s, 0),
                     str(coerced) if coerced else "",
                     f"{contrast} of {len(cell)}",
                 ]
             )
         )
+    lines.append("")
+    lines.append(
+        f"Total Anthropic spend across every run in this results directory: ${num(total_spend, 2)}."
+    )
     lines.append("")
 
     lines += [
@@ -283,6 +312,154 @@ def _score_cells(cell: Sequence[GradedRun]) -> list[str]:
 
 def _mean(cell: Sequence[GradedRun], pick: Callable[[GradedRun], float], places: int) -> str:
     return num(fmean(pick(item) for item in cell), places) if cell else ""
+
+
+def _ablation_sentence(
+    config: str, delta_total: float, delta_outcome: float, fewer: int, scenarios: int
+) -> str:
+    """One generated sentence about what an ablation config changed.
+
+    The total delta is compared with the grader's own weight for the rule
+    the config removes (`ABLATION_WEIGHTS`): that weight is the part of the
+    score that pays for checkability, so a total delta inside it can be the
+    rule's weight alone. Whether the answers changed is read from the outcome
+    delta and the scenario count, which the sentence states rather than
+    infers. An unknown config carries a weight of 0.0, so a negative delta is
+    never read as inside its weight.
+    """
+    if config == "no-negation":
+        subject = "Removing the negation rule"
+    elif config == "no-notchecked":
+        subject = "Removing the not-checked rule"
+    else:
+        subject = f"Config {config}"
+    weight = ABLATION_WEIGHTS.get(config, 0.0)
+    head = (
+        f"{subject} changed mean total by {_signed(delta_total, 3)} and mean outcome by "
+        f"{_signed(delta_outcome, 3)}; {fewer} of {scenarios} scenarios have fewer right top "
+        "hypotheses than `full`."
+    )
+    if delta_total >= 0:
+        tail = "It does not reduce the score."
+    elif abs(delta_total) <= weight:
+        tail = (
+            f"The total delta is inside the rule's own weight of {num(weight, 2)}, the part of "
+            "the score that pays for checkability; the outcome delta is what the answers lost."
+        )
+    else:
+        tail = (
+            f"The total delta is more than the rule's own weight of {num(weight, 2)}, so the "
+            "loss is not checkability alone; read the scenario table for which answers changed."
+        )
+    return f"{head} {tail}"
+
+
+def _ablation_section(runs: Sequence[GradedRun], configs: Sequence[str]) -> list[str]:
+    """The `## Ablation delta` section, or nothing when there is no ablation to show.
+
+    `configs` is already sorted `full` first (`config_order`). The section
+    is rendered only when `full` is among the configs and at least one other
+    config is too; an empty results directory and a single-config directory
+    both render as they did before this section existed.
+    """
+    if "full" not in configs or len(configs) < 2:
+        return []
+
+    scenarios = sorted({item.scenario_id for item in runs})
+
+    def cell(config: str) -> list[GradedRun]:
+        return [item for item in runs if item.config == config]
+
+    def top_right_by_scenario(config: str) -> dict[str, int]:
+        return {
+            scenario: sum(
+                1
+                for item in runs
+                if item.config == config and item.scenario_id == scenario and item.top_right
+            )
+            for scenario in scenarios
+        }
+
+    full_cell = cell("full")
+    full_mean_total = fmean(item.total for item in full_cell)
+    full_mean_outcome = fmean(item.outcome_score for item in full_cell)
+    full_top_right = top_right_by_scenario("full")
+
+    lines = [
+        "## Ablation delta",
+        "",
+        "An ablation config removes one rule and nothing else. This table reads the "
+        "outcome question directly: how far a config's mean total and mean outcome sit "
+        "from `full`, and how many scenarios lost a right top hypothesis compared with "
+        "`full`. The `full` row has no delta, because it is what the others are measured "
+        "against.",
+        "",
+    ]
+    header = [
+        "config",
+        "mean total",
+        "delta total",
+        "mean outcome",
+        "delta outcome",
+        "top right",
+        "scenarios with fewer top right than full",
+    ]
+    lines.append(_row(header))
+    lines.append(_row(["---"] * len(header)))
+
+    for config in configs:
+        group = cell(config)
+        is_full = config == "full"
+        mean_total = fmean(item.total for item in group)
+        mean_outcome = fmean(item.outcome_score for item in group)
+        top_right_count = sum(1 for item in group if item.top_right)
+        if is_full:
+            delta_total = delta_outcome = fewer = ""
+        else:
+            delta_total = _signed(mean_total - full_mean_total, 3)
+            delta_outcome = _signed(mean_outcome - full_mean_outcome, 3)
+            config_top_right = top_right_by_scenario(config)
+            fewer_count = sum(
+                1 for scenario in scenarios if config_top_right[scenario] < full_top_right[scenario]
+            )
+            fewer = f"{fewer_count} of {len(scenarios)}"
+        lines.append(
+            _row(
+                [
+                    config,
+                    num(mean_total, 3),
+                    delta_total,
+                    num(mean_outcome, 3),
+                    delta_outcome,
+                    f"{top_right_count} of {len(group)}",
+                    fewer,
+                ]
+            )
+        )
+    lines.append("")
+
+    for config in configs:
+        if config == "full":
+            continue
+        group = cell(config)
+        mean_total = fmean(item.total for item in group)
+        mean_outcome = fmean(item.outcome_score for item in group)
+        config_top_right = top_right_by_scenario(config)
+        fewer_count = sum(
+            1 for scenario in scenarios if config_top_right[scenario] < full_top_right[scenario]
+        )
+        lines.append(
+            _ablation_sentence(
+                config,
+                mean_total - full_mean_total,
+                mean_outcome - full_mean_outcome,
+                fewer_count,
+                len(scenarios),
+            )
+        )
+        lines.append("")
+
+    return lines
 
 
 def _row(cells: Sequence[str]) -> str:

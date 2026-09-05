@@ -1,6 +1,7 @@
 """Run the eval matrix: scenarios x configs x repeats, one report and one grade per run.
 
     uv run python -m evals.run --scenarios all --configs full,no-negation --repeats 3
+    uv run python -m evals.run --scenarios all --configs full,no-negation --repeats 5 --resume
     uv run python -m evals.run --scenarios payments-stripe-v251-uswest,control-quiet --emit
     uv run python -m evals.run --regrade
 
@@ -23,6 +24,15 @@ config does not. `<n>` is the next free repeat number, so running the matrix
 twice appends repeats rather than replacing them, the same choice
 `Report.write` makes with `report-2.json`. Delete a scenario's directory to
 start it over.
+
+`--resume` fills a matrix's repeats 1 through N and skips any cell that
+already holds a `grade.json`, printing one line per skipped cell. A cell
+with a `report.json` but no `grade.json` was paid for and never graded, so
+it is graded from the stored report rather than run again. Without
+`--resume`, `--repeats 3` run twice over the same cells appends five
+repeats, not three, because each invocation starts counting from the next
+free repeat number; `--resume` is what makes a second `--repeats 3`
+invocation top a cell up to three rather than appending three more.
 
 `evals/results/runs.json` is an index over the manifests in `gen/runs/`, not
 a copy of them. The manifest stays the source of truth for the window, the
@@ -398,6 +408,24 @@ def write_run(directory: Path, graded: GradedRun, report: Report | None) -> Path
     return path
 
 
+def grade_stored(
+    directory: Path, config: str, repeat: int, *, runs_dir: Path = RUNS_DIR
+) -> GradedRun:
+    """Grade a cell that holds a `report.json` and no `grade.json`, and write the grade.
+
+    The report is the paid part of a cell and the grade is a pure function of
+    it, so a cell the process left between the two writes is finished by
+    grading what is there, not by running the investigation again over the
+    stored report. Runner-side `notes` are empty: they were never written.
+    """
+    report_path = directory / "report.json"
+    report = load_report(report_path)
+    result = grade_file(report_path, runs_dir=runs_dir)
+    graded = graded_run(report, result, config=config, repeat=repeat)
+    write_run(directory, graded, None)
+    return graded
+
+
 def load_run(path: Path) -> GradedRun:
     return GradedRun.model_validate(json.loads(path.read_text()))
 
@@ -654,6 +682,7 @@ async def run_matrix(
     clock: Callable[[], float] = time.monotonic,
     console: Console | None = None,
     telemetry: Telemetry | None = None,
+    resume: bool = False,
 ) -> list[GradedRun]:
     """Run every cell in order and return the graded runs, one per cell.
 
@@ -666,6 +695,17 @@ async def run_matrix(
     token bucket. With none given, a disabled `Telemetry()` is used and the
     matrix emits nothing; the CLI in this module builds a real one from
     `settings` before calling this.
+
+    `resume` changes only which repeat numbers run. Without it, each of the
+    `repeats` iterations calls `next_repeat` and appends after whatever is
+    already on disk, so a second invocation over a cell that already has
+    repeats 1 and 2 produces 3, 4, 5. With `resume`, repeats 1 through
+    `repeats` are visited in order and a repeat whose directory already
+    holds a `grade.json` is skipped, one line per skipped cell, through
+    `console`; a repeat with a `report.json` but no `grade.json` was paid
+    for and never graded, so it is graded from the stored report and not
+    run again. Skipped cells are not re-run, not re-graded, and not in the
+    returned list, since the report reads them from disk anyway.
     """
     index_path = index_path or results_dir / "runs.json"
     console = console or Console()
@@ -710,6 +750,41 @@ async def run_matrix(
         TimeElapsedColumn(),
         console=console,
     )
+
+    async def run_cell(
+        scenario_id: str,
+        config_name: str,
+        repeat: int,
+        run: ScenarioRun,
+        scenario: Scenario,
+        window_start: datetime,
+    ) -> None:
+        task = progress.add_task(
+            f"{scenario_id} {config_name} repeat {repeat}", calls=0, total=None
+        )
+
+        def on_call(count: int, task_id: Any = task) -> None:
+            progress.update(task_id, calls=count)
+
+        graded = await run_one(
+            config_name=config_name,
+            config=configs[config_name],
+            run=run,
+            scenario=scenario,
+            window_start=window_start,
+            repeat=repeat,
+            settings=settings,
+            results_dir=results_dir,
+            open_mcp=open_mcp,
+            provider_factory=provider_factory,
+            clock=clock,
+            on_call=on_call,
+            telemetry=telemetry,
+        )
+        progress.remove_task(task)
+        results.append(graded)
+        progress.console.print(_summary_line(graded))
+
     try:
         with progress:
             for scenario_id in scenario_ids:
@@ -717,33 +792,41 @@ async def run_matrix(
                 run = ScenarioRun.from_manifest(manifest)
                 window_start = datetime.fromtimestamp(manifest.window_start_s, tz=UTC)
                 for config_name in config_names:
-                    for _ in range(repeats):
-                        repeat = next_repeat(results_dir, config_name, scenario_id)
-                        task = progress.add_task(
-                            f"{scenario_id} {config_name} repeat {repeat}", calls=0, total=None
-                        )
-
-                        def on_call(count: int, task_id: Any = task) -> None:
-                            progress.update(task_id, calls=count)
-
-                        graded = await run_one(
-                            config_name=config_name,
-                            config=configs[config_name],
-                            run=run,
-                            scenario=scenarios[scenario_id],
-                            window_start=window_start,
-                            repeat=repeat,
-                            settings=settings,
-                            results_dir=results_dir,
-                            open_mcp=open_mcp,
-                            provider_factory=provider_factory,
-                            clock=clock,
-                            on_call=on_call,
-                            telemetry=telemetry,
-                        )
-                        progress.remove_task(task)
-                        results.append(graded)
-                        progress.console.print(_summary_line(graded))
+                    if resume:
+                        for repeat in range(1, repeats + 1):
+                            cell = run_dir(results_dir, config_name, scenario_id, repeat)
+                            if (cell / "grade.json").exists():
+                                progress.console.print(
+                                    f"{scenario_id} {config_name} {repeat}: done, skipped"
+                                )
+                                continue
+                            if (cell / "report.json").exists():
+                                graded = grade_stored(cell, config_name, repeat, runs_dir=runs_dir)
+                                results.append(graded)
+                                progress.console.print(
+                                    f"{scenario_id} {config_name} {repeat}: graded from the "
+                                    "stored report"
+                                )
+                                continue
+                            await run_cell(
+                                scenario_id,
+                                config_name,
+                                repeat,
+                                run,
+                                scenarios[scenario_id],
+                                window_start,
+                            )
+                    else:
+                        for _ in range(repeats):
+                            repeat = next_repeat(results_dir, config_name, scenario_id)
+                            await run_cell(
+                                scenario_id,
+                                config_name,
+                                repeat,
+                                run,
+                                scenarios[scenario_id],
+                                window_start,
+                            )
     finally:
         # However the loop above ends, including an exception this function
         # does not otherwise handle, pending spans still get exported and
@@ -790,6 +873,15 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=f"comma-separated list from: {list(CONFIGS)} (default: full)",
     )
     parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "fill repeats 1..N and skip any cell that already has a grade.json, "
+            "printing one line per skipped cell; without it, a second invocation "
+            "appends new repeats after whatever is already on disk"
+        ),
+    )
     parser.add_argument("--provider", choices=PROVIDERS, default="anthropic")
     parser.add_argument("--model", default=None, help="overrides ANTHROPIC_MODEL")
     parser.add_argument(
@@ -883,6 +975,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 max_wall_s=args.max_wall_s,
                 console=console,
                 telemetry=telemetry,
+                resume=args.resume,
             )
         )
     except (FileNotFoundError, ValueError) as exc:

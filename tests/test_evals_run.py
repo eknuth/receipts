@@ -307,6 +307,121 @@ async def test_one_run_id_serves_every_config_and_repeat(
     assert all(config.require_not_checked for config in make.calls)
 
 
+async def test_resume_fills_the_missing_repeat_and_skips_the_rest(
+    settings: Settings, results_dir: Path, runs_dir: Path
+) -> None:
+    from io import StringIO
+
+    from rich.console import Console
+
+    await run(
+        [PAYMENTS],
+        ["full"],
+        2,
+        settings=settings,
+        results_dir=results_dir,
+        runs_dir=runs_dir,
+        provider_factory=factory([lambda: FakeProvider(good_script())] * 2),
+    )
+    assert sorted(p.name for p in (results_dir / "full" / PAYMENTS).iterdir()) == ["1", "2"]
+
+    buffer = StringIO()
+    console = Console(file=buffer, force_terminal=False)
+    results = await run_matrix(
+        [PAYMENTS],
+        ["full"],
+        3,
+        settings=settings,
+        results_dir=results_dir,
+        runs_dir=runs_dir,
+        open_mcp=lambda settings: FakeSession(),
+        provider_factory=factory([lambda: FakeProvider(good_script())]),
+        console=console,
+        resume=True,
+    )
+    assert [item.repeat for item in results] == [3]
+    output = buffer.getvalue()
+    assert "payments-stripe-v251-uswest full 1: done, skipped" in output
+    assert "payments-stripe-v251-uswest full 2: done, skipped" in output
+    assert sorted(p.name for p in (results_dir / "full" / PAYMENTS).iterdir()) == ["1", "2", "3"]
+
+
+async def test_without_resume_a_second_invocation_appends_rather_than_fills(
+    settings: Settings, results_dir: Path, runs_dir: Path
+) -> None:
+    await run(
+        [PAYMENTS],
+        ["full"],
+        2,
+        settings=settings,
+        results_dir=results_dir,
+        runs_dir=runs_dir,
+        provider_factory=factory([lambda: FakeProvider(good_script())] * 2),
+    )
+    results = await run(
+        [PAYMENTS],
+        ["full"],
+        3,
+        settings=settings,
+        results_dir=results_dir,
+        runs_dir=runs_dir,
+        provider_factory=factory([lambda: FakeProvider(good_script())] * 3),
+    )
+    assert [item.repeat for item in results] == [3, 4, 5]
+    assert sorted(p.name for p in (results_dir / "full" / PAYMENTS).iterdir()) == [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+    ]
+
+
+async def test_resume_grades_a_stored_report_instead_of_running_it_again(
+    settings: Settings, results_dir: Path, runs_dir: Path
+) -> None:
+    """A cell with a report and no grade was paid for. Resume grades what is there."""
+    from io import StringIO
+
+    from rich.console import Console
+
+    first = await run(
+        [PAYMENTS],
+        ["full"],
+        1,
+        settings=settings,
+        results_dir=results_dir,
+        runs_dir=runs_dir,
+        provider_factory=factory([lambda: FakeProvider(good_script())]),
+    )
+    directory = run_dir(results_dir, "full", PAYMENTS, 1)
+    (directory / "grade.json").unlink()
+    stored = (directory / "report.json").read_text()
+
+    def no_provider() -> Any:
+        raise AssertionError("resume must not run the investigation again")
+
+    buffer = StringIO()
+    console = Console(file=buffer, force_terminal=False)
+    results = await run_matrix(
+        [PAYMENTS],
+        ["full"],
+        1,
+        settings=settings,
+        results_dir=results_dir,
+        runs_dir=runs_dir,
+        open_mcp=lambda settings: FakeSession(),
+        provider_factory=factory([no_provider]),
+        console=console,
+        resume=True,
+    )
+    assert [item.repeat for item in results] == [1]
+    assert results[0].total == first[0].total
+    assert (directory / "grade.json").exists()
+    assert (directory / "report.json").read_text() == stored
+    assert "payments-stripe-v251-uswest full 1: graded from the stored report" in buffer.getvalue()
+
+
 def test_configs_map_to_agent_config_knobs_only() -> None:
     assert set(CONFIGS) == {"full", "no-negation", "no-notchecked"}
     assert agent_config("full") == AgentConfig()

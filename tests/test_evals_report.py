@@ -36,6 +36,40 @@ RUNS_DIR = FIXTURES / "runs"
 PINNED = FIXTURES / "report.md"
 
 
+def _run(
+    config: str, scenario_id: str, total: float, outcome_score: float, repeat: int = 1
+) -> GradedRun:
+    """A minimal `GradedRun` for exercising the renderer directly, with no report or grade
+    behind it. `render` only reads the flat fields, so a run built this way is enough to
+    drive the ablation delta section without going through the grader or the disk layout."""
+    return GradedRun(
+        config=config,
+        scenario_id=scenario_id,
+        run_id=f"run-{config}-{repeat}",
+        repeat=repeat,
+        provider="fake",
+        model="m",
+        total=total,
+        outcome_score=outcome_score,
+        receipts_score=0.0,
+        dims=0.0,
+        top_wrong=True,
+        top_confidence=None,
+        stop_reason="report",
+        error=None,
+        validation_failed=False,
+        permalink=None,
+        tool_calls=1,
+        tokens_in=1,
+        tokens_out=1,
+        cost_usd=0.1,
+        wall_s=1.0,
+        honeycomb_process_score=None,
+        honeycomb_process_passed=None,
+        grade=None,
+    )
+
+
 def _repeat_of(path: Path) -> int:
     match = re.fullmatch(r"report(?:-(\d+))?\.json", path.name)
     assert match is not None, path
@@ -191,7 +225,10 @@ def test_a_crash_is_a_zero_row_with_its_error_and_no_link(tmp_path: Path) -> Non
     )
     assert "crash: RuntimeError: killed \\| mid-run" in row
     assert row.endswith("| 7 | 0.00 | 12 |  |  |")
-    process = next(line for line in text.splitlines() if line.startswith("| no-negation |"))
+    process_section = text.split("## Process by config", 1)[1]
+    process = next(
+        line for line in process_section.splitlines() if line.startswith("| no-negation |")
+    )
     assert process.startswith("| no-negation | 1 | 1 | 7.0 |")
     assert process.endswith("| 0 of 1 |")
 
@@ -255,6 +292,100 @@ def test_the_cli_writes_the_report(live_results: Path, tmp_path: Path, capsys: o
     out = tmp_path / "report.md"
     assert main(["--results-dir", str(live_results), "--out", str(out)]) == 0
     assert out.read_bytes() == PINNED.read_bytes()
+
+
+# --------------------------------------------------------------------------
+# Ablation delta
+# --------------------------------------------------------------------------
+
+
+def test_ablation_section_appears_with_full_and_an_ablation_and_is_absent_with_full_alone() -> None:
+    full_only = [_run("full", "payments-stripe-v251-uswest", 0.5, 0.4)]
+    assert "## Ablation delta" not in render(full_only)
+
+    with_ablation = full_only + [_run("no-negation", "payments-stripe-v251-uswest", 0.4, 0.4)]
+    assert "## Ablation delta" in render(with_ablation)
+
+
+def test_an_empty_results_directory_and_a_single_config_directory_carry_no_ablation_section(
+    live_results: Path,
+) -> None:
+    assert "## Ablation delta" not in render(load_results(live_results))
+    assert "## Ablation delta" not in render([])
+
+
+def test_ablation_delta_uses_signed_three_decimal_formatting() -> None:
+    runs = [_run("full", "s1", 0.500, 0.500), _run("no-negation", "s1", 0.461, 0.500)]
+    text = render(runs)
+    section = text.split("## Ablation delta", 1)[1].split("## Process by config", 1)[0]
+    full_row = next(line for line in section.splitlines() if line.startswith("| full |"))
+    ablation_row = next(line for line in section.splitlines() if line.startswith("| no-negation |"))
+    assert full_row == "| full | 0.500 |  | 0.500 |  | 0 of 1 |  |"
+    cells = [cell.strip() for cell in ablation_row.strip("|").split("|")]
+    assert cells[1] == "0.461"  # mean total
+    assert cells[2] == "-0.039"  # delta total, against full's 0.500
+    assert cells[3] == "0.500"  # mean outcome
+    assert cells[4] == "+0.000"  # delta outcome: both score 0.500
+
+
+def test_ablation_sentence_inside_the_weight_reads_as_lost_checkability_not_correctness() -> None:
+    runs = [_run("full", "s1", 0.60, 0.50), _run("no-negation", "s1", 0.50, 0.50)]
+    text = render(runs)
+    assert (
+        "Removing the negation rule changed mean total by -0.100 and mean outcome by "
+        "+0.000; 0 of 1 scenarios have fewer right top hypotheses than `full`. The total "
+        "delta is inside the rule's own weight of 0.15, the part of the score that pays "
+        "for checkability; the outcome delta is what the answers lost."
+    ) in text
+
+
+def test_ablation_sentence_for_a_non_negative_delta_says_it_does_not_reduce_the_score() -> None:
+    runs = [_run("full", "s1", 0.50, 0.50), _run("no-notchecked", "s1", 0.55, 0.50)]
+    text = render(runs)
+    assert (
+        "Removing the not-checked rule changed mean total by +0.050 and mean outcome by "
+        "+0.000; 0 of 1 scenarios have fewer right top hypotheses than `full`. It does "
+        "not reduce the score."
+    ) in text
+
+
+def test_ablation_sentence_beyond_the_weight_points_at_the_scenario_table() -> None:
+    runs = [_run("full", "s1", 0.60, 0.50), _run("no-negation", "s1", 0.40, 0.50)]
+    text = render(runs)
+    assert (
+        "Removing the negation rule changed mean total by -0.200 and mean outcome by "
+        "+0.000; 0 of 1 scenarios have fewer right top hypotheses than `full`. The total "
+        "delta is more than the rule's own weight of 0.15, so the loss is not "
+        "checkability alone; read the scenario table for which answers changed."
+    ) in text
+
+
+def test_unknown_ablation_config_is_generic_and_never_reads_as_inside_the_weight() -> None:
+    """An unknown config carries weight 0.0, so a negative delta can never be `<= 0.0`
+    and the "inside the weight" branch is unreachable for it."""
+    runs = [_run("full", "s1", 0.60, 0.50), _run("mystery", "s1", 0.59, 0.50)]
+    text = render(runs)
+    assert (
+        "Config mystery changed mean total by -0.010 and mean outcome by +0.000; 0 of 1 "
+        "scenarios have fewer right top hypotheses than `full`. The total delta is more "
+        "than the rule's own weight of 0.00, so the loss is not checkability alone; read "
+        "the scenario table for which answers changed."
+    ) in text
+
+
+# --------------------------------------------------------------------------
+# Total spend
+# --------------------------------------------------------------------------
+
+
+def test_the_total_spend_line_equals_the_sum_of_the_cost_column(live_results: Path) -> None:
+    runs = load_results(live_results)
+    text = render(runs)
+    total = sum(item.cost_usd for item in runs)
+    assert (
+        f"Total Anthropic spend across every run in this results directory: ${num(total, 2)}."
+        in text
+    )
 
 
 def regenerate(path: Path = PINNED) -> Path:
