@@ -265,7 +265,7 @@ def test_the_prompt_adds_a_population_selection_step() -> None:
     ):
         prompt = render_prompt(RUN, config)
         assert "**Select the population.**" in prompt
-        assert "narrows the population" in prompt
+        assert "nothing that does not narrow them" in prompt
         assert prompt.index("**Select the population.**") < prompt.index("**Traces.**")
 
 
