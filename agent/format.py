@@ -12,6 +12,27 @@ Anything else, or anything that does not parse as expected, falls back to
 the raw text (or pretty JSON, if the server ever does return structured
 content) truncated to 4 KB.
 
+When a `run_query` call asked for a `granularity`, the server's only series
+data is a `# Time Series` heading holding one fenced ASCII dot chart per
+calculation (and per calculation and group, for a breakdown query): a
+header line naming the calculation and its `[min - max]` range, 12 plot
+rows of 120 columns each, an axis line, and a label line naming the first
+and last bucket. The chart's x axis spans exactly those two buckets over
+`_CHART_WIDTH` columns, one bucket per data point interpolated to the
+next; it does not span the query's `from`..`to` (the server can start its
+first bucket later than `from`, when data does, and can silently pick a
+different granularity than the one asked for; the Metadata block's
+`granularity` is the one that matches the chart). `_build_series_table`
+reads the label line and the Metadata granularity to find each bucket's
+column, samples a small neighborhood of columns around it, and appends the
+result, plus a one-line note of the chart's per-row resolution (and of a
+granularity substitution, when the server made one), after the Results
+table. Without a `granularity` in the query spec, that chart is still
+stripped by `_format_json`'s fallback path as before, so the model never
+sees it; a parse failure in `_build_series_table` is the one path where
+the raw chart blocks do reach the model, verbatim and size-capped,
+alongside a logged warning, rather than silently dropping the series.
+
 `format_tool_result` is the single entry point `agent/mcp_client.py` calls
 after a `tools/call` response is parsed. `extract_ids` is called
 separately, on the raw text, to pull `query_id` and `permalink` out of the
@@ -21,7 +42,11 @@ Metadata block for the `ToolResult` the caller sees.
 from __future__ import annotations
 
 import json
+import logging
+import math
 import re
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -29,6 +54,17 @@ MAX_JSON_BYTES = 4096
 MAX_QUERY_ROWS = 25
 MAX_TRACE_SPANS = 60
 MAX_BUBBLEUP_DIFFERENTIATORS = 10
+MAX_SERIES_ROWS = 40
+
+# The measured width of one chart's plot columns (see the module docstring):
+# every plot line is a `│` followed by exactly this many columns.
+_CHART_WIDTH = 120
+_CHART_ROW_MARK = "·"  # the dot the chart uses to mark a value
+# "Sample that column with a one-column neighbourhood either side": three
+# columns total, centred on the bucket's own column.
+_COLUMN_NEIGHBORHOOD = 1
+
+logger = logging.getLogger(__name__)
 
 # Metadata keys that carry a query/analysis identifier or a UI permalink, in
 # the priority order tools tend to emit them. Different tools use different
@@ -40,6 +76,19 @@ _PERMALINK_KEYS = ("query_url", "trace_link", "bubble_up_url")
 _METADATA_LINE = re.compile(r"^  ([A-Za-z0-9_]+): (.*)$")
 _UNESCAPED_PIPE = re.compile(r"(?<!\\)\|")
 _TIME_SERIES_BLOCK = re.compile(r"^# Time Series\s*\n```.*?^```\s*\n?", re.MULTILINE | re.DOTALL)
+# The whole `# Time Series` section (every chart block in it), stopping at
+# the next top-level heading (e.g. `# Heatmaps`), the `---` before Metadata,
+# or the end of the text.
+_TIME_SERIES_SECTION = re.compile(
+    r"^# Time Series\s*\n(?P<body>.*?)(?=^# |\n---\n|\Z)", re.MULTILINE | re.DOTALL
+)
+_CHART_BLOCK = re.compile(r"```\n(?P<block>.*?)```", re.DOTALL)
+_CHART_HEADER = re.compile(r"^(?P<name>.+?)\s*\[(?P<lo>[^\]]+?)\s*-\s*(?P<hi>[^\]]+)\]\s*$")
+_CHART_NUMBER = re.compile(r"^(-?[0-9.]+)\s*([KMB]?)$")
+# The label line under a chart's axis: minute-precision timestamps naming
+# the first, middle, and last bucket (`2026-09-04T06:30Z`). Only the first
+# and last matter; the middle one is display only.
+_LABEL_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z")
 _BUBBLEUP_COLUMN = re.compile(
     r"\*\*(?P<col>[^*]+)\*\*\s*\((?P<populated>[^)]*)\)\s*\n(?P<bullets>(?:-.*\n?)+)"
 )
@@ -231,7 +280,9 @@ def _split_cells(line: str) -> list[str]:
     return [c.strip().replace("\\|", "|") for c in _UNESCAPED_PIPE.split(inner)]
 
 
-def _render_table(headers: list[str], rows: list[list[str]], max_rows: int) -> str:
+def _render_table(
+    headers: list[str], rows: list[list[str]], max_rows: int, overflow_label: str = "more rows"
+) -> str:
     """An aligned, whitespace-padded table, capped at `max_rows` data rows."""
     shown = rows[:max_rows]
     widths = [len(h) for h in headers]
@@ -248,13 +299,30 @@ def _render_table(headers: list[str], rows: list[list[str]], max_rows: int) -> s
     lines = [fmt_row(headers), fmt_row(["-" * w for w in widths])]
     lines.extend(fmt_row(row) for row in shown)
     if len(rows) > max_rows:
-        lines.append(f"... {len(rows) - max_rows} more rows")
+        lines.append(f"... {len(rows) - max_rows} {overflow_label}")
     return "\n".join(lines)
+
+
+def _get_query_spec(args: dict[str, Any] | None) -> dict[str, Any]:
+    """The `query_spec` argument as a dict, whether it arrived as one or as a JSON string.
+
+    The agent always sends a dict, but a run recorded through some other
+    path (a replayed tool log, a hand-built fixture) can carry it as text.
+    Anything that is not a dict, or a string that does not parse as one,
+    is treated as an absent spec rather than raising.
+    """
+    spec = (args or {}).get("query_spec")
+    if isinstance(spec, str):
+        try:
+            spec = json.loads(spec)
+        except json.JSONDecodeError:
+            return {}
+    return spec if isinstance(spec, dict) else {}
 
 
 def _describe_query_spec(args: dict[str, Any] | None) -> str:
     """One line naming the calculations, filters, breakdowns, and time range asked for."""
-    spec = (args or {}).get("query_spec") or {}
+    spec = _get_query_spec(args)
 
     calc_parts = []
     for calc in spec.get("calculations") or []:
@@ -291,6 +359,337 @@ def _describe_query_spec(args: dict[str, Any] | None) -> str:
     )
 
 
+class _SeriesParseError(Exception):
+    """A `# Time Series` chart did not parse the way the geometry doc says it should.
+
+    Always caught inside `_render_time_series`; never escapes this module.
+    Its message names the reason, for the warning log.
+    """
+
+
+@dataclass
+class _ChartBlock:
+    name: str
+    lo: float
+    hi: float
+    plot_lines: list[str]  # each padded/trimmed to _CHART_WIDTH characters, top row first
+    label_line: str | None = None  # the line under the axis naming the first/last bucket
+
+
+def _parse_chart_number(text: str) -> float:
+    """A chart axis endpoint: `814.72`, `1.9K`, `41.2`, `1.1M`, `2.3B`."""
+    match = _CHART_NUMBER.match(text.strip())
+    if match is None:
+        raise _SeriesParseError(f"could not parse chart axis number {text!r}")
+    value = float(match.group(1))
+    suffix = match.group(2)
+    if suffix == "K":
+        value *= 1_000
+    elif suffix == "M":
+        value *= 1_000_000
+    elif suffix == "B":
+        value *= 1_000_000_000
+    return value
+
+
+def _parse_chart_block(raw: str) -> _ChartBlock:
+    """One fenced chart block's header, plot rows, and label line.
+
+    Raises `_SeriesParseError` naming the reason on anything that does not
+    match the measured geometry: a header without a `[min - max]` range, or
+    a plot line wider than `_CHART_WIDTH` columns. A plot line that is
+    narrower (trailing spaces trimmed by whatever captured the fixture,
+    typically an all-blank top row) is padded out rather than treated as a
+    parse failure.
+    """
+    lines = raw.splitlines()
+    if not lines or not lines[0].strip():
+        raise _SeriesParseError("chart block has no header line")
+    header = lines[0].strip()
+    match = _CHART_HEADER.match(header)
+    if match is None:
+        raise _SeriesParseError(f"chart header has no [min - max] range: {header!r}")
+    name = match.group("name").strip()
+    lo = _parse_chart_number(match.group("lo"))
+    hi = _parse_chart_number(match.group("hi"))
+
+    plot_lines: list[str] = []
+    label_line: str | None = None
+    for idx, line in enumerate(lines[1:], start=1):
+        if line.startswith("└"):
+            if idx + 1 < len(lines):
+                label_line = lines[idx + 1]
+            break
+        if not line.startswith("│"):
+            continue
+        content = line[1:]
+        if len(content) < _CHART_WIDTH:
+            content = content.ljust(_CHART_WIDTH)
+        elif len(content) > _CHART_WIDTH:
+            raise _SeriesParseError(
+                f"{name!r} plot line is {len(content)} columns, expected {_CHART_WIDTH}"
+            )
+        plot_lines.append(content)
+    if not plot_lines:
+        raise _SeriesParseError(f"{name!r} chart has no plot rows")
+    return _ChartBlock(name=name, lo=lo, hi=hi, plot_lines=plot_lines, label_line=label_line)
+
+
+def _parse_axis_labels(label_line: str | None) -> tuple[datetime, datetime] | None:
+    """The first and last bucket start times named on a chart's label line, or None.
+
+    The label line names three buckets at minute precision (first, middle,
+    last); only the first and last matter here.
+    """
+    if not label_line:
+        return None
+    matches = _LABEL_TIME.findall(label_line)
+    if len(matches) < 2:
+        return None
+    first = datetime.strptime(matches[0], "%Y-%m-%dT%H:%MZ").replace(tzinfo=UTC)
+    last = datetime.strptime(matches[-1], "%Y-%m-%dT%H:%MZ").replace(tzinfo=UTC)
+    return first, last
+
+
+def _extract_time_series_section(text: str) -> str | None:
+    """The body of the `# Time Series` heading (every chart block in it), or None."""
+    match = _TIME_SERIES_SECTION.search(text)
+    return match.group("body") if match else None
+
+
+def _parse_number_maybe(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _parse_time_bound(value: Any) -> datetime | None:
+    """A query spec's `from`/`to`: an epoch number, or an ISO 8601 string (`Z` or offset)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(value, tz=UTC)
+        except (OverflowError, OSError, ValueError):
+            return None
+    if isinstance(value, str):
+        text = value.strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed
+    return None
+
+
+def _round_to_sig_figs(value: float, sig: int) -> float:
+    if value == 0:
+        return 0.0
+    magnitude = math.floor(math.log10(abs(value)))
+    factor = 10 ** (sig - 1 - magnitude)
+    return round(value * factor) / factor
+
+
+def _chart_row_step(chart: _ChartBlock) -> float:
+    """One plot row's worth of `chart`'s `[lo - hi]` range."""
+    nrows = len(chart.plot_lines)
+    if nrows <= 1:
+        return chart.hi - chart.lo
+    return (chart.hi - chart.lo) / (nrows - 1)
+
+
+def _format_series_value(value: float, chart: _ChartBlock) -> str:
+    """`value`, rounded to 3 significant figures; a whole number when a chart row
+    is worth at least one whole unit. An all-integer range is not enough on its
+    own: a `[0 - 1]` chart would render every value as 0 or 1."""
+    if abs(_chart_row_step(chart)) >= 1:
+        return str(int(round(value)))
+    rounded = _round_to_sig_figs(value, 3)
+    if rounded == 0:
+        return "0"
+    decimals = max(0, 2 - math.floor(math.log10(abs(rounded))))
+    return f"{rounded:.{decimals}f}"
+
+
+def _bucket_column(i: int, buckets: int) -> int:
+    """Bucket `i`'s column on the chart's own axis: the first bucket at column 0,
+    the last at `_CHART_WIDTH - 1`, evenly spaced between."""
+    if buckets <= 1:
+        return 0
+    return math.floor(i / (buckets - 1) * (_CHART_WIDTH - 1))
+
+
+def _sample_bucket(chart: _ChartBlock, col: int) -> str:
+    """Bucket value at chart column `col`: dot rows averaged over a small
+    neighborhood of columns around it (see `_COLUMN_NEIGHBORHOOD`)."""
+    nrows = len(chart.plot_lines)
+    lo_col = max(0, col - _COLUMN_NEIGHBORHOOD)
+    hi_col = min(_CHART_WIDTH - 1, col + _COLUMN_NEIGHBORHOOD)
+    hit_rows = [
+        row
+        for c in range(lo_col, hi_col + 1)
+        for row, line in enumerate(chart.plot_lines)
+        if c < len(line) and line[c] == _CHART_ROW_MARK
+    ]
+    if not hit_rows:
+        return ""
+    mean_row = sum(hit_rows) / len(hit_rows)
+    if nrows <= 1:
+        value = chart.hi
+    else:
+        value = chart.hi - (mean_row / (nrows - 1)) * (chart.hi - chart.lo)
+    return _format_series_value(value, chart)
+
+
+def _chart_row_resolution(chart: _ChartBlock) -> str:
+    """`chart`'s per-row value: one row's worth of its `[lo - hi]` range."""
+    return f"{chart.name} {_format_series_value(_chart_row_step(chart), chart)}"
+
+
+def _chart_resolution_line(charts: list[_ChartBlock]) -> str | None:
+    """One line naming each chart's per-row resolution, so a model does not read
+    a one-row wobble on a flat series as a real change."""
+    parts = [_chart_row_resolution(chart) for chart in charts if len(chart.plot_lines) > 1]
+    if not parts:
+        return None
+    return f"one chart row is {', '.join(parts)}; smaller moves are within the chart's resolution"
+
+
+def _format_number(value: float) -> str:
+    return str(int(value)) if float(value).is_integer() else str(value)
+
+
+def _build_series_table(text: str, spec: dict[str, Any], spec_granularity: Any) -> str:
+    """The compact series table, or raises `_SeriesParseError` naming why it could not build one."""
+    section = _extract_time_series_section(text)
+    if section is None:
+        raise _SeriesParseError("no '# Time Series' heading, though the spec asked for one")
+
+    raw_blocks = [m.group("block") for m in _CHART_BLOCK.finditer(section)]
+    if not raw_blocks:
+        raise _SeriesParseError("'# Time Series' heading has no chart blocks under it")
+
+    charts: list[_ChartBlock] = []
+    for raw in raw_blocks:
+        try:
+            charts.append(_parse_chart_block(raw))
+        except _SeriesParseError as exc:
+            # One malformed chart among several loses just that chart, not
+            # the whole table.
+            logger.warning("run_query time series: dropping one chart block: %s", exc)
+    if not charts:
+        raise _SeriesParseError("no chart block under '# Time Series' parsed")
+
+    metadata = parse_metadata_block(text)
+    granularity = _parse_number_maybe(metadata.get("granularity"))
+    if granularity is None:
+        granularity = _parse_number_maybe(spec_granularity)
+    if not granularity:
+        raise _SeriesParseError("no usable granularity in the Metadata block or the query spec")
+
+    # The chart's own axis spans its first bucket's start to its last
+    # bucket's start, named on the label line under the axis, not the
+    # query's `from`..`to`. `from`/`to`, when they parse, only refine the
+    # label's minute-precision endpoint to the exact second, and only when
+    # doing so agrees with the label (it can disagree: the server can start
+    # its first bucket later than `from`, when data does).
+    label_bounds = None
+    for chart in charts:
+        label_bounds = _parse_axis_labels(chart.label_line)
+        if label_bounds is not None:
+            break
+    if label_bounds is None:
+        raise _SeriesParseError("could not read the chart's axis labels")
+    label_first, label_last = label_bounds
+
+    first_bucket = label_first
+    from_dt = _parse_time_bound(spec.get("from"))
+    if from_dt is not None:
+        aligned = math.floor(from_dt.timestamp() / granularity) * granularity
+        aligned_dt = datetime.fromtimestamp(aligned, tz=UTC)
+        if aligned_dt.replace(second=0, microsecond=0) == label_first:
+            first_bucket = aligned_dt
+
+    last_bucket = label_last
+    to_dt = _parse_time_bound(spec.get("to"))
+    if to_dt is not None:
+        # The aligned bucket containing the last instant *before* `to`: a
+        # `to` that lands exactly on a granularity boundary must not be
+        # read as the start of one bucket past the data.
+        aligned = math.floor((to_dt.timestamp() - 1e-6) / granularity) * granularity
+        aligned_dt = datetime.fromtimestamp(aligned, tz=UTC)
+        if aligned_dt.replace(second=0, microsecond=0) == label_last:
+            last_bucket = aligned_dt
+
+    span_seconds = (last_bucket - first_bucket).total_seconds()
+    if span_seconds < 0:
+        raise _SeriesParseError("the chart's axis labels are out of order")
+    buckets = round(span_seconds / granularity) + 1
+    if buckets <= 0:
+        raise _SeriesParseError("the chart's axis labels and granularity computed zero buckets")
+
+    # One calculation's columns sit together, and within a calculation its
+    # groups sort together too, rather than in whatever order the server
+    # emitted the chart blocks.
+    charts.sort(key=lambda c: tuple(c.name.split(" - ", 1)))
+
+    headers = ["bucket_start", *(chart.name for chart in charts)]
+    rows: list[list[str]] = []
+    for i in range(buckets):
+        bucket_time = first_bucket + timedelta(seconds=i * granularity)
+        col = _bucket_column(i, buckets)
+        row = [bucket_time.strftime("%Y-%m-%dT%H:%M:%SZ")]
+        row.extend(_sample_bucket(chart, col) for chart in charts)
+        rows.append(row)
+
+    table = _render_table(headers, rows, MAX_SERIES_ROWS, overflow_label="buckets omitted")
+
+    notes: list[str] = []
+    asked = _parse_number_maybe(spec_granularity)
+    if asked is not None and asked != granularity:
+        notes.append(f"granularity {_format_number(granularity)} s (asked {_format_number(asked)})")
+    resolution = _chart_resolution_line(charts)
+    if resolution:
+        notes.append(resolution)
+    if notes:
+        table = f"{table}\n{'; '.join(notes)}"
+    return table
+
+
+def _render_time_series(text: str, args: dict[str, Any] | None) -> str | None:
+    """A compact series table for a `run_query` call that asked for a `granularity`.
+
+    None when the spec carried no granularity (today's behavior, unchanged)
+    or when parsing the chart failed; a parse failure logs a warning and, if
+    any chart blocks were found at all, falls back to including them
+    verbatim (size-capped, with the warning first) rather than raising.
+    """
+    spec = _get_query_spec(args)
+    spec_granularity = spec.get("granularity")
+    if spec_granularity is None:
+        return None
+    try:
+        return _build_series_table(text, spec, spec_granularity)
+    except _SeriesParseError as exc:
+        logger.warning("run_query time series: %s; falling back to the raw chart blocks", exc)
+        section = _extract_time_series_section(text)
+        if not section or not section.strip():
+            return None
+        raw = f"(time series parse warning: {exc})\n# Time Series\n{section.strip()}"
+        return truncate(raw, MAX_JSON_BYTES)
+
+
 def _format_run_query(text: str, args: dict[str, Any] | None) -> str | None:
     table = _parse_markdown_table(text, heading="# Results")
     if table is None:
@@ -298,6 +697,11 @@ def _format_run_query(text: str, args: dict[str, Any] | None) -> str | None:
     headers, rows = table
 
     parts = [_describe_query_spec(args), "", _render_table(headers, rows, MAX_QUERY_ROWS)]
+
+    series = _render_time_series(text, args)
+    if series:
+        parts.append("")
+        parts.append(series)
 
     query_id, permalink = extract_ids(text)
     footer = []

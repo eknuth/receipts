@@ -1,0 +1,29 @@
+{
+  "tool": "run_query",
+  "args": {
+    "environment_slug": "receipts-demo",
+    "dataset_slug": "receipts-shop",
+    "query_spec": {
+      "calculations": [
+        {
+          "op": "COUNT"
+        }
+      ],
+      "filters": [
+        {
+          "column": "scenario.run_id",
+          "op": "=",
+          "value": "run-synthetic45"
+        }
+      ],
+      "from": "2026-01-01T00:00:00Z",
+      "to": "2026-01-01T00:45:00Z",
+      "granularity": 60
+    }
+  },
+  "structured_content": null,
+  "content_texts": [
+    "# Results\n\n| COUNT |\n| --- |\n| 2700 |\n\n\n# Time Series\n\n```\nCOUNT [10 - 50]\n│                                                                                                                        \n│                                                                                                                        \n│                                                                                                                        \n│                                                                                                                        \n│                                                                                                                        \n│                                                                                                                        \n│························································································································\n│                                                                                                                        \n│                                                                                                                        \n│                                                                                                                        \n│                                                                                                                        \n│                                                                                                                        \n└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n 2026-01-01T00:00Z                                  2026-01-01T00:22Z                                  2026-01-01T00:44Z\n```\n\n---\nMetadata:\n  elapsed_str: 12.345ms\n  granularity: 60\n  query_result_image: \"https://ui.honeycomb.io/img/REDACTED\"\n  query_result_json: \"https://mcp.honeycomb.io/query_results/REDACTED\"\n  query_run_pk: synthQR45buckets\n  query_url: \"https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/synthQR45buckets\"\n  rows_examined: 2700\n  total: 1\n"
+  ],
+  "is_error": false
+}

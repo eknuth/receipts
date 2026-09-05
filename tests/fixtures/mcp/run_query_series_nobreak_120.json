@@ -1,0 +1,37 @@
+{
+  "tool": "run_query",
+  "args": {
+    "environment_slug": "receipts-demo",
+    "dataset_slug": "receipts-shop",
+    "query_spec": {
+      "calculations": [
+        {
+          "op": "COUNT"
+        },
+        {
+          "op": "P99",
+          "column": "duration_ms"
+        }
+      ],
+      "filters": [
+        {
+          "column": "scenario.run_id",
+          "op": "=",
+          "value": "run-cd1ec0dcfc51"
+        },
+        {
+          "column": "trace.parent_id",
+          "op": "does-not-exist"
+        }
+      ],
+      "from": "2026-09-04T06:31:07Z",
+      "to": "2026-09-04T06:51:07Z",
+      "granularity": 120
+    }
+  },
+  "structured_content": null,
+  "content_texts": [
+    "# Results\n\n| COUNT | P99(duration_ms) |\n| --- | --- |\n| 18000 | 814.72 |\n| 0 | 0 |\n| 18000 | 815.03 |\n\n\n# Time Series\n\n```\nCOUNT [696 - 1.9K]\n│             ······                                                                                   ···               \n│           ··      ···················································································   ····           \n│         ··                                                                                                  ·          \n│        ·                                                                                                     ··        \n│       ·                                                                                                        ·       \n│      ·                                                                                                          ·      \n│                                                                                                                  ·     \n│     ·                                                                                                             ··   \n│    ·                                                                                                                ·  \n│   ·                                                                                                                  ··\n│ ··                                                                                                                     \n│·                                                                                                                       \n└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n 2026-09-04T06:30Z                                  2026-09-04T06:40Z                                  2026-09-04T06:50Z\n```\n\n```\nP99(duration_ms) [257 - 926]\n│                                                                                                                        \n│                                                              ···                                     ··················\n│                                                          ····   ·····································                  \n│                                                         ·                                                              \n│                                                       ··                                                               \n│                                                      ·                                                                 \n│                                                     ·                                                                  \n│                                                    ·                                                                   \n│                                                  ··                                                                    \n│                                                 ·                                                                      \n│      ···········             ············   ····                                                                       \n│······           ·············            ···                                                                           \n└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n 2026-09-04T06:30Z                                  2026-09-04T06:40Z                                  2026-09-04T06:50Z\n```\n\n---\nMetadata:\n  elapsed_str: 237.157135ms\n  granularity: 120\n  query_result_image: \"https://ui.honeycomb.io/img/ZSCQoIxrmynMjOaS3kNLzlkxfZW6veeYfHPRPrisdziC\"\n  query_result_json: \"https://mcp.honeycomb.io/query_results/REDACTED\"\n  query_run_pk: 7PZwA1sNG7Q\n  query_url: \"https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/7PZwA1sNG7Q\"\n  rows_examined: 3459289\n  total: 1\n---\nDataset semantics:\n  kind: events (tracing)\n  row_unit: span\n  notes:\n    - Each row is a span — a unit of work or operation, per OpenTelemetry.\n    - COUNT aggregates spans (instrumentation points), not requests, users, or traffic volume.\n    - Span-count ratios are meaningful only when both sides filter to spans representing the same unit of work (e.g., same name, kind, or required attribute). An unfiltered COUNT denominator almost always mixes heterogeneous span types.\n    - For counting underlying work events, prefer SUM on a numeric count attribute on the span (e.g., app.*.success_count, app.*.batch_size) over COUNT of spans.\n    - For latency, use HEATMAP or P95/P99 over the duration_ms column rather than AVG.\n    - If a metrics dataset exposes the same signal directly (bytes, ops, errors), it is usually the better source for rate/ratio questions.\n"
+  ],
+  "is_error": false
+}
