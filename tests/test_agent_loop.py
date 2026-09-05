@@ -253,6 +253,22 @@ def test_the_prompt_makes_the_split_in_time_a_precondition() -> None:
     assert "the end of the last part of the window that still read normal" in prompt
 
 
+def test_the_prompt_adds_a_population_selection_step() -> None:
+    """EDW-1364: dims is decided by a step, not left to whichever candidate BubbleUp
+    ranked first. The step is in the fixed part of the prompt, so neither ablation
+    should touch it, and it has to come before Traces since Traces filters on `dims`.
+    """
+    for config in (
+        AgentConfig(),
+        AgentConfig(require_negation=False),
+        AgentConfig(require_not_checked=False),
+    ):
+        prompt = render_prompt(RUN, config)
+        assert "**Select the population.**" in prompt
+        assert "narrows the population" in prompt
+        assert prompt.index("**Select the population.**") < prompt.index("**Traces.**")
+
+
 def test_the_ablations_remove_whole_rules_from_the_prompt() -> None:
     full = render_prompt(RUN, AgentConfig())
     assert "negation" in full.lower()

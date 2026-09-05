@@ -40,13 +40,13 @@ Follow the method Honeycomb publishes in the `honeycomb-investigator` agent and 
    were not the first guess, so run it even when you think you already know the answer.
 4. **Split the candidates in time.** Split the candidates you would otherwise report, and the
    ranks BubbleUp puts up against them. That is a handful of splits, not one per row of the
-   ranking. The split is the measurement the candidate rests on, run on either side of the point
-   where the broad query showed the change. When nothing showed there, split the earliest part of
-   the window against the rest. One `run_query` with a time `granularity` and the candidate's
-   column as a breakdown puts every value of that column on both sides of the change in a single
-   call, which is the cheap way to do this. Two windowed queries answer the same question with the
-   numbers plain, when plain numbers are what you want to quote. What comes back is one of four
-   things:
+   ranking. The split is the measurement the candidate rests on, a P99 or an error rate, not the
+   candidate's share of the traffic, run on either side of the point where the broad query showed
+   the change. When nothing showed there, split the earliest part of the window against the rest.
+   One `run_query` with a time `granularity` and the candidate's column as a breakdown puts every
+   value of that column on both sides of the change in a single call, which is the cheap way to do
+   this. Two windowed queries answer the same question with the numbers plain, when plain numbers
+   are what you want to quote. What comes back is one of four things:
    - The same size on both sides. The candidate is a standing property of the system for this
      window. It was already there when the window opened and it is not what changed. Put it in
      `rejected_candidates` with the numbers and the query that produced them.
@@ -67,14 +67,44 @@ Follow the method Honeycomb publishes in the `honeycomb-investigator` agent and 
    A level that is already up in the first minute of the window may have started before the window
    opened. Say that instead of dating the onset to the start of the window.
    No candidate goes into `hypotheses` until this split has been run for it and cited.
-5. **Traces.** Add what BubbleUp found as filters, take a representative trace, and call
+5. **Select the population.** `dims` is the set of dimensions that selects the affected rows,
+   and nothing that does not narrow them. Start from the candidate the split confirmed. For every
+   other BubbleUp leader, and every column the split showed moving, run the measurement on the
+   changed side of the onset, filtered to the `dims` you have so far and broken down by that
+   column. One call per column: the breakdown puts every value on the table at once. What comes
+   back reads one of three ways:
+   - One value carries the change and the other values inside the selection read normal. That
+     column narrows the population. Add the value to `dims` and run the remaining leaders against
+     the grown selection.
+   - Every value reads about the same. The column does not select the affected rows. Leave it out
+     of `dims`. It is not a rejected candidate either: it is a property the affected rows share
+     with the rest of the traffic.
+   - The column has one value inside the current selection. That is the same population under a
+     second name. Put it in the claim, not in `dims`.
+   A count share that holds across the onset says the population did not change size. A deploy, a
+   config change, or a dependency failure does not change how much traffic a region, a version, or
+   a provider carries, so a steady share is not a reason to leave a dimension out. The test for
+   `dims` is whether the measurement differs across the column's values inside the current
+   selection, not whether its share of the traffic moved.
+   Symptom columns describe what happened to the rows, not which rows they are: the error flag, a
+   status code, an exception or error type, the span the time went into. Those belong in `claim`
+   and `slow_or_failing_span`. When the service or the span is the only thing that selects the
+   affected rows, that is the selector and it goes in `dims`: a database that fails for every
+   caller is selected by the service that runs it. A hypothesis with an empty `dims` is a claim
+   about nothing in particular, so name the selector.
+   Stop adding to `dims` when no remaining leader narrows the set. This is a handful of calls, one
+   per leader, inside the budget you already have.
+6. **Traces.** Add what BubbleUp found as filters, take a representative trace, and call
    `get_trace`. The waterfall tells you which span the time or the failure is in, which a
    dimension breakdown cannot.
-6. **Verify by negation.** Run the same measurement with the suspected cause excluded. If the
+7. **Verify by negation.** Run the same measurement with the suspected cause excluded. If the
    claim is that some population is slow or failing, then the traffic outside that population
    should look normal over the same window. A finding that survives that query is a finding. One
-   that does not is a coincidence you nearly reported.
-7. **Record.** Call `submit_report` with what you found.
+   that does not is a coincidence you nearly reported. The negation is over the set in `dims` as
+   a whole. A filter that excludes one dimension leaves out the rows that carry the others without
+   it, and the breakdowns from the population step are what show those rows reading normal, so
+   cite them as evidence too.
+8. **Record.** Call `submit_report` with what you found.
 
 ## What counts as an incident
 
@@ -136,7 +166,9 @@ An empty list is not an answer. There is always something you did not look at.
 
 Rate each hypothesis honestly:
 
-- `high`: the rows carry the claim and the negation query came back the way the claim needs.
+- `high`: the rows carry the claim, every dimension in `dims` was shown to narrow the affected
+  rows, and the traffic outside the reported set read normal. A `dims` entry that was never
+  checked for narrowing caps the hypothesis at `medium`.
 - `medium`: the evidence points this way but the claim goes further than the rows strictly show,
   or the negation is weaker than the claim.
 - `low`: worth writing down, not settled.
