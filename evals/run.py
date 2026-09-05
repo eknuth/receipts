@@ -26,9 +26,12 @@ twice appends repeats rather than replacing them, the same choice
 start it over.
 
 `--resume` fills a matrix's repeats 1 through N and skips any cell that
-already holds a `grade.json`, printing one line per skipped cell. A cell
-with a `report.json` but no `grade.json` was paid for and never graded, so
-it is graded from the stored report rather than run again. Without
+already holds a `grade.json`, printing one line per skipped cell; a crash
+row counts as done and is skipped too (delete the directory to retry it). A
+cell with a `report.json` but no `grade.json` was paid for and never graded,
+so it is graded from the stored report rather than run again; an unreadable
+one is run again. `--resume` does not combine with `--emit`, because a fresh
+emit changes the run id and the cells of one group would then differ in data. Without
 `--resume`, `--repeats 3` run twice over the same cells appends five
 repeats, not three, because each invocation starts counting from the next
 free repeat number; `--resume` is what makes a second `--repeats 3`
@@ -416,12 +419,28 @@ def grade_stored(
     The report is the paid part of a cell and the grade is a pure function of
     it, so a cell the process left between the two writes is finished by
     grading what is there, not by running the investigation again over the
-    stored report. Runner-side `notes` are empty: they were never written.
+    stored report. A report the loop ended with an error is a crash row, the
+    same as `run_one` makes of it: an empty error report on a control would
+    otherwise grade as a correct "no incident". Runner-side `notes` are
+    empty: they were never written. Raises `ValueError` or `OSError` when the
+    report cannot be read; the caller decides what to do with the cell.
     """
     report_path = directory / "report.json"
     report = load_report(report_path)
-    result = grade_file(report_path, runs_dir=runs_dir)
-    graded = graded_run(report, result, config=config, repeat=repeat)
+    if report.error is not None or report.stop_reason == "error":
+        graded = crashed_run(
+            config=config,
+            scenario_id=report.scenario_id,
+            run_id=report.run_id,
+            repeat=repeat,
+            error=report.error or "loop ended with stop_reason=error",
+            report=report,
+            provider=report.provider,
+            model=report.model,
+        )
+    else:
+        result = grade_file(report_path, runs_dir=runs_dir)
+        graded = graded_run(report, result, config=config, repeat=repeat)
     write_run(directory, graded, None)
     return graded
 
@@ -795,19 +814,41 @@ async def run_matrix(
                     if resume:
                         for repeat in range(1, repeats + 1):
                             cell = run_dir(results_dir, config_name, scenario_id, repeat)
+                            head = f"{scenario_id} {config_name} {repeat}"
                             if (cell / "grade.json").exists():
-                                progress.console.print(
-                                    f"{scenario_id} {config_name} {repeat}: done, skipped"
-                                )
-                                continue
+                                try:
+                                    stored = load_run(cell / "grade.json")
+                                except (ValueError, OSError) as exc:
+                                    stored = None
+                                    progress.console.print(
+                                        f"{head}: grade.json unreadable ({exc}), redoing"
+                                    )
+                                if stored is not None:
+                                    if stored.crashed:
+                                        progress.console.print(
+                                            f"{head}: crashed, skipped (delete the directory "
+                                            "to retry)"
+                                        )
+                                    else:
+                                        progress.console.print(f"{head}: done, skipped")
+                                    continue
                             if (cell / "report.json").exists():
-                                graded = grade_stored(cell, config_name, repeat, runs_dir=runs_dir)
-                                results.append(graded)
-                                progress.console.print(
-                                    f"{scenario_id} {config_name} {repeat}: graded from the "
-                                    "stored report"
-                                )
-                                continue
+                                try:
+                                    graded = grade_stored(
+                                        cell, config_name, repeat, runs_dir=runs_dir
+                                    )
+                                except (ValueError, OSError) as exc:
+                                    progress.console.print(
+                                        f"{head}: report.json unreadable ({exc}), running again"
+                                    )
+                                else:
+                                    results.append(graded)
+                                    notes = graded.grade.notes if graded.grade else []
+                                    tail = f" ({'; '.join(notes)})" if notes else ""
+                                    progress.console.print(
+                                        f"{head}: graded from the stored report{tail}"
+                                    )
+                                    continue
                             await run_cell(
                                 scenario_id,
                                 config_name,
@@ -948,6 +989,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     if args.provider != "anthropic":
         print(f"error: provider {args.provider!r} arrives in R11", file=sys.stderr)
+        return 2
+    if args.resume and args.emit:
+        print(
+            "error: --resume and --emit do not combine: a fresh emit changes the run id, and a "
+            "resumed cell group would mix data. Emit without --resume, or resume without --emit.",
+            file=sys.stderr,
+        )
         return 2
 
     try:

@@ -13,8 +13,8 @@ A test renders the eight live fixture reports twice and compares the bytes.
 
 Two columns need a word. `outcome` sits next to `total` in every table
 because `total` folds the receipts components in, and an ablation that
-removes a rule loses that rule's weight by construction. Whether the rule
-changed the answer is a question about `outcome` alone. The contrast column
+removes a rule can lose that rule's weight without changing an answer.
+Whether the rule changed the answer is a question about `outcome` alone. The contrast column
 counts runs that pass Honeycomb's process evaluator while scoring under
 `OUTCOME_FAIL_BELOW` on ours. The line is half the maximum and the number
 the grader uses to call a top hypothesis wrong, and it was set before the
@@ -42,16 +42,6 @@ REPORT_PATH = Path(__file__).resolve().parent / "report.md"
 # hypothesis (`WRONG_BELOW` on the dims component).
 OUTCOME_FAIL_BELOW = 0.5
 
-# The grader's own weight (`evals/grader.py` WEIGHTS) for the rule each
-# ablation config removes: `no-negation` costs the receipts component and
-# `no-notchecked` costs the not_checked component. A config not listed here
-# maps to 0.0, so the "inside the rule's own weight" sentence in the
-# ablation section never fires for it.
-ABLATION_WEIGHTS: dict[str, float] = {
-    "no-negation": 0.15,
-    "no-notchecked": 0.10,
-}
-
 
 def num(value: float, places: int) -> str:
     """The one rounding function. Thousands separated, fixed decimals.
@@ -65,8 +55,10 @@ def num(value: float, places: int) -> str:
 
 
 def _signed(value: float, places: int) -> str:
-    """A delta, always carrying its sign: `+0.000`, `-0.039`."""
-    rounded = round(value, places) or 0.0
+    """A delta with its sign, `+0.050` or `-0.039`; one that rounds to nothing is `0.000`."""
+    rounded = round(value, places)
+    if rounded == 0:
+        return f"{0:.{places}f}"
     return f"{rounded:+,.{places}f}"
 
 
@@ -112,8 +104,8 @@ def render(runs: Sequence[GradedRun], unreadable: Sequence[str] = ()) -> str:
         "",
         "`total` is the grader's full score, penalties included, between -1 and 1. `outcome` "
         "is the weighted dims, span, incident, and onset components alone, at most 0.75, and "
-        "sits next to `total` because an ablation that removes a rule loses that rule's "
-        "weight by construction; whether it changed the answer is a question about "
+        "sits next to `total` because an ablation that removes a rule can lose that rule's "
+        "weight without changing an answer; whether it changed the answer is a question about "
         "`outcome`. `top right` counts runs whose top hypothesis scored at least 0.5 on the "
         "grader's dims component, which is the grader's own line for a wrong hypothesis. On "
         "a control a report with no hypothesis, or only low ones, scores 1 there and counts; "
@@ -158,8 +150,9 @@ def render(runs: Sequence[GradedRun], unreadable: Sequence[str] = ()) -> str:
         f"`tests/scenarios/evaluator.py` in `honeycombio/agent-skill`, pass at 0.6) and score "
         f"a `total` under {num(OUTCOME_FAIL_BELOW, 2)} on ours. A crash has no process "
         "score and is not counted as passing theirs. The line is on `total`, so under an "
-        "ablation config the removed rule's weight (0.15 for the negation, which the grader "
-        "requires whatever the config) counts against the run here; read `outcome` in the "
+        "ablation config the removed rule's weight (0.15 for the negation, 0.10 for the "
+        "not-checked list, both scored whatever the config) can count against the run here; "
+        "read `outcome` in the "
         "scenario table for whether the answer changed. `tokens in` is uncached input, as the "
         "grade records it; the prompt cache reads that make up most of what the model read "
         "are in each `report.json` and are already priced into the cost. `coerced` counts two "
@@ -315,43 +308,44 @@ def _mean(cell: Sequence[GradedRun], pick: Callable[[GradedRun], float], places:
 
 
 def _ablation_sentence(
-    config: str, delta_total: float, delta_outcome: float, fewer: int, scenarios: int
+    config: str,
+    *,
+    delta_total: float,
+    delta_outcome: float,
+    delta_receipts: float,
+    delta_penalties: float,
+    fewer: int,
+    more: int,
+    scenarios: int,
 ) -> str:
-    """One generated sentence about what an ablation config changed.
-
-    The total delta is compared with the grader's own weight for the rule
-    the config removes (`ABLATION_WEIGHTS`): that weight is the part of the
-    score that pays for checkability, so a total delta inside it can be the
-    rule's weight alone. Whether the answers changed is read from the outcome
-    delta and the scenario count, which the sentence states rather than
-    infers. An unknown config carries a weight of 0.0, so a negative delta is
-    never read as inside its weight.
-    """
+    """One generated sentence per ablation config, built from the identity
+    `total = outcome + receipts + penalties`, so each part of the move is
+    named and nothing is inferred from the total alone."""
     if config == "no-negation":
         subject = "Removing the negation rule"
     elif config == "no-notchecked":
         subject = "Removing the not-checked rule"
     else:
         subject = f"Config {config}"
-    weight = ABLATION_WEIGHTS.get(config, 0.0)
     head = (
-        f"{subject} changed mean total by {_signed(delta_total, 3)} and mean outcome by "
-        f"{_signed(delta_outcome, 3)}; {fewer} of {scenarios} scenarios have fewer right top "
-        "hypotheses than `full`."
+        f"{subject} moved mean total by {_signed(delta_total, 3)}: outcome "
+        f"{_signed(delta_outcome, 3)}, receipts {_signed(delta_receipts, 3)}, penalties "
+        f"{_signed(delta_penalties, 3)}. {fewer} of {scenarios} scenarios have fewer right top "
+        f"hypotheses than `full` and {more} have more."
     )
-    if delta_total >= 0:
-        tail = "It does not reduce the score."
-    elif abs(delta_total) <= weight:
-        tail = (
-            f"The total delta is inside the rule's own weight of {num(weight, 2)}, the part of "
-            "the score that pays for checkability; the outcome delta is what the answers lost."
-        )
+    parts: list[str] = []
+    if delta_outcome < 0:
+        parts.append("Outcome fell, so some answers changed; the scenario table says which.")
+    elif delta_total < 0:
+        parts.append("The answers held; the loss is in receipts and penalties.")
     else:
-        tail = (
-            f"The total delta is more than the rule's own weight of {num(weight, 2)}, so the "
-            "loss is not checkability alone; read the scenario table for which answers changed."
+        parts.append("It does not reduce the score.")
+    if config in ("no-negation", "no-notchecked") and delta_receipts >= 0:
+        parts.append(
+            "The receipts score did not fall, so the model kept doing what the removed rule "
+            "asked without being asked."
         )
-    return f"{head} {tail}"
+    return head + " " + " ".join(parts)
 
 
 def _ablation_section(runs: Sequence[GradedRun], configs: Sequence[str]) -> list[str]:
@@ -360,17 +354,26 @@ def _ablation_section(runs: Sequence[GradedRun], configs: Sequence[str]) -> list
     `configs` is already sorted `full` first (`config_order`). The section
     is rendered only when `full` is among the configs and at least one other
     config is too; an empty results directory and a single-config directory
-    both render as they did before this section existed.
+    both render as they did before this section existed. Each config's means
+    and deltas are taken over the scenarios it shares with `full`, so a
+    scenario present in one config only cannot move a delta; the paragraph
+    names any such scenario, and any scenario whose cells carry more than one
+    run id, since those cells differ in data as well as in config.
     """
     if "full" not in configs or len(configs) < 2:
         return []
 
-    scenarios = sorted({item.scenario_id for item in runs})
+    def cell(config: str, scenarios: set[str] | None = None) -> list[GradedRun]:
+        return [
+            item
+            for item in runs
+            if item.config == config and (scenarios is None or item.scenario_id in scenarios)
+        ]
 
-    def cell(config: str) -> list[GradedRun]:
-        return [item for item in runs if item.config == config]
+    def scenarios_of(config: str) -> set[str]:
+        return {item.scenario_id for item in runs if item.config == config}
 
-    def top_right_by_scenario(config: str) -> dict[str, int]:
+    def top_right_by_scenario(config: str, scenarios: set[str]) -> dict[str, int]:
         return {
             scenario: sum(
                 1
@@ -380,19 +383,23 @@ def _ablation_section(runs: Sequence[GradedRun], configs: Sequence[str]) -> list
             for scenario in scenarios
         }
 
-    full_cell = cell("full")
-    full_mean_total = fmean(item.total for item in full_cell)
-    full_mean_outcome = fmean(item.outcome_score for item in full_cell)
-    full_top_right = top_right_by_scenario("full")
+    def means(group: Sequence[GradedRun]) -> tuple[float, float, float, float]:
+        total = fmean(item.total for item in group)
+        outcome = fmean(item.outcome_score for item in group)
+        receipts = fmean(item.receipts_score for item in group)
+        return total, outcome, receipts, total - outcome - receipts
 
+    full_scenarios = scenarios_of("full")
     lines = [
         "## Ablation delta",
         "",
-        "An ablation config removes one rule and nothing else. This table reads the "
-        "outcome question directly: how far a config's mean total and mean outcome sit "
-        "from `full`, and how many scenarios lost a right top hypothesis compared with "
-        "`full`. The `full` row has no delta, because it is what the others are measured "
-        "against.",
+        "Each row is one config's mean `total`, `outcome`, and `receipts` over the scenarios "
+        "it shares with `full`, the difference from `full` on each, and the difference in "
+        "penalties, which is what is left of the total move once outcome and receipts are "
+        "taken out. `top right` counts runs whose top hypothesis the grader called right; the "
+        "last column counts scenarios where the config has fewer such runs than `full`, and "
+        "scenarios where it has more. The `full` row has no deltas, because it is what the "
+        "others are measured against.",
         "",
     ]
     header = [
@@ -401,64 +408,104 @@ def _ablation_section(runs: Sequence[GradedRun], configs: Sequence[str]) -> list
         "delta total",
         "mean outcome",
         "delta outcome",
+        "mean receipts",
+        "delta receipts",
+        "delta penalties",
         "top right",
-        "scenarios with fewer top right than full",
+        "scenarios fewer / more top right than full",
     ]
     lines.append(_row(header))
     lines.append(_row(["---"] * len(header)))
 
+    sentences: list[str] = []
+    notes: list[str] = []
     for config in configs:
-        group = cell(config)
-        is_full = config == "full"
-        mean_total = fmean(item.total for item in group)
-        mean_outcome = fmean(item.outcome_score for item in group)
-        top_right_count = sum(1 for item in group if item.top_right)
-        if is_full:
-            delta_total = delta_outcome = fewer = ""
-        else:
-            delta_total = _signed(mean_total - full_mean_total, 3)
-            delta_outcome = _signed(mean_outcome - full_mean_outcome, 3)
-            config_top_right = top_right_by_scenario(config)
-            fewer_count = sum(
-                1 for scenario in scenarios if config_top_right[scenario] < full_top_right[scenario]
+        if config == "full":
+            group = cell("full")
+            total, outcome, receipts, _ = means(group)
+            lines.append(
+                _row(
+                    [
+                        config,
+                        num(total, 3),
+                        "",
+                        num(outcome, 3),
+                        "",
+                        num(receipts, 3),
+                        "",
+                        "",
+                        f"{sum(1 for item in group if item.top_right)} of {len(group)}",
+                        "",
+                    ]
+                )
             )
-            fewer = f"{fewer_count} of {len(scenarios)}"
+            continue
+        shared = scenarios_of(config) & full_scenarios
+        only_here = sorted(scenarios_of(config) - full_scenarios)
+        only_full = sorted(full_scenarios - scenarios_of(config))
+        if only_here or only_full:
+            notes.append(
+                f"`{config}` is compared with `full` over {len(shared)} shared scenarios; "
+                f"left out: {', '.join(only_here + only_full) or 'none'}."
+            )
+        group = cell(config, shared)
+        full_group = cell("full", shared)
+        if not shared:
+            lines.append(_row([config, "", "", "", "", "", "", "", "0 of 0", ""]))
+            continue
+        total, outcome, receipts, penalties = means(group)
+        f_total, f_outcome, f_receipts, f_penalties = means(full_group)
+        config_top = top_right_by_scenario(config, shared)
+        full_top = top_right_by_scenario("full", shared)
+        fewer = sum(1 for s in shared if config_top[s] < full_top[s])
+        more = sum(1 for s in shared if config_top[s] > full_top[s])
         lines.append(
             _row(
                 [
                     config,
-                    num(mean_total, 3),
-                    delta_total,
-                    num(mean_outcome, 3),
-                    delta_outcome,
-                    f"{top_right_count} of {len(group)}",
-                    fewer,
+                    num(total, 3),
+                    _signed(total - f_total, 3),
+                    num(outcome, 3),
+                    _signed(outcome - f_outcome, 3),
+                    num(receipts, 3),
+                    _signed(receipts - f_receipts, 3),
+                    _signed(penalties - f_penalties, 3),
+                    f"{sum(1 for item in group if item.top_right)} of {len(group)}",
+                    f"{fewer} / {more} of {len(shared)}",
                 ]
+            )
+        )
+        sentences.append(
+            _ablation_sentence(
+                config,
+                delta_total=total - f_total,
+                delta_outcome=outcome - f_outcome,
+                delta_receipts=receipts - f_receipts,
+                delta_penalties=penalties - f_penalties,
+                fewer=fewer,
+                more=more,
+                scenarios=len(shared),
             )
         )
     lines.append("")
 
-    for config in configs:
-        if config == "full":
-            continue
-        group = cell(config)
-        mean_total = fmean(item.total for item in group)
-        mean_outcome = fmean(item.outcome_score for item in group)
-        config_top_right = top_right_by_scenario(config)
-        fewer_count = sum(
-            1 for scenario in scenarios if config_top_right[scenario] < full_top_right[scenario]
+    per_cell = sorted(
+        scenario
+        for scenario in {item.scenario_id for item in runs}
+        if len({item.run_id for item in runs if item.scenario_id == scenario}) > 1
+    )
+    if per_cell:
+        notes.append(
+            "Emitted more than once, so its cells differ in data as well as in config: "
+            + ", ".join(f"`{scenario}`" for scenario in per_cell)
+            + "."
         )
-        lines.append(
-            _ablation_sentence(
-                config,
-                mean_total - full_mean_total,
-                mean_outcome - full_mean_outcome,
-                fewer_count,
-                len(scenarios),
-            )
-        )
+    for note in notes:
+        lines.append(note)
         lines.append("")
-
+    for sentence in sentences:
+        lines.append(sentence)
+        lines.append("")
     return lines
 
 

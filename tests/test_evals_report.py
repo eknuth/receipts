@@ -19,9 +19,10 @@ from pathlib import Path
 import pytest
 
 from agent.report import load_report
-from evals.grader import grade_file
+from evals.grader import Grade, grade_file
 from evals.report import (
     OUTCOME_FAIL_BELOW,
+    _signed,
     config_order,
     load_results,
     main,
@@ -37,11 +38,20 @@ PINNED = FIXTURES / "report.md"
 
 
 def _run(
-    config: str, scenario_id: str, total: float, outcome_score: float, repeat: int = 1
+    config: str,
+    scenario_id: str,
+    total: float,
+    outcome_score: float,
+    repeat: int = 1,
+    *,
+    receipts_score: float = 0.0,
+    dims: float = 0.0,
 ) -> GradedRun:
-    """A minimal `GradedRun` for exercising the renderer directly, with no report or grade
-    behind it. `render` only reads the flat fields, so a run built this way is enough to
-    drive the ablation delta section without going through the grader or the disk layout."""
+    """A minimal `GradedRun` for exercising the renderer directly. `render` reads the
+    flat fields and `top_right`, which needs a grade to be present and `dims` at or over
+    the grader's line, so the grade is a bare `Grade.model_construct` carrying nothing
+    the renderer reads. Enough to drive the ablation delta section without the grader or
+    the disk layout."""
     return GradedRun(
         config=config,
         scenario_id=scenario_id,
@@ -51,9 +61,9 @@ def _run(
         model="m",
         total=total,
         outcome_score=outcome_score,
-        receipts_score=0.0,
-        dims=0.0,
-        top_wrong=True,
+        receipts_score=receipts_score,
+        dims=dims,
+        top_wrong=dims < 0.5,
         top_confidence=None,
         stop_reason="report",
         error=None,
@@ -66,7 +76,7 @@ def _run(
         wall_s=1.0,
         honeycomb_process_score=None,
         honeycomb_process_passed=None,
-        grade=None,
+        grade=Grade.model_construct(run_id=f"run-{config}-{repeat}", scenario_id=scenario_id),
     )
 
 
@@ -314,63 +324,119 @@ def test_an_empty_results_directory_and_a_single_config_directory_carry_no_ablat
     assert "## Ablation delta" not in render([])
 
 
-def test_ablation_delta_uses_signed_three_decimal_formatting() -> None:
-    runs = [_run("full", "s1", 0.500, 0.500), _run("no-negation", "s1", 0.461, 0.500)]
+def test_ablation_delta_decomposes_the_total_move_and_signs_every_delta() -> None:
+    runs = [
+        _run("full", "s1", 0.750, 0.500, receipts_score=0.250, dims=1.0),
+        _run("no-negation", "s1", 0.461, 0.500, receipts_score=0.211, dims=1.0),
+    ]
     text = render(runs)
     section = text.split("## Ablation delta", 1)[1].split("## Process by config", 1)[0]
     full_row = next(line for line in section.splitlines() if line.startswith("| full |"))
     ablation_row = next(line for line in section.splitlines() if line.startswith("| no-negation |"))
-    assert full_row == "| full | 0.500 |  | 0.500 |  | 0 of 1 |  |"
+    assert full_row == "| full | 0.750 |  | 0.500 |  | 0.250 |  |  | 1 of 1 |  |"
     cells = [cell.strip() for cell in ablation_row.strip("|").split("|")]
-    assert cells[1] == "0.461"  # mean total
-    assert cells[2] == "-0.039"  # delta total, against full's 0.500
-    assert cells[3] == "0.500"  # mean outcome
-    assert cells[4] == "+0.000"  # delta outcome: both score 0.500
+    assert cells[1:8] == ["0.461", "-0.289", "0.500", "0.000", "0.211", "-0.039", "-0.250"]
+    assert cells[8] == "1 of 1"
+    assert cells[9] == "0 / 0 of 1"
 
 
-def test_ablation_sentence_inside_the_weight_reads_as_lost_checkability_not_correctness() -> None:
-    runs = [_run("full", "s1", 0.60, 0.50), _run("no-negation", "s1", 0.50, 0.50)]
+def test_a_delta_that_rounds_to_nothing_carries_no_sign() -> None:
+    assert _signed(-0.0004, 3) == "0.000"
+    assert _signed(0.0004, 3) == "0.000"
+    assert _signed(-0.0395, 3) == "-0.040"
+    assert _signed(0.05, 3) == "+0.050"
+
+
+def test_ablation_sentence_names_outcome_receipts_and_penalties_and_reads_outcome() -> None:
+    """A total move inside the rule's weight says nothing about which part moved, so the
+    sentence is built from the decomposition and the verdict comes from outcome."""
+    runs = [
+        _run("full", "s1", 0.750, 0.500, receipts_score=0.250, dims=1.0),
+        _run("no-negation", "s1", 0.650, 0.400, receipts_score=0.250, dims=1.0),
+    ]
     text = render(runs)
     assert (
-        "Removing the negation rule changed mean total by -0.100 and mean outcome by "
-        "+0.000; 0 of 1 scenarios have fewer right top hypotheses than `full`. The total "
-        "delta is inside the rule's own weight of 0.15, the part of the score that pays "
-        "for checkability; the outcome delta is what the answers lost."
+        "Removing the negation rule moved mean total by -0.100: outcome -0.100, receipts "
+        "0.000, penalties 0.000. 0 of 1 scenarios have fewer right top hypotheses than `full` "
+        "and 0 have more. Outcome fell, so some answers changed; the scenario table says "
+        "which. The receipts score did not fall, so the model kept doing what the removed "
+        "rule asked without being asked."
     ) in text
 
 
-def test_ablation_sentence_for_a_non_negative_delta_says_it_does_not_reduce_the_score() -> None:
-    runs = [_run("full", "s1", 0.50, 0.50), _run("no-notchecked", "s1", 0.55, 0.50)]
+def test_ablation_sentence_with_outcome_held_puts_the_loss_in_receipts() -> None:
+    runs = [
+        _run("full", "s1", 0.750, 0.500, receipts_score=0.250, dims=1.0),
+        _run("no-notchecked", "s1", 0.650, 0.500, receipts_score=0.150, dims=1.0),
+    ]
     text = render(runs)
     assert (
-        "Removing the not-checked rule changed mean total by +0.050 and mean outcome by "
-        "+0.000; 0 of 1 scenarios have fewer right top hypotheses than `full`. It does "
-        "not reduce the score."
+        "Removing the not-checked rule moved mean total by -0.100: outcome 0.000, receipts "
+        "-0.100, penalties 0.000. 0 of 1 scenarios have fewer right top hypotheses than `full` "
+        "and 0 have more. The answers held; the loss is in receipts and penalties."
     ) in text
 
 
-def test_ablation_sentence_beyond_the_weight_points_at_the_scenario_table() -> None:
-    runs = [_run("full", "s1", 0.60, 0.50), _run("no-negation", "s1", 0.40, 0.50)]
+def test_ablation_sentence_for_a_higher_total_still_reads_outcome_first() -> None:
+    """A higher total with a lower outcome is not "does not reduce the score"."""
+    runs = [
+        _run("full", "s1", 0.800, 0.700, receipts_score=0.100, dims=1.0),
+        _run("no-notchecked", "s1", 0.850, 0.550, receipts_score=0.300, dims=1.0),
+    ]
     text = render(runs)
-    assert (
-        "Removing the negation rule changed mean total by -0.200 and mean outcome by "
-        "+0.000; 0 of 1 scenarios have fewer right top hypotheses than `full`. The total "
-        "delta is more than the rule's own weight of 0.15, so the loss is not "
-        "checkability alone; read the scenario table for which answers changed."
-    ) in text
+    assert "Outcome fell, so some answers changed" in text
+    assert "It does not reduce the score." not in text
+    up = [
+        _run("full", "s1", 0.700, 0.500, receipts_score=0.200, dims=1.0),
+        _run("no-notchecked", "s1", 0.750, 0.500, receipts_score=0.250, dims=1.0),
+    ]
+    assert "It does not reduce the score." in render(up)
 
 
-def test_unknown_ablation_config_is_generic_and_never_reads_as_inside_the_weight() -> None:
-    """An unknown config carries weight 0.0, so a negative delta can never be `<= 0.0`
-    and the "inside the weight" branch is unreachable for it."""
-    runs = [_run("full", "s1", 0.60, 0.50), _run("mystery", "s1", 0.59, 0.50)]
+def test_unknown_ablation_config_gets_a_generic_subject_and_no_rule_talk() -> None:
+    runs = [
+        _run("full", "s1", 0.600, 0.500, receipts_score=0.100, dims=1.0),
+        _run("mystery", "s1", 0.590, 0.490, receipts_score=0.100, dims=1.0),
+    ]
     text = render(runs)
+    assert "Config mystery moved mean total by -0.010: outcome -0.010" in text
+    assert "removed rule" not in text.split("## Ablation delta", 1)[1].split("## Process", 1)[0]
+
+
+def test_ablation_counts_scenarios_with_fewer_and_more_right_top_hypotheses() -> None:
+    runs = [
+        _run("full", "s1", 1.0, 0.75, receipts_score=0.25, dims=1.0),
+        _run("full", "s2", 0.0, 0.0, receipts_score=0.0, dims=0.0),
+        _run("no-negation", "s1", 0.0, 0.0, receipts_score=0.0, dims=0.0),
+        _run("no-negation", "s2", 1.0, 0.75, receipts_score=0.25, dims=1.0),
+    ]
+    text = render(runs)
+    assert "| 1 / 1 of 2 |" in text
+    assert "1 of 2 scenarios have fewer right top hypotheses than `full` and 1 have more" in text
+
+
+def test_ablation_deltas_are_over_shared_scenarios_and_say_what_was_left_out() -> None:
+    runs = [
+        _run("full", "s1", 1.0, 0.75, receipts_score=0.25, dims=1.0),
+        _run("no-negation", "s1", 1.0, 0.75, receipts_score=0.25, dims=1.0),
+        _run("no-negation", "s2", 0.0, 0.0, receipts_score=0.0, dims=0.0),
+    ]
+    text = render(runs)
+    section = text.split("## Ablation delta", 1)[1].split("## Process by config", 1)[0]
+    row = next(line for line in section.splitlines() if line.startswith("| no-negation |"))
+    cells = [cell.strip() for cell in row.strip("|").split("|")]
+    assert cells[1:3] == ["1.000", "0.000"]
+    assert "`no-negation` is compared with `full` over 1 shared scenarios; left out: s2." in text
+
+
+def test_ablation_section_names_scenarios_emitted_more_than_once() -> None:
+    a = _run("full", "trig", 1.0, 0.75, receipts_score=0.25, dims=1.0)
+    b = _run("no-negation", "trig", 1.0, 0.75, receipts_score=0.25, dims=1.0)
+    b.run_id = "run-other"
+    text = render([a, b])
     assert (
-        "Config mystery changed mean total by -0.010 and mean outcome by +0.000; 0 of 1 "
-        "scenarios have fewer right top hypotheses than `full`. The total delta is more "
-        "than the rule's own weight of 0.00, so the loss is not checkability alone; read "
-        "the scenario table for which answers changed."
-    ) in text
+        "Emitted more than once, so its cells differ in data as well as in config: `trig`." in text
+    )
 
 
 # --------------------------------------------------------------------------

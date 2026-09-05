@@ -422,6 +422,104 @@ async def test_resume_grades_a_stored_report_instead_of_running_it_again(
     assert "payments-stripe-v251-uswest full 1: graded from the stored report" in buffer.getvalue()
 
 
+async def test_resume_makes_a_stored_error_report_a_crash_row_not_a_grade(
+    settings: Settings, results_dir: Path, runs_dir: Path
+) -> None:
+    """An error report on a control would grade as a right "no incident". Resume must
+    make of it what run_one made of it: a crash row."""
+    await run(
+        [CONTROL],
+        ["full"],
+        1,
+        settings=settings,
+        results_dir=results_dir,
+        runs_dir=runs_dir,
+        provider_factory=factory([RaisingProvider]),
+    )
+    directory = run_dir(results_dir, "full", CONTROL, 1)
+    (directory / "grade.json").unlink()
+    results = await run(
+        [CONTROL],
+        ["full"],
+        1,
+        settings=settings,
+        results_dir=results_dir,
+        runs_dir=runs_dir,
+        provider_factory=factory([RaisingProvider]),
+        resume=True,
+    )
+    assert len(results) == 1
+    assert results[0].crashed
+    assert results[0].total == 0.0
+    assert results[0].stop_reason == "error"
+    assert (directory / "grade.json").exists()
+
+
+async def test_resume_runs_a_cell_again_when_its_stored_report_is_unreadable(
+    settings: Settings, results_dir: Path, runs_dir: Path
+) -> None:
+    directory = run_dir(results_dir, "full", PAYMENTS, 1)
+    directory.mkdir(parents=True)
+    (directory / "report.json").write_text("{not json")
+    from io import StringIO
+
+    from rich.console import Console
+
+    buffer = StringIO()
+    console = Console(file=buffer, force_terminal=False)
+    results = await run_matrix(
+        [PAYMENTS],
+        ["full"],
+        2,
+        settings=settings,
+        results_dir=results_dir,
+        runs_dir=runs_dir,
+        open_mcp=lambda settings: FakeSession(),
+        provider_factory=factory([lambda: FakeProvider(good_script())] * 2),
+        console=console,
+        resume=True,
+    )
+    assert [item.repeat for item in results] == [1, 2]
+    assert "payments-stripe-v251-uswest full 1: report.json unreadable" in buffer.getvalue()
+    assert (directory / "grade.json").exists()
+
+
+async def test_resume_skips_a_crash_row_and_says_how_to_retry_it(
+    settings: Settings, results_dir: Path, runs_dir: Path
+) -> None:
+    await run(
+        [CONTROL],
+        ["full"],
+        1,
+        settings=settings,
+        results_dir=results_dir,
+        runs_dir=runs_dir,
+        provider_factory=factory([RaisingProvider]),
+    )
+    from io import StringIO
+
+    from rich.console import Console
+
+    buffer = StringIO()
+    console = Console(file=buffer, force_terminal=False)
+    results = await run_matrix(
+        [CONTROL],
+        ["full"],
+        1,
+        settings=settings,
+        results_dir=results_dir,
+        runs_dir=runs_dir,
+        open_mcp=lambda settings: FakeSession(),
+        provider_factory=factory([RaisingProvider]),
+        console=console,
+        resume=True,
+    )
+    assert results == []
+    assert "control-quiet full 1: crashed, skipped (delete the directory to retry)" in (
+        buffer.getvalue()
+    )
+
+
 def test_configs_map_to_agent_config_knobs_only() -> None:
     assert set(CONFIGS) == {"full", "no-negation", "no-notchecked"}
     assert agent_config("full") == AgentConfig()
@@ -942,6 +1040,7 @@ def test_usage_errors_exit_2_before_anything_runs(tmp_path: Path) -> None:
     assert main(["--scenarios", CONTROL, "--configs", "not-a-config", *safe]) == 2
     assert main(["--scenarios", CONTROL, "--repeats", "0", *safe]) == 2
     assert main(["--scenarios", CONTROL, "--provider", "bedrock", *safe]) == 2
+    assert main(["--scenarios", CONTROL, "--resume", "--emit", *safe]) == 2
 
 
 def test_scenarios_is_required_unless_regrade_is_given(tmp_path: Path) -> None:

@@ -2,7 +2,7 @@
 
 Every number here is read from a `grade.json` under `evals/results/`, written by `evals/run.py` and graded by `evals/grader.py` (weights and penalties are explained in `evals/grader.md`). Nothing is typed by hand. A run that crashed, or that the loop ended with an error, is a row with a total of 0 and the error text; it was not put through the grader.
 
-`total` is the grader's full score, penalties included, between -1 and 1. `outcome` is the weighted dims, span, incident, and onset components alone, at most 0.75, and sits next to `total` because an ablation that removes a rule loses that rule's weight by construction; whether it changed the answer is a question about `outcome`. `top right` counts runs whose top hypothesis scored at least 0.5 on the grader's dims component, which is the grader's own line for a wrong hypothesis. On a control a report with no hypothesis, or only low ones, scores 1 there and counts; on an incident scenario a report with no hypothesis scores 0 and does not; a crash never does. Ranges are the lowest and highest single run.
+`total` is the grader's full score, penalties included, between -1 and 1. `outcome` is the weighted dims, span, incident, and onset components alone, at most 0.75, and sits next to `total` because an ablation that removes a rule can lose that rule's weight without changing an answer; whether it changed the answer is a question about `outcome`. `top right` counts runs whose top hypothesis scored at least 0.5 on the grader's dims component, which is the grader's own line for a wrong hypothesis. On a control a report with no hypothesis, or only low ones, scores 1 there and counts; on an incident scenario a report with no hypothesis scores 0 and does not; a crash never does. Ranges are the lowest and highest single run.
 
 ## Scores by scenario
 
@@ -22,21 +22,23 @@ Every number here is read from a `grade.json` under `evals/results/`, written by
 
 ## Ablation delta
 
-An ablation config removes one rule and nothing else. This table reads the outcome question directly: how far a config's mean total and mean outcome sit from `full`, and how many scenarios lost a right top hypothesis compared with `full`. The `full` row has no delta, because it is what the others are measured against.
+Each row is one config's mean `total`, `outcome`, and `receipts` over the scenarios it shares with `full`, the difference from `full` on each, and the difference in penalties, which is what is left of the total move once outcome and receipts are taken out. `top right` counts runs whose top hypothesis the grader called right; the last column counts scenarios where the config has fewer such runs than `full`, and scenarios where it has more. The `full` row has no deltas, because it is what the others are measured against.
 
-| config | mean total | delta total | mean outcome | delta outcome | top right | scenarios with fewer top right than full |
-| --- | --- | --- | --- | --- | --- | --- |
-| full | 0.914 |  | 0.742 |  | 29 of 30 |  |
-| no-negation | 0.875 | -0.039 | 0.696 | -0.046 | 27 of 30 | 2 of 10 |
-| no-notchecked | 0.909 | -0.004 | 0.709 | -0.033 | 29 of 30 | 1 of 10 |
+| config | mean total | delta total | mean outcome | delta outcome | mean receipts | delta receipts | delta penalties | top right | scenarios fewer / more top right than full |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| full | 0.914 |  | 0.742 |  | 0.230 |  |  | 29 of 30 |  |
+| no-negation | 0.875 | -0.039 | 0.696 | -0.046 | 0.237 | +0.007 | 0.000 | 27 of 30 | 2 / 0 of 10 |
+| no-notchecked | 0.909 | -0.004 | 0.709 | -0.033 | 0.225 | -0.005 | +0.033 | 29 of 30 | 1 / 1 of 10 |
 
-Removing the negation rule changed mean total by -0.039 and mean outcome by -0.046; 2 of 10 scenarios have fewer right top hypotheses than `full`. The total delta is inside the rule's own weight of 0.15, the part of the score that pays for checkability; the outcome delta is what the answers lost.
+Emitted more than once, so its cells differ in data as well as in config: `trigger-checkout-latency`.
 
-Removing the not-checked rule changed mean total by -0.004 and mean outcome by -0.033; 1 of 10 scenarios have fewer right top hypotheses than `full`. The total delta is inside the rule's own weight of 0.10, the part of the score that pays for checkability; the outcome delta is what the answers lost.
+Removing the negation rule moved mean total by -0.039: outcome -0.046, receipts +0.007, penalties 0.000. 2 of 10 scenarios have fewer right top hypotheses than `full` and 0 have more. Outcome fell, so some answers changed; the scenario table says which. The receipts score did not fall, so the model kept doing what the removed rule asked without being asked.
+
+Removing the not-checked rule moved mean total by -0.004: outcome -0.033, receipts -0.005, penalties +0.033. 1 of 10 scenarios have fewer right top hypotheses than `full` and 1 have more. Outcome fell, so some answers changed; the scenario table says which.
 
 ## Process by config
 
-Means over every run in the config, crashes included. `passes theirs, fails ours` counts runs that pass Honeycomb's process evaluator (a reimplementation of `tests/scenarios/evaluator.py` in `honeycombio/agent-skill`, pass at 0.6) and score a `total` under 0.50 on ours. A crash has no process score and is not counted as passing theirs. The line is on `total`, so under an ablation config the removed rule's weight (0.15 for the negation, which the grader requires whatever the config) counts against the run here; read `outcome` in the scenario table for whether the answer changed. `tokens in` is uncached input, as the grade records it; the prompt cache reads that make up most of what the model read are in each `report.json` and are already priced into the cost. `coerced` counts two kinds of fix, across every attempt and every tool call in the config: submit_report fields decoded from a JSON-encoded string or unwrapped from a stray wrapper key around the whole report, and BubbleUp group values the MCP client retyped from the column schema rather than sending on as the model wrote them; blank when none were. `total cost USD` sums the same cost column instead of averaging it, and the line under the table sums that column again across every config.
+Means over every run in the config, crashes included. `passes theirs, fails ours` counts runs that pass Honeycomb's process evaluator (a reimplementation of `tests/scenarios/evaluator.py` in `honeycombio/agent-skill`, pass at 0.6) and score a `total` under 0.50 on ours. A crash has no process score and is not counted as passing theirs. The line is on `total`, so under an ablation config the removed rule's weight (0.15 for the negation, 0.10 for the not-checked list, both scored whatever the config) can count against the run here; read `outcome` in the scenario table for whether the answer changed. `tokens in` is uncached input, as the grade records it; the prompt cache reads that make up most of what the model read are in each `report.json` and are already priced into the cost. `coerced` counts two kinds of fix, across every attempt and every tool call in the config: submit_report fields decoded from a JSON-encoded string or unwrapped from a stray wrapper key around the whole report, and BubbleUp group values the MCP client retyped from the column schema rather than sending on as the model wrote them; blank when none were. `total cost USD` sums the same cost column instead of averaging it, and the line under the table sums that column again across every config.
 
 | config | runs | crashed | mean calls | mean tokens in | mean tokens out | mean cost USD | total cost USD | mean wall s | coerced | passes theirs, fails ours (total < 0.50) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
