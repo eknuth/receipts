@@ -180,6 +180,10 @@ An entry here is a bare name: the column, span, service, or window, nothing abou
 have been read. A column you broke down on is not on this list whatever you did not do with it;
 that goes in `partially_checked`.
 
+Instrumentation and trace-structure columns (`meta.*`, `telemetry.*`, `trace.*`, `span.*`,
+`library.*`) are not in scope. This list is for the dimensions and spans that could have selected
+the affected rows, not for how the trace was recorded.
+
 An empty list is not an answer. There is always something you did not look at.
 
 <!-- end -->
@@ -226,9 +230,17 @@ number you measured and decided against, which is not the same as `not_checked`:
 examined and rejected, the other is what you never examined at all.
 
 The three lists are different things. `not_checked` is what you never queried at all.
-`partially_checked` is what you queried and did not read one particular way: the column or value
-as `subject`, exactly as the query named it, what you ran on it in `queried_as`, and the reading
-you did not run in `not_run`.
+`partially_checked` is what you queried and did not read one particular way: the column as
+`subject`, exactly as a query named it in its breakdowns, filters, or calculations, not a value it
+took, and what you ran on it in `queried_as`. Pick the `reading` that was missing: `per_value` means
+you never compared its values against each other, `over_time` means you never read it across the
+window bucket by bucket, `outside_selection` means you only read it inside the filters the run was
+carrying and never on the traffic as a whole, and `other_measurement` means you read it with one
+measurement and not with the one you name in `measurement`, written as `OP` or `OP(column)`, for
+example `P99(duration_ms)`. A breakdown answers `per_value`, and with a granularity it answers
+`over_time` too, so "looked at it in isolation" or "checked it in a separate query" is not one of
+these readings and does not belong on this list. `not_run` is the sentence behind whichever reading
+you picked.
 `rejected_candidates` is what you measured and ruled out. The "Queried so far" line under every
 query result is the set `not_checked` and `partially_checked` are both checked against, so write
 them from that line rather than from memory.

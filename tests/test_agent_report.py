@@ -71,6 +71,16 @@ def test_the_submit_report_schema_matches_the_draft() -> None:
     assert all("description" in prop for prop in schema["properties"].values())
 
 
+def test_the_submit_report_schema_carries_reading_and_measurement() -> None:
+    schema = submit_report_schema()
+    defs = schema.get("$defs", {})
+    partial_check = defs.get("PartialCheck")
+    assert partial_check is not None
+    assert "reading" in partial_check["properties"]
+    assert "measurement" in partial_check["properties"]
+    assert partial_check["required"] == ["subject", "queried_as", "reading", "not_run"]
+
+
 def test_the_schema_is_json_serialisable() -> None:
     """It goes on the wire as a tool definition, so it has to survive json.dumps."""
     assert json.loads(json.dumps(submit_report_schema()))
@@ -344,6 +354,7 @@ def test_partially_checked_round_trips_through_the_draft() -> None:
     check = PartialCheck(
         subject="cart.size",
         queried_as="broke down duration_ms by cart.size across the window",
+        reading="per_value",
         not_run="did not look at individual values below 8 for a threshold",
     )
     parsed = draft(partially_checked=[check])
@@ -355,6 +366,7 @@ def test_partially_checked_as_a_json_string_coerces() -> None:
         {
             "subject": "cart.size",
             "queried_as": "broke down duration_ms by cart.size",
+            "reading": "per_value",
             "not_run": "did not look at values below 8",
         }
     ]
@@ -369,16 +381,34 @@ def test_partially_checked_forbids_an_unknown_field() -> None:
             {
                 "subject": "cart.size",
                 "queried_as": "x",
+                "reading": "per_value",
                 "not_run": "y",
                 "extra": "z",
             }
         )
 
 
+def test_partially_checked_requires_a_reading() -> None:
+    with pytest.raises(ValidationError):
+        PartialCheck.model_validate({"subject": "cart.size", "queried_as": "x", "not_run": "y"})
+
+
+def test_partially_checked_other_measurement_accepts_a_measurement() -> None:
+    check = PartialCheck(
+        subject="duration_ms",
+        queried_as="broke down by name",
+        reading="other_measurement",
+        measurement="P99(duration_ms)",
+        not_run="did not run P99 on it, only COUNT",
+    )
+    assert draft(partially_checked=[check]).partially_checked == [check]
+
+
 def test_partially_checked_round_trips_through_report_write_and_load(tmp_path: Path) -> None:
     check = PartialCheck(
         subject="exception.type",
         queried_as="broke down errors by exception.type",
+        reading="per_value",
         not_run="did not read exception.message for each type",
     )
     report = Report.from_draft(

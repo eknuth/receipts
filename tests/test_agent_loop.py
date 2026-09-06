@@ -537,6 +537,52 @@ async def test_the_footer_is_not_stored_in_the_tool_log(settings: Settings) -> N
     assert not any("Queried so far" in str(call.model_dump()) for call in report.tool_log)
 
 
+class BreakdownMCP(FakeMCP):
+    """A FakeMCP whose run_query result carries a real `# Results` table, so
+    `agent/format.py`'s breakdown_values has something to read."""
+
+    async def call(
+        self, name: str, args: dict[str, Any] | None = None, **kwargs: Any
+    ) -> ToolResult:
+        self.calls.append((name, dict(args or {})))
+        if name != "run_query":
+            return ToolResult(
+                raw="ok", text=f"{name} ok", is_error=False, query_id=None, permalink=None
+            )
+        text = (
+            "# Results\n\n| COUNT | deployment.version |\n| --- | --- |\n"
+            "| 10 | 9.9.9 |\n| 5 | 9.9.8 |\n\n---\nMetadata:\n  query_run_pk: Q1\n"
+        )
+        return ToolResult(raw=text, text=text, is_error=False, query_id="Q1", permalink=None)
+
+
+async def test_a_breakdown_result_is_recorded_into_result_values(settings: Settings) -> None:
+    provider = FakeProvider(
+        [completion(query_use("b")), completion(use(SUBMIT_REPORT, report_args(), ident="d"))]
+    )
+    report = await run_loop(provider, BreakdownMCP(), settings=settings)
+
+    assert report.tool_log[0].result_values == {"deployment.version": ["9.9.9", "9.9.8"]}
+
+
+async def test_recorded_result_values_feed_the_queried_so_far_footer(settings: Settings) -> None:
+    provider = FakeProvider(
+        [completion(query_use("b")), completion(use(SUBMIT_REPORT, report_args(), ident="d"))]
+    )
+    await run_loop(provider, BreakdownMCP(), settings=settings)
+
+    turns = provider.seen[-1][1]
+    footers = [
+        result.content
+        for turn in turns
+        for result in turn.tool_results
+        if "Queried so far:" in (result.content or "")
+    ]
+    assert footers
+    assert "9.9.9" in footers[0]
+    assert "9.9.8" in footers[0]
+
+
 async def test_a_failing_mcp_call_becomes_a_tool_result_the_model_can_read(
     settings: Settings,
 ) -> None:

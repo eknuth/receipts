@@ -18,13 +18,23 @@ against the tool log. Nothing in this module trusts a field the model wrote.
   Not checked. Every entry in `not_checked` names something that is absent from
   the arguments of the queries that were run. An entry naming a column the run
   broke down on is a false claim about the run's own coverage, which is worse
-  than an empty list.
+  than an empty list. An entry naming only instrumentation or trace-structure
+  columns (`meta.*`, `telemetry.*`, `trace.*`, `span.*`, `library.*`,
+  `scenario.*`, or `type`, `parent_name`, `service.name`) is rejected too: those
+  describe how the trace was built, not the traffic, so they are out of scope
+  for a list that exists to say which dimensions and spans were never looked at.
 
   Partially checked. Every entry in `partially_checked` names a subject that a
   query did use, checked the other way round from `not_checked`: its `subject`
   has to appear among the terms the run queried, the same set. It is the slot
   for a column that was measured but not read one particular way, which is
-  neither absent from the log nor a candidate that was ruled out.
+  neither absent from the log nor a candidate that was ruled out. The reading
+  it claims was missing is itself checked against the log: a query that broke
+  down on the subject contradicts `per_value`, one that broke down or filtered
+  on it with a granularity contradicts `over_time`, one that carried it with no
+  other filter narrowing the traffic contradicts `outside_selection`, and one
+  whose calculations already computed the named `measurement` contradicts
+  `other_measurement`.
 
 A citation is a pair, not a string. The hosted MCP returns the same `query_id`
 from `run_query`, from a `run_bubbleup` built on that query, and from
@@ -77,6 +87,36 @@ EXCLUDING_OPS: frozenset[str] = frozenset(
         "not-exists",
     }
 )
+
+
+@dataclass(frozen=True)
+class _SystemColumns:
+    """Columns that describe the instrumentation or the trace's own shape,
+    not the traffic running through it, and so are out of scope for
+    `not_checked`: they pass Rule two by construction (no run ever breaks
+    down on `trace.span_id` to learn something about the traffic) and would
+    otherwise fill the list with entries that say nothing about which rows
+    were affected.
+
+    `status_code`, `status_message`, `error`, and `exception.*` are not in
+    here even though they sound like instrumentation: a fault shows up in
+    those columns, so a run that never looked is missing something real
+    about the traffic, not something about how the trace was recorded.
+    """
+
+    prefixes: frozenset[str]
+    names: frozenset[str]
+
+    def __contains__(self, column: str) -> bool:
+        lowered = column.lower()
+        return lowered in self.names or any(lowered.startswith(prefix) for prefix in self.prefixes)
+
+
+SYSTEM_COLUMNS = _SystemColumns(
+    prefixes=frozenset({"meta.", "telemetry.", "library.", "trace.", "span.", "scenario."}),
+    names=frozenset({"type", "parent_name", "service.name"}),
+)
+
 
 # Argument keys that carry a column name or a filter value.
 _COLUMN_KEYS: frozenset[str] = frozenset({"column", "columns", "breakdowns", "group_by"})
@@ -313,6 +353,152 @@ def _collect_exclusions(
             _collect_exclusions(item, out, dims=dims, measured=measured)
 
 
+@dataclass(frozen=True)
+class Usage:
+    """One query's use of one column, for the `partially_checked` contradiction
+    checks in `partially_checked_issues`.
+
+    `other_filter_columns` is what tells `outside_selection` a query measured
+    the traffic as a whole rather than some slice of it: the run id column
+    (`scenario.run_id`, on every query by construction) and the subject
+    column itself are excluded, so an empty set means nothing else narrowed
+    the population this query looked at.
+    """
+
+    query_id: str
+    in_breakdowns: bool
+    in_filters: bool
+    in_calculations: bool
+    other_filter_columns: frozenset[str]
+    calculations: tuple[str, ...]
+    """Every calculation on this query, as `OP` or `OP(column)`, the way a
+    query names one. Not filtered to the subject's own column: `other_measurement`
+    asks whether the query computed a particular calculation anywhere in it."""
+    has_granularity: bool
+
+
+def _effective_spec(args: Mapping[str, object]) -> Mapping[str, object]:
+    """`args["query_spec"]` when it is a dict, otherwise `args` itself.
+
+    `run_query` and (per the server's own docs) `list_spans` carry breakdowns,
+    filters, calculations, and granularity under `query_spec`; `run_bubbleup`
+    has no `query_spec` at all, and a hand-built log entry might not either.
+    Falling back to `args` costs nothing when there is no such key to find.
+    """
+    spec = args.get("query_spec")
+    return spec if isinstance(spec, dict) else args
+
+
+def _spec_filter_columns(spec: Mapping[str, object]) -> set[str]:
+    """Every column named by a `filters` clause in `spec`, top-level or nested
+    under one of its `calculations`. Distinct from `_collect_exclusions`: this
+    counts every filter, not only the ones that exclude a population."""
+    out: set[str] = set()
+    for clause in spec.get("filters") or []:
+        if isinstance(clause, dict) and isinstance(clause.get("column"), str):
+            out.add(clause["column"])
+    for calc in spec.get("calculations") or []:
+        if not isinstance(calc, dict):
+            continue
+        for clause in calc.get("filters") or []:
+            if isinstance(clause, dict) and isinstance(clause.get("column"), str):
+                out.add(clause["column"])
+    return out
+
+
+def _bubbleup_filter_columns(args: Mapping[str, object]) -> set[str]:
+    """The columns a `run_bubbleup` group selection fixes to one value.
+
+    `{"selection": {"group": {"column": "value"}}}` is an exact-match filter
+    on `column`, the same as a `run_query` filter with `op: "="`, so it counts
+    the same way for the reading checks.
+    """
+    selection = args.get("selection")
+    group = selection.get("group") if isinstance(selection, dict) else None
+    return {str(column) for column in group} if isinstance(group, dict) else set()
+
+
+def _calc_reprs(calculations: object) -> tuple[str, ...]:
+    """Every calculation in a `calculations` list, as `OP` or `OP(column)`."""
+    if not isinstance(calculations, list):
+        return ()
+    reprs = []
+    for calc in calculations:
+        if not isinstance(calc, dict):
+            continue
+        op = calc.get("op")
+        if not isinstance(op, str):
+            continue
+        column = calc.get("column")
+        reprs.append(f"{op}({column})" if isinstance(column, str) and column else op)
+    return tuple(reprs)
+
+
+def column_usage(tool_log: Sequence[ToolCall]) -> dict[str, list[Usage]]:
+    """Every column a successful `QUERY_TOOLS` call touched, and how.
+
+    Keyed by the column exactly as the call named it (not lowercased; callers
+    that need a case-insensitive lookup, such as `partially_checked_issues`,
+    do that themselves). A column earns an entry here when a call broke down
+    on it, filtered on it, or calculated over it; a call that never mentions
+    the column contributes nothing for it.
+    """
+    usage: dict[str, list[Usage]] = {}
+    for call in tool_log:
+        if call.name not in QUERY_TOOLS or call.is_error or not call.query_id:
+            continue
+        spec = _effective_spec(call.args)
+        breakdowns = {c for c in (spec.get("breakdowns") or []) if isinstance(c, str)}
+        calculations = spec.get("calculations")
+        calc_columns = {
+            calc["column"]
+            for calc in (calculations if isinstance(calculations, list) else [])
+            if isinstance(calc, dict) and isinstance(calc.get("column"), str)
+        }
+        calc_reprs = _calc_reprs(calculations)
+        filters = _spec_filter_columns(spec) | _bubbleup_filter_columns(call.args)
+        has_granularity = bool(spec.get("granularity"))
+
+        for column in breakdowns | filters | calc_columns:
+            other_filters = frozenset(filters - {column, "scenario.run_id"})
+            usage.setdefault(column, []).append(
+                Usage(
+                    query_id=call.query_id,
+                    in_breakdowns=column in breakdowns,
+                    in_filters=column in filters,
+                    in_calculations=column in calc_columns,
+                    other_filter_columns=other_filters,
+                    calculations=calc_reprs,
+                    has_granularity=has_granularity,
+                )
+            )
+    return usage
+
+
+_MEASUREMENT_RE = re.compile(r"^(?P<op>[A-Za-z][A-Za-z0-9_]*)(?:\((?P<column>.+)\))?$")
+
+
+def _parse_measurement(text: str) -> tuple[str, str | None] | None:
+    """`("P99", "duration_ms")` from `"P99(duration_ms)"`, `("COUNT", None)`
+    from `"COUNT"`, or None when `text` is not one of those two shapes."""
+    match = _MEASUREMENT_RE.match(text.strip())
+    if match is None:
+        return None
+    return match.group("op").upper(), match.group("column")
+
+
+def _calc_repr_matches(calc_repr: str, op: str, column: str | None) -> bool:
+    """True when `calc_repr` (one entry of `Usage.calculations`) is the same
+    calculation as `op`/`column`, matching the op case-insensitively and the
+    column exactly, when one was given."""
+    match = _MEASUREMENT_RE.match(calc_repr.strip())
+    if match is None:
+        return False
+    if match.group("op").upper() != op:
+        return False
+    return column is None or match.group("column") == column
+
+
 def validate_draft(
     draft: ReportDraft,
     tool_log: Sequence[ToolCall],
@@ -328,9 +514,10 @@ def validate_draft(
 
     issues += _check_hypotheses(draft, index, terms, require_negation=require_negation)
     issues += _check_baseline(draft, index)
-    issues += partially_checked_issues(draft.partially_checked, terms)
+    issues += partially_checked_issues(draft.partially_checked, tool_log, terms)
     if require_not_checked:
         issues += not_checked_issues(draft.not_checked, terms)
+        issues += not_checked_scope_issues(draft.not_checked)
     return issues
 
 
@@ -613,6 +800,38 @@ def not_checked_issues(not_checked: Sequence[str], terms: set[str]) -> list[Issu
     return issues
 
 
+def not_checked_scope_issues(not_checked: Sequence[str]) -> list[Issue]:
+    """Why the not-checked list is padded. Empty means it is not.
+
+    Separate from `not_checked_issues` on purpose. That function is the
+    grader's not-checked component as well as the validator's, and it answers
+    one question: is the list true against the log. This one answers a
+    different question, whether an entry says anything about the traffic,
+    and only the validator asks it. An entry naming only instrumentation or
+    trace-structure columns is rejected here, all such entries in one issue,
+    so the grader's score for a report is what it was before this check
+    existed.
+    """
+    out_of_scope = [
+        entry
+        for entry in not_checked
+        if (candidates := _candidates(entry))
+        and all(column in SYSTEM_COLUMNS for column in candidates)
+    ]
+    if not out_of_scope:
+        return []
+    return [
+        Issue(
+            "not_checked_out_of_scope",
+            f"not_checked entries {out_of_scope!r} name only instrumentation or "
+            "trace-structure columns (meta.*, telemetry.*, trace.*, span.*, library.*, "
+            "scenario.*, or type, parent_name, service.name). Those describe how the "
+            "trace was built, not the traffic. This list is for the dimensions and spans "
+            "that could have selected the affected rows.",
+        )
+    ]
+
+
 _TRIVIAL_REMAINDER = re.compile(r"^[\s\-:,;.'\"`]*$")
 
 
@@ -630,26 +849,127 @@ def _has_qualifier(entry: str, named: Sequence[str]) -> bool:
     return _TRIVIAL_REMAINDER.match(remainder) is None
 
 
-def partially_checked_issues(entries: Sequence[PartialCheck], terms: set[str]) -> list[Issue]:
+def partially_checked_issues(
+    entries: Sequence[PartialCheck],
+    tool_log_or_usage: Sequence[ToolCall] | Mapping[str, list[Usage]],
+    terms: set[str],
+) -> list[Issue]:
     """Why the partially-checked list is not truthful. Empty means it is.
 
-    The only thing checked is `subject`: it has to be one of the terms this
-    run's queries actually named, the same set `not_checked` is checked
-    against, compared case-insensitively. `queried_as` and `not_run` are the
-    model's own account of what it ran and what it did not, and there is no
-    log entry to check either sentence against, so neither is.
+    `subject` has to be one of the terms this run's queries actually named,
+    the same set `not_checked` is checked against, compared
+    case-insensitively; a subject that fails this is `partially_checked_false`
+    and the check goes no further for that entry. `reading` is then checked
+    against the log itself: a usage of the subject that contradicts the
+    claimed reading is `partially_checked_contradicted`, naming the reading,
+    the subject, and the `query_id` that contradicts it. `other_measurement`
+    with no `measurement` is `partially_checked_incomplete` before either
+    check runs, since there is nothing to check it against.
+
+    `tool_log_or_usage` accepts either the run's tool log or an
+    already-built `column_usage` mapping, so a caller that has one on hand
+    (as `validate_draft` does not, today, but a future caller might) does not
+    pay to rebuild it. `queried_as` carries no check of its own: it is the
+    model's own account of what it ran, and there is no further log entry to
+    check it against beyond what `reading` already covers.
     """
-    lowered = {term.lower() for term in terms}
-    return [
-        Issue(
-            "partially_checked_false",
-            f"partially_checked entry names {entry.subject!r}, and no query in this "
-            "session used that column, span, service, or window. It was never "
-            "queried, so it belongs in not_checked instead.",
+    usage = (
+        tool_log_or_usage
+        if isinstance(tool_log_or_usage, Mapping)
+        else column_usage(tool_log_or_usage)
+    )
+    lowered_usage = {column.lower(): usages for column, usages in usage.items()}
+    lowered_terms = {term.lower() for term in terms}
+
+    issues: list[Issue] = []
+    for entry in entries:
+        subject_key = entry.subject.lower()
+        if subject_key not in lowered_terms:
+            issues.append(
+                Issue(
+                    "partially_checked_false",
+                    f"partially_checked entry names {entry.subject!r}, and no query in this "
+                    "session used that column, span, service, or window. It was never "
+                    "queried, so it belongs in not_checked instead.",
+                )
+            )
+            continue
+        if entry.reading == "other_measurement" and entry.measurement is None:
+            issues.append(
+                Issue(
+                    "partially_checked_incomplete",
+                    f"partially_checked entry for {entry.subject!r} has reading "
+                    "other_measurement and no measurement. Name the calculation that was not "
+                    "run, as OP or OP(column), for example P99(duration_ms).",
+                )
+            )
+            continue
+        contradiction = _reading_contradiction(entry, lowered_usage.get(subject_key, []))
+        if contradiction is not None:
+            issues.append(contradiction)
+    return issues
+
+
+def _reading_contradiction(entry: PartialCheck, usages: Sequence[Usage]) -> Issue | None:
+    """The `partially_checked_contradicted` issue for `entry`, or None when
+    nothing in `usages` contradicts the reading it claims."""
+    if entry.reading == "per_value":
+        hit = next((u for u in usages if u.in_breakdowns), None)
+        if hit is None:
+            return None
+        return Issue(
+            "partially_checked_contradicted",
+            f"partially_checked entry for {entry.subject!r} claims reading per_value: that "
+            f"its values were never compared. But query {hit.query_id!r} broke down on it, "
+            "which is exactly that comparison. Say what you did not read about it instead, "
+            "or drop the entry.",
         )
-        for entry in entries
-        if entry.subject.lower() not in lowered
-    ]
+
+    if entry.reading == "over_time":
+        hit = next(
+            (u for u in usages if (u.in_breakdowns or u.in_filters) and u.has_granularity), None
+        )
+        if hit is None:
+            return None
+        return Issue(
+            "partially_checked_contradicted",
+            f"partially_checked entry for {entry.subject!r} claims reading over_time: that it "
+            f"was never read bucket by bucket across the window. But query {hit.query_id!r} "
+            "carried it with a granularity, which is exactly that reading.",
+        )
+
+    if entry.reading == "outside_selection":
+        hit = next(
+            (u for u in usages if (u.in_breakdowns or u.in_filters) and not u.other_filter_columns),
+            None,
+        )
+        if hit is None:
+            return None
+        return Issue(
+            "partially_checked_contradicted",
+            f"partially_checked entry for {entry.subject!r} claims reading outside_selection: "
+            f"that it was only read inside other filters. But query {hit.query_id!r} carried "
+            "it with no other filter narrowing the traffic, which is the traffic as a whole.",
+        )
+
+    # other_measurement, with a measurement (the incomplete case is rejected
+    # by the caller before this runs).
+    parsed = _parse_measurement(entry.measurement or "")
+    if parsed is None:
+        return None
+    op, column = parsed
+    hit = next(
+        (u for u in usages if any(_calc_repr_matches(c, op, column) for c in u.calculations)),
+        None,
+    )
+    if hit is None:
+        return None
+    return Issue(
+        "partially_checked_contradicted",
+        f"partially_checked entry for {entry.subject!r} claims reading other_measurement: "
+        f"that it was not read with {entry.measurement}. But query {hit.query_id!r} computed "
+        "exactly that calculation.",
+    )
 
 
 def _candidates(entry: str) -> set[str]:

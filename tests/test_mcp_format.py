@@ -11,6 +11,7 @@ from pathlib import Path
 
 from agent.format import (
     MAX_JSON_BYTES,
+    breakdown_values,
     extract_bubbleup_result_id,
     extract_ids,
     format_error,
@@ -179,6 +180,61 @@ def test_escaped_pipe_in_a_cell_is_kept() -> None:
     text = "# Results\n\n| COUNT | http.route |\n| --- | --- |\n| 3 | /a\\|b |\n"
     out = format_tool_result("run_query", text, args={"dataset_slug": "d"})
     assert "/a|b" in out
+
+
+# --------------------------------------------------------------------------
+# breakdown_values
+# --------------------------------------------------------------------------
+
+
+def test_breakdown_values_reads_a_breakdown_column() -> None:
+    fixture = load("run_query")
+    values = breakdown_values(text_of(fixture), args=fixture["args"])
+    assert values == {"service.name": ["receipts-smoke"]}
+
+
+def test_breakdown_values_drops_the_other_and_total_placeholder_rows() -> None:
+    text = (
+        "# Results\n\n| COUNT | deployment.version |\n| --- | --- |\n"
+        "| 8350 | 2.5.1 |\n| 0 | OTHER |\n| 8350 | TOTAL |\n"
+    )
+    args = {"query_spec": {"breakdowns": ["deployment.version"]}}
+    assert breakdown_values(text, args=args) == {"deployment.version": ["2.5.1"]}
+
+
+def test_breakdown_values_is_not_capped_at_25_rows() -> None:
+    """The compact table shown to the model caps at MAX_QUERY_ROWS; this
+    reads the full parsed table, all 30 distinct customer ids."""
+    fixture = load("run_query_synthetic_30rows")
+    values = breakdown_values(text_of(fixture), args=fixture["args"])
+    assert len(values["customer.id"]) == 30
+    assert "customer-0000" in values["customer.id"]
+    assert "customer-0029" in values["customer.id"]
+
+
+def test_breakdown_values_absent_without_a_breakdown() -> None:
+    fixture = load("run_query_series_nobreak_120")
+    assert breakdown_values(text_of(fixture), args=fixture["args"]) == {}
+
+
+def test_breakdown_values_absent_for_run_bubbleup() -> None:
+    """A run_bubbleup result has no `# Results` table to read."""
+    fixture = load("run_bubbleup")
+    assert breakdown_values(text_of(fixture), args=fixture["args"]) == {}
+
+
+def test_breakdown_values_absent_for_an_error_message() -> None:
+    assert breakdown_values("dataset not found", args={"query_spec": {"breakdowns": ["x"]}}) == {}
+
+
+def test_breakdown_values_absent_for_a_non_string_payload() -> None:
+    payload = {"rows": [{"x": "y"}]}
+    assert breakdown_values(payload, args={"query_spec": {"breakdowns": ["x"]}}) == {}
+
+
+def test_breakdown_values_absent_with_no_args() -> None:
+    fixture = load("run_query")
+    assert breakdown_values(text_of(fixture), args=None) == {}
 
 
 def test_fallback_strips_the_time_series_chart() -> None:

@@ -36,7 +36,10 @@ alongside a logged warning, rather than silently dropping the series.
 `format_tool_result` is the single entry point `agent/mcp_client.py` calls
 after a `tools/call` response is parsed. `extract_ids` is called
 separately, on the raw text, to pull `query_id` and `permalink` out of the
-Metadata block for the `ToolResult` the caller sees.
+Metadata block for the `ToolResult` the caller sees. `breakdown_values` is
+called separately too, by `agent/loop.py`, to read the values a `run_query`
+breakdown actually took off the same `# Results` table, so a report's claim
+about what it did or did not read can be checked against them.
 """
 
 from __future__ import annotations
@@ -202,6 +205,56 @@ def format_tool_result(name: str, payload: Any, *, args: dict[str, Any] | None =
             if rendered is not None:
                 return rendered
     return _format_json(payload)
+
+
+def breakdown_values(payload: Any, *, args: dict[str, Any] | None = None) -> dict[str, list[str]]:
+    """The values each breakdown column took in a `run_query` result's rows.
+
+    Read from the same `# Results` table `_format_run_query` renders, so a
+    value recorded here is one the server actually returned; the table read
+    is the full parsed one, not the `MAX_QUERY_ROWS`-capped view a model sees.
+    `OTHER` and `TOTAL`, the two placeholder rows the server adds when a
+    breakdown has more groups than the query asked to see, are not values of
+    the column and are left out; so is a blank cell, which means the column
+    is absent from that row rather than naming a value.
+
+    Empty for anything that is not a `run_query` result read this way: a
+    `run_bubbleup` result is baseline-vs-selection percentages per column, not
+    a row of values, and neither it nor `get_trace`'s waterfall has a
+    `# Results` table to parse. Also empty for a `run_query` whose `query_spec`
+    carried no `breakdowns`, whose result carries no `# Results` table at all
+    (an error message, or a response that came back as structured JSON rather
+    than the server's usual Markdown), or that is not a string in the first
+    place.
+    """
+    if not isinstance(payload, str):
+        return {}
+    spec = _get_query_spec(args)
+    breakdowns = spec.get("breakdowns")
+    if not isinstance(breakdowns, list) or not breakdowns:
+        return {}
+    table = _parse_markdown_table(payload, heading="# Results")
+    if table is None:
+        return {}
+    headers, rows = table
+    out: dict[str, list[str]] = {}
+    for column in breakdowns:
+        if not isinstance(column, str) or column not in headers:
+            continue
+        idx = headers.index(column)
+        values: list[str] = []
+        seen: set[str] = set()
+        for row in rows:
+            if idx >= len(row):
+                continue
+            value = row[idx]
+            if not value or value in ("OTHER", "TOTAL") or value in seen:
+                continue
+            seen.add(value)
+            values.append(value)
+        if values:
+            out[column] = values
+    return out
 
 
 def format_error(name: str, message: str) -> str:

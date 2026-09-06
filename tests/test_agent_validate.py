@@ -11,6 +11,8 @@ from typing import Any
 
 from agent.report import Evidence, Hypothesis, PartialCheck, ReportDraft, ToolCall
 from agent.validate import (
+    SYSTEM_COLUMNS,
+    column_usage,
     excluded_columns,
     partially_checked_issues,
     queried_terms,
@@ -269,6 +271,58 @@ def test_require_not_checked_off_skips_the_list_entirely() -> None:
 
 
 # --------------------------------------------------------------------------
+# not_checked: system columns are out of scope
+# --------------------------------------------------------------------------
+
+
+def test_system_column_entries_are_rejected_together_in_one_issue() -> None:
+    entries = ["trace.span_id", "telemetry.sdk.name", "span.num_events was never read"]
+    issues = validate_draft(draft(not_checked=entries), good_log(), run_id=RUN_ID)
+    out_of_scope = [issue for issue in issues if issue.code == "not_checked_out_of_scope"]
+    assert len(out_of_scope) == 1
+    for entry in entries:
+        assert entry in out_of_scope[0].message
+    assert not any(issue.code == "not_checked_false" for issue in issues)
+
+
+def test_a_mixed_entry_is_not_out_of_scope() -> None:
+    """An entry naming a system column alongside an in-scope one is a real claim,
+    even when the in-scope column turns out to have been queried, which is a
+    different rejection (not_checked_false) than being out of scope."""
+    issues = validate_draft(
+        draft(not_checked=["trace.span_id and deployment.version were both left unread"]),
+        good_log(),
+        run_id=RUN_ID,
+    )
+    assert not any(issue.code == "not_checked_out_of_scope" for issue in issues)
+    assert any(issue.code == "not_checked_false" for issue in issues)
+
+
+def test_status_code_and_error_stay_in_scope() -> None:
+    """A fault shows up in these columns, so they are not system columns."""
+    issues = validate_draft(
+        draft(not_checked=["status_code", "error", "exception.type"]), good_log(), run_id=RUN_ID
+    )
+    assert not any(issue.code == "not_checked_out_of_scope" for issue in issues)
+
+
+def test_not_checked_issues_alone_never_raises_out_of_scope() -> None:
+    """The grader calls `not_checked_issues` directly; scope is the validator's question only."""
+    from agent.validate import not_checked_issues, not_checked_scope_issues
+
+    entries = ["trace.span_id", "telemetry.sdk.name"]
+    assert not_checked_issues(entries, {"cart.size"}) == []
+    assert [i.code for i in not_checked_scope_issues(entries)] == ["not_checked_out_of_scope"]
+
+
+def test_the_out_of_scope_check_is_skipped_when_not_checked_is_not_required() -> None:
+    issues = validate_draft(
+        draft(not_checked=["trace.span_id"]), good_log(), run_id=RUN_ID, require_not_checked=False
+    )
+    assert not any(issue.code == "not_checked_out_of_scope" for issue in issues)
+
+
+# --------------------------------------------------------------------------
 # The partially-checked list
 # --------------------------------------------------------------------------
 
@@ -277,26 +331,29 @@ def partial_check(**overrides: Any) -> PartialCheck:
     base: dict[str, Any] = {
         "subject": "deployment.version",
         "queried_as": "broke down P99 duration_ms by deployment.version",
-        "not_run": "did not look at values below the current release",
+        "reading": "over_time",
+        "not_run": "did not read it bucket by bucket across the window",
     }
     base.update(overrides)
     return PartialCheck.model_validate(base)
 
 
 def test_a_queried_subject_is_accepted() -> None:
-    terms = queried_terms(good_log(), run_id=RUN_ID)
-    assert partially_checked_issues([partial_check()], terms) == []
+    log = good_log()
+    assert partially_checked_issues([partial_check()], log, queried_terms(log, run_id=RUN_ID)) == []
 
 
 def test_a_queried_subject_is_accepted_case_insensitively() -> None:
-    terms = queried_terms(good_log(), run_id=RUN_ID)
-    issues = partially_checked_issues([partial_check(subject="Deployment.Version")], terms)
+    log = good_log()
+    terms = queried_terms(log, run_id=RUN_ID)
+    issues = partially_checked_issues([partial_check(subject="Deployment.Version")], log, terms)
     assert issues == []
 
 
 def test_an_unqueried_subject_is_rejected() -> None:
-    terms = queried_terms(good_log(), run_id=RUN_ID)
-    issues = partially_checked_issues([partial_check(subject="never.queried")], terms)
+    log = good_log()
+    terms = queried_terms(log, run_id=RUN_ID)
+    issues = partially_checked_issues([partial_check(subject="never.queried")], log, terms)
     assert [issue.code for issue in issues] == ["partially_checked_false"]
     assert "never.queried" in issues[0].message
     assert "not_checked" in issues[0].message
@@ -312,11 +369,159 @@ def test_partially_checked_runs_whether_or_not_not_checked_is_required() -> None
         assert any(issue.code == "partially_checked_false" for issue in issues)
 
 
-def test_queried_as_and_not_run_are_free_text() -> None:
-    """Only subject is checked against the log; the other two fields are prose."""
-    terms = queried_terms(good_log(), run_id=RUN_ID)
-    odd = partial_check(queried_as="whatever I feel like", not_run="anything at all")
-    assert partially_checked_issues([odd], terms) == []
+def test_queried_as_is_free_text() -> None:
+    """queried_as carries no check of its own: reading is what is checked."""
+    log = good_log()
+    terms = queried_terms(log, run_id=RUN_ID)
+    odd = partial_check(queried_as="whatever I feel like")
+    assert partially_checked_issues([odd], log, terms) == []
+
+
+def test_partially_checked_issues_accepts_a_precomputed_usage_mapping() -> None:
+    """`tool_log_or_usage` can be the tool log or `column_usage`'s own output."""
+    log = good_log()
+    terms = queried_terms(log, run_id=RUN_ID)
+    usage = column_usage(log)
+    assert partially_checked_issues([partial_check()], usage, terms) == []
+    assert partially_checked_issues([partial_check()], log, terms) == []
+
+
+# --------------------------------------------------------------------------
+# partially_checked: each reading, accepted when nothing contradicts it and
+# rejected by the usage that does
+# --------------------------------------------------------------------------
+
+
+def test_per_value_is_accepted_when_never_broken_down_on() -> None:
+    log = [
+        query_call("Q1", filters=[{"column": "cart.size", "op": ">=", "value": 8}]),
+        baseline_call(),
+    ]
+    terms = queried_terms(log, run_id=RUN_ID)
+    check = partial_check(subject="cart.size", reading="per_value")
+    assert partially_checked_issues([check], log, terms) == []
+
+
+def test_per_value_is_contradicted_by_a_breakdown() -> None:
+    log = [query_call("Q1", breakdowns=["deployment.version"]), baseline_call()]
+    terms = queried_terms(log, run_id=RUN_ID)
+    check = partial_check(subject="deployment.version", reading="per_value")
+    issues = partially_checked_issues([check], log, terms)
+    assert [issue.code for issue in issues] == ["partially_checked_contradicted"]
+    assert "per_value" in issues[0].message
+    assert "deployment.version" in issues[0].message
+    assert "Q1" in issues[0].message
+
+
+def test_over_time_is_accepted_without_a_granularity() -> None:
+    log = [query_call("Q1", breakdowns=["deployment.version"]), baseline_call()]
+    terms = queried_terms(log, run_id=RUN_ID)
+    check = partial_check(subject="deployment.version", reading="over_time")
+    assert partially_checked_issues([check], log, terms) == []
+
+
+def test_over_time_is_contradicted_by_a_granularity() -> None:
+    granular = ToolCall(
+        name="run_query",
+        args={
+            "dataset_slug": "receipts-shop",
+            "query_spec": {
+                "calculations": [{"op": "COUNT"}],
+                "filters": [{"column": "scenario.run_id", "op": "=", "value": RUN_ID}],
+                "breakdowns": ["deployment.version"],
+                "granularity": 120,
+            },
+        },
+        query_id="Q1",
+    )
+    log = [granular, baseline_call()]
+    terms = queried_terms(log, run_id=RUN_ID)
+    check = partial_check(subject="deployment.version", reading="over_time")
+    issues = partially_checked_issues([check], log, terms)
+    assert [issue.code for issue in issues] == ["partially_checked_contradicted"]
+    assert "over_time" in issues[0].message
+    assert "Q1" in issues[0].message
+
+
+def test_outside_selection_is_accepted_when_only_ever_filtered_alongside_another_column() -> None:
+    log = [
+        query_call(
+            "Q1",
+            breakdowns=["deployment.version"],
+            filters=[{"column": "cloud.region", "op": "=", "value": "us-west-2"}],
+        ),
+        baseline_call(),
+    ]
+    terms = queried_terms(log, run_id=RUN_ID)
+    check = partial_check(subject="deployment.version", reading="outside_selection")
+    assert partially_checked_issues([check], log, terms) == []
+
+
+def test_outside_selection_is_contradicted_by_a_query_with_no_other_filter() -> None:
+    log = [query_call("Q1", breakdowns=["deployment.version"]), baseline_call()]
+    terms = queried_terms(log, run_id=RUN_ID)
+    check = partial_check(subject="deployment.version", reading="outside_selection")
+    issues = partially_checked_issues([check], log, terms)
+    assert [issue.code for issue in issues] == ["partially_checked_contradicted"]
+    assert "outside_selection" in issues[0].message
+    assert "Q1" in issues[0].message
+
+
+def test_other_measurement_is_accepted_when_the_named_calculation_never_ran() -> None:
+    """No query anywhere in this log computes P99(duration_ms): unlike
+    baseline_call(), this one only counts."""
+    log = [query_call("Q1", calculations=[{"op": "COUNT"}], breakdowns=["duration_ms"])]
+    terms = queried_terms(log, run_id=RUN_ID)
+    check = partial_check(
+        subject="duration_ms", reading="other_measurement", measurement="P99(duration_ms)"
+    )
+    assert partially_checked_issues([check], log, terms) == []
+
+
+def test_other_measurement_is_contradicted_when_the_calculation_already_ran() -> None:
+    log = [
+        query_call(
+            "Q1",
+            calculations=[{"op": "P99", "column": "duration_ms"}],
+            breakdowns=["duration_ms"],
+        ),
+        baseline_call(),
+    ]
+    terms = queried_terms(log, run_id=RUN_ID)
+    check = partial_check(
+        subject="duration_ms", reading="other_measurement", measurement="P99(duration_ms)"
+    )
+    issues = partially_checked_issues([check], log, terms)
+    assert [issue.code for issue in issues] == ["partially_checked_contradicted"]
+    assert "other_measurement" in issues[0].message
+    assert "Q1" in issues[0].message
+
+
+def test_other_measurement_without_a_column_matches_op_alone() -> None:
+    log = [
+        query_call("Q1", calculations=[{"op": "COUNT"}], breakdowns=["cart.size"]),
+        baseline_call(),
+    ]
+    terms = queried_terms(log, run_id=RUN_ID)
+    check = partial_check(subject="cart.size", reading="other_measurement", measurement="COUNT")
+    issues = partially_checked_issues([check], log, terms)
+    assert [issue.code for issue in issues] == ["partially_checked_contradicted"]
+
+
+def test_other_measurement_with_no_measurement_is_incomplete() -> None:
+    log = [query_call("Q1", breakdowns=["cart.size"]), baseline_call()]
+    terms = queried_terms(log, run_id=RUN_ID)
+    check = partial_check(subject="cart.size", reading="other_measurement", measurement=None)
+    issues = partially_checked_issues([check], log, terms)
+    assert [issue.code for issue in issues] == ["partially_checked_incomplete"]
+
+
+def test_a_subject_never_queried_is_still_rejected_before_any_reading_check() -> None:
+    log = good_log()
+    terms = queried_terms(log, run_id=RUN_ID)
+    check = partial_check(subject="never.queried", reading="per_value")
+    issues = partially_checked_issues([check], log, terms)
+    assert [issue.code for issue in issues] == ["partially_checked_false"]
 
 
 # --------------------------------------------------------------------------
@@ -938,3 +1143,97 @@ def test_the_rejection_message_names_the_complement_as_an_accepted_form() -> Non
     ]
     issues = validate_draft(draft(hypotheses=[range_claim]), log, run_id=RUN_ID)
     assert "complementary comparison (< 8) at the same bound" in issues[0].message
+
+
+# --------------------------------------------------------------------------
+# column_usage
+# --------------------------------------------------------------------------
+
+
+def test_column_usage_records_breakdowns_filters_and_calculations() -> None:
+    log = [
+        query_call(
+            "Q1",
+            breakdowns=["deployment.version"],
+            filters=[{"column": "cloud.region", "op": "=", "value": "us-west-2"}],
+            calculations=[{"op": "P99", "column": "duration_ms"}],
+        )
+    ]
+    usage = column_usage(log)
+    version = usage["deployment.version"][0]
+    assert version.query_id == "Q1"
+    assert version.in_breakdowns is True
+    assert version.in_filters is False
+    assert version.in_calculations is False
+    assert version.other_filter_columns == frozenset({"cloud.region"})
+    assert version.calculations == ("P99(duration_ms)",)
+    assert version.has_granularity is False
+
+    region = usage["cloud.region"][0]
+    assert region.in_filters is True
+    # deployment.version is a breakdown column on this query, not a filter, so
+    # it is not one of cloud.region's *other filter* columns.
+    assert region.other_filter_columns == frozenset()
+
+    duration = usage["duration_ms"][0]
+    assert duration.in_calculations is True
+
+
+def test_column_usage_ignores_errored_calls() -> None:
+    log = [query_call("Q1", breakdowns=["deployment.version"], name="run_query")]
+    log[0] = ToolCall(name="run_query", args=log[0].args, query_id="Q1", is_error=True)
+    assert column_usage(log) == {}
+
+
+def test_column_usage_ignores_tools_outside_query_tools() -> None:
+    log = [
+        ToolCall(name="get_dataset_columns", args={"column": "deployment.version"}, query_id="Q1")
+    ]
+    assert column_usage(log) == {}
+
+
+def test_column_usage_reads_a_bubbleup_group_selection_as_a_filter() -> None:
+    log = [
+        ToolCall(
+            name="run_bubbleup",
+            args={"query_pk": "Q1", "selection": {"type": "group", "group": {"http.route": "/x"}}},
+            query_id="B1",
+        )
+    ]
+    usage = column_usage(log)
+    assert usage["http.route"][0].in_filters is True
+    assert usage["http.route"][0].query_id == "B1"
+
+
+def test_column_usage_keys_by_the_column_as_the_call_named_it() -> None:
+    """Case-insensitive lookup, when it is wanted, is the caller's job."""
+    log = [query_call("Q1", breakdowns=["Deployment.Version"])]
+    usage = column_usage(log)
+    assert "Deployment.Version" in usage
+    assert "deployment.version" not in usage
+
+
+# --------------------------------------------------------------------------
+# SYSTEM_COLUMNS
+# --------------------------------------------------------------------------
+
+
+def test_system_columns_cover_the_documented_prefixes_and_names() -> None:
+    for column in (
+        "meta.signal_type",
+        "telemetry.sdk.name",
+        "library.name",
+        "trace.span_id",
+        "span.num_events",
+        "scenario.run_id",
+        "type",
+        "parent_name",
+        "service.name",
+    ):
+        assert column in SYSTEM_COLUMNS, column
+    for column in ("status_code", "status_message", "error", "exception.type", "customer.id"):
+        assert column not in SYSTEM_COLUMNS, column
+
+
+def test_system_columns_match_case_insensitively() -> None:
+    assert "Trace.Span_Id" in SYSTEM_COLUMNS
