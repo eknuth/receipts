@@ -8,10 +8,10 @@ description: Start a Receipts issue the way every issue since R9 has been starte
 What this replaces. Thirteen orchestrator turns in the transcripts ask for a handoff prompt
 or to clear context, and each new session then re-derives the same opening by hand: read
 CLAUDE.md, read the handoff, read the issue (over forty `get_issue` calls), find the next R
-number, branch (over a dozen branch commands), spawn the implementer. Two sessions got the
-R number wrong
-because it was read off branch names alone. The steps below are the process in
-`feedback-issue-process.md`, in order, with the R number taken from both sources.
+number, branch (over a dozen branch commands), spawn the implementer. The handoff memory
+records the R number being mixed up once when it was read off branch names alone, so the
+steps below take it from Linear and from git. They are the process in
+`feedback-issue-process.md`, in order.
 
 Argument: the issue id, for example `EDW-1368`.
 

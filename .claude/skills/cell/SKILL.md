@@ -1,6 +1,6 @@
 ---
-description: Read one result cell (grade, validation, hypotheses, evidence, tool log). Usage /cell <column> <scenario> <n>
-argument-hint: <column> <scenario> <n>
+name: cell
+description: Read one result cell (grade, validation, hypotheses, evidence, tool log) with evals/cell.py. Usage /cell <column> <scenario> <n>.
 allowed-tools: Bash(uv run python -m evals.cell:*)
 ---
 

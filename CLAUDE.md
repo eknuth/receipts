@@ -46,17 +46,22 @@ above still stand as written.
 - `/pass-run <park>`: the before-and-after pass shape (branch, ingest, and running-emit
   checks; park the live column four levels deep; three trigger emits; the nine at three
   repeats; render). Replaces the scratchpad pass scripts.
-- `/column-compare` and `/compare <before> <after>`: `evals/compare.py`, paired-cell
-  comparison of two columns. Replaces the per-session compare scripts.
-- `/cell-read` and `/cell <col> <scenario> <n>`: `evals/cell.py`, one cell's grade,
-  validation, hypotheses, evidence, and tool log. Replaces the per-session dump scripts.
+- `/compare <before> <after>` (skill `compare`, reading guide in `column-compare`):
+  `evals/compare.py`, paired-cell comparison of two columns. Replaces the per-session
+  compare scripts.
+- `/cell <col> <scenario> <n>` (skill `cell`, reading guide in `cell-read`): `evals/cell.py`,
+  one cell's grade, validation, hypotheses, evidence, and tool log. Replaces the per-session
+  dump scripts.
 - `/review`: the Fable adversarial review brief, two lenses. Replaces retyping it.
 - Hook `block_secrets.py`: refuses a commit that adds a key-shaped line or stages `.env`.
 - Hook `block_double_emit.py`: refuses an emit while another `evals.run` or `gen.emit` runs.
 - Hook `block_parked_column.py`: refuses a park at three levels under `evals/results/`.
 - Hook `lint_after_commit.py`: runs `make lint` after a commit and warns when red.
-- `settings.json` allowlists the read-only commands and Linear read tools; nothing that
-  writes to GitHub, Linear, or Honeycomb, and never `rm`.
+- `settings.json` allowlists the read-only commands (`git status`, `git log`, `git diff`,
+  `git branch --show-current`, `ls`, pytest, `ruff check`, `ruff format --check`, `gh pr
+  view`), `evals.report` (which writes the generated `evals/report.md`), the compare and
+  cell modules, and the Linear read tools; nothing that writes to GitHub, Linear, or
+  Honeycomb, and never `rm`.
 
 ## Layout
 
@@ -82,7 +87,7 @@ receipts/
     cell.py       one cell's grade, validation, hypotheses, and tool log (/cell)
     results/      gitignored except runs.json, the index of emitted run ids per scenario
   tools/usage_stats.py   counts from the Claude Code transcripts; feeds docs/agentic-workflow.md
-  .claude/        skills, commands, hooks, settings.json (see Tooling)
+  .claude/        skills, hooks, settings.json (see Tooling)
 ```
 
 Packages: `anthropic`, `boto3` (R11 only), `mcp` (streamable HTTP client), `opentelemetry-sdk`,

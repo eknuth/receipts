@@ -4,11 +4,13 @@
       "Bash(git status:*)",
       "Bash(git log:*)",
       "Bash(git diff:*)",
-      "Bash(git branch:*)",
+      "Bash(git branch --show-current)",
+      "Bash(git branch -a)",
       "Bash(git show:*)",
       "Bash(ls:*)",
       "Bash(uv run pytest:*)",
-      "Bash(uv run ruff:*)",
+      "Bash(uv run ruff check:*)",
+      "Bash(uv run ruff format --check:*)",
       "Bash(make test)",
       "Bash(make lint)",
       "Bash(gh pr view:*)",
@@ -32,17 +34,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/block_secrets.py\"",
+            "command": "F=\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/block_secrets.py\"; if [ -f \"$F\" ]; then python3 \"$F\"; fi",
             "timeout": 15
           },
           {
             "type": "command",
-            "command": "uv run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/block_double_emit.py\"",
+            "command": "F=\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/block_double_emit.py\"; if [ -f \"$F\" ]; then python3 \"$F\"; fi",
             "timeout": 15
           },
           {
             "type": "command",
-            "command": "uv run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/block_parked_column.py\"",
+            "command": "F=\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/block_parked_column.py\"; if [ -f \"$F\" ]; then python3 \"$F\"; fi",
             "timeout": 15
           }
         ]
@@ -54,7 +56,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/lint_after_commit.py\"",
+            "command": "F=\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/lint_after_commit.py\"; if [ -f \"$F\" ]; then python3 \"$F\"; fi",
             "timeout": 90
           }
         ]

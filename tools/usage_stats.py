@@ -4,13 +4,17 @@ Reads every session JSONL under the Claude Code project directory (the
 orchestrator sessions at the top level and the subagent sessions under
 `<session>/subagents/`) and prints markdown tables of aggregates: tool calls by
 tool name, shell commands by normalized shape, subagent spawns, permission
-denials, user turn counts, and memory file sizes. It never prints a line of
-conversation text, a tool result, or a command argument: only counts, tool
-names, normalized command shapes, and the short label an Agent call carries as
-its `description`. A final scrub replaces any key-looking substring that still
-reaches the output, and a test pins that.
+denials, user turn counts, and the size of the memory directory. It never
+prints a line of conversation text, a tool result, a command argument, or a
+memory file name: only counts, tool names, normalized command shapes, and the
+short label an Agent call carries as its `description`. A final scrub replaces
+any key-looking substring that still reaches the output, and a test pins that.
 
-    uv run python tools/usage_stats.py [--root DIR] [--top N]
+    uv run python tools/usage_stats.py [--root DIR] [--top N] [--before ISO-8601]
+
+`--before` drops every transcript entry stamped after the given time, so a
+run over a live session reproduces: the tables in `docs/agentic-workflow.md`
+carry the timestamp they were made with, and a test regenerates them.
 
 Method notes, so the numbers can be read honestly:
 
@@ -18,8 +22,11 @@ Method notes, so the numbers can be read honestly:
   messages. Tool results are `tool_result` blocks in user messages. User turns
   are user messages whose content is text, with the meta and tool-result ones
   excluded, and lines that start with `<` (injected notifications) excluded.
-- A shell command is split on `&&`, `||`, `;`, `|`, and newlines, a heredoc is
-  cut at its `<<` line, and each segment is reduced to a shape: the first
+  A session with no turns and no tool calls (or none before the cutoff) is
+  dropped.
+- A shell command is cut at a heredoc or an inline program, tokenized with
+  `shlex` so a `|` inside a quoted pattern stays put, split at `&&`, `||`,
+  `;`, `|`, and newlines, and each segment is reduced to a shape: the first
   token, plus the subcommand for `git`, `gh`, `make`, `uv run`, and the module
   for `python -m`. Paths become `<path>`. So `cd ~/proj && git status` counts
   once for `cd` and once for `git status`.
@@ -40,6 +47,7 @@ import shlex
 import sys
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 DEFAULT_ROOT = Path.home() / ".claude" / "projects" / "-Users-eknuth-proj-receipts"
@@ -106,6 +114,10 @@ class Session:
     spawns: list[dict] = field(default_factory=list)
     denials: Counter = field(default_factory=Counter)
     bad_lines: int = 0
+
+    @property
+    def empty(self) -> bool:
+        return not (self.assistant_turns or self.user_turns or self.tools)
 
 
 def shape_of(segment: list[str]) -> str | None:
@@ -203,6 +215,17 @@ def command_families(command: str) -> list[str]:
     return [name for name, pattern in FAMILIES if re.search(pattern, command, re.S)]
 
 
+def parse_ts(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    text = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
 def _blocks(record: dict) -> list[dict]:
     message = record.get("message")
     if not isinstance(message, dict):
@@ -215,7 +238,7 @@ def _blocks(record: dict) -> list[dict]:
     return []
 
 
-def read_session(path: Path, kind: str) -> Session:
+def read_session(path: Path, kind: str, before: datetime | None = None) -> Session:
     s = Session(name=path.stem, kind=kind)
     with path.open(encoding="utf-8", errors="replace") as fh:
         for line in fh:
@@ -225,6 +248,10 @@ def read_session(path: Path, kind: str) -> Session:
                 s.bad_lines += 1
                 continue
             ts = rec.get("timestamp")
+            if before is not None:
+                stamped = parse_ts(ts)
+                if stamped is not None and stamped > before:
+                    continue
             if isinstance(ts, str):
                 s.first_ts = s.first_ts or ts
                 s.last_ts = ts
@@ -256,9 +283,8 @@ def read_session(path: Path, kind: str) -> Session:
             elif rtype == "user" and not rec.get("isMeta"):
                 if any(b.get("type") == "tool_result" for b in blocks):
                     for b in blocks:
-                        if b.get("type") == "tool_result" and _result_text(b).startswith(
-                            DENIAL_PREFIX
-                        ):
+                        is_result = b.get("type") == "tool_result"
+                        if is_result and _result_text(b).startswith(DENIAL_PREFIX):
                             s.denials["denial text in a tool result"] += 1
                     continue
                 text = " ".join(str(b.get("text", "")) for b in blocks if b.get("type") == "text")
@@ -287,17 +313,19 @@ def _result_text(block: dict) -> str:
     return ""
 
 
-def load(root: Path) -> list[Session]:
-    sessions = [read_session(p, "orchestrator") for p in sorted(root.glob("*.jsonl"))]
-    sessions += [read_session(p, "subagent") for p in sorted(root.glob("*/subagents/*.jsonl"))]
-    return sessions
+def load(root: Path, before: datetime | None = None) -> list[Session]:
+    sessions = [read_session(p, "orchestrator", before) for p in sorted(root.glob("*.jsonl"))]
+    sessions += [
+        read_session(p, "subagent", before) for p in sorted(root.glob("*/subagents/*.jsonl"))
+    ]
+    return [s for s in sessions if not s.empty]
 
 
-def memory_files(root: Path) -> list[tuple[str, int]]:
-    out = []
-    for p in sorted((root / "memory").glob("*.md")):
-        out.append((p.name, len(p.read_text(encoding="utf-8", errors="replace").split())))
-    return out
+def memory_summary(root: Path) -> tuple[int, int]:
+    """(file count, total words) of the memory directory. File names are never printed."""
+    files = sorted((root / "memory").glob("*.md"))
+    words = sum(len(p.read_text(encoding="utf-8", errors="replace").split()) for p in files)
+    return len(files), words
 
 
 def table(headers: list[str], rows: list[list[object]]) -> list[str]:
@@ -307,7 +335,7 @@ def table(headers: list[str], rows: list[list[object]]) -> list[str]:
     return lines
 
 
-def render(sessions: list[Session], memory: list[tuple[str, int]], top: int) -> list[str]:
+def render(sessions: list[Session], memory: tuple[int, int], top: int) -> list[str]:
     orch = [s for s in sessions if s.kind == "orchestrator"]
     subs = [s for s in sessions if s.kind == "subagent"]
     out: list[str] = []
@@ -376,7 +404,7 @@ def render(sessions: list[Session], memory: list[tuple[str, int]], top: int) -> 
         ot.update(s.tools)
     for s in subs:
         st.update(s.tools)
-    names = sorted(set(ot) | set(st), key=lambda n: -(ot[n] + st[n]))
+    names = sorted(set(ot) | set(st), key=lambda n: (-(ot[n] + st[n]), n))
     rows = [[n, ot[n], st[n], ot[n] + st[n]] for n in names[:top]]
     rows.append(["total", sum(ot.values()), sum(st.values()), sum(ot.values()) + sum(st.values())])
     out += table(["tool", "orchestrator", "subagent", "all"], rows)
@@ -389,16 +417,10 @@ def render(sessions: list[Session], memory: list[tuple[str, int]], top: int) -> 
         osh.update(s.shapes)
     for s in subs:
         ssh.update(s.shapes)
-    shapes = sorted(set(osh) | set(ssh), key=lambda n: -(osh[n] + ssh[n]))
+    shapes = sorted(set(osh) | set(ssh), key=lambda n: (-(osh[n] + ssh[n]), n))
     rows = [[n, osh[n], ssh[n], osh[n] + ssh[n]] for n in shapes[:top]]
-    rows.append(
-        [
-            "all segments",
-            sum(osh.values()),
-            sum(ssh.values()),
-            sum(osh.values()) + sum(ssh.values()),
-        ]
-    )
+    total_o, total_s = sum(osh.values()), sum(ssh.values())
+    rows.append(["all segments", total_o, total_s, total_o + total_s])
     out += table(["shape", "orchestrator", "subagent", "all"], rows)
     out.append("")
 
@@ -437,17 +459,15 @@ def render(sessions: list[Session], memory: list[tuple[str, int]], top: int) -> 
     den = Counter()
     for s in sessions:
         den.update(s.denials)
-    rows = [[k, v] for k, v in den.most_common()] or [["none recorded", 0]]
-    out += table(["kind", "count"], rows)
+    rows = [[k, v] for k, v in sorted(den.items(), key=lambda kv: (-kv[1], kv[0]))]
+    out += table(["kind", "count"], rows or [["none recorded", 0]])
     out.append("")
     out.append("Approved permission prompts leave no record in the transcript and are not counted.")
     out.append("")
 
     out.append("## Memory files")
     out.append("")
-    rows = [[name, words] for name, words in memory]
-    rows.append(["total", sum(w for _, w in memory)])
-    out += table(["file", "words"], rows)
+    out.append(f"{memory[0]} files, {memory[1]} words. Read at run time, not scoped by --before.")
     return out
 
 
@@ -466,12 +486,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
     parser.add_argument("--top", type=int, default=30)
+    parser.add_argument(
+        "--before", type=parse_ts, default=None, help="ISO 8601, e.g. 2026-09-06T20:00:00Z"
+    )
     args = parser.parse_args(argv)
     if not args.root.is_dir():
         print(f"no transcript directory at {args.root}", file=sys.stderr)
         return 1
-    sessions = load(args.root)
-    lines = render(sessions, memory_files(args.root), args.top)
+    sessions = load(args.root, args.before)
+    lines = render(sessions, memory_summary(args.root), args.top)
     print("\n".join(scrub(lines)))
     return 0
 

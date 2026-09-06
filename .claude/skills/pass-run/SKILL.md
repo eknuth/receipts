@@ -33,13 +33,17 @@ and optionally `--provider <name>` for a non-Anthropic column.
    Refuse the pass and tell Ed when month-to-date plus 300,000 would pass 20M. The 1.3M a
    day figure in older handoffs was self-imposed pacing; Honeycomb lists no daily cap.
 4. Cost and time on `claude-sonnet-4-5`: about $16 and 95 minutes for thirty cells. Say so
-   before starting; Ed has asked about credits ten times.
+   before starting; ten of Ed's turns in the transcripts ask about credits, so the number
+   belongs in the first line of the reply.
 
 ## The pass
 
-Write it to the session scratchpad as one `zsh` script with `set -e` and run it in the
-background with output to a log, then poll the log for the DONE line. Never two passes at
-once. The shape, with `NINE` the nine non-trigger scenario ids from `gen/scenarios/`:
+Write it to the session scratchpad as one `zsh` script named `<issue>pass.sh` (any
+`*pass*.sh`), with `set -e`, run it in the background with output to a log, then poll the log
+for the DONE line. The name matters: `block_double_emit.py` sees the launch command, not what
+the script will run, and a script launched with `nohup` shows in `pgrep` under its own name
+until its first `evals.run` child starts. The hook matches `*pass*.sh` in the command to close
+that gap; a pass launched under another name is not covered. Never two passes at once. The shape, with `NINE` the nine non-trigger scenario ids from `gen/scenarios/`:
 
 ```
 set -e

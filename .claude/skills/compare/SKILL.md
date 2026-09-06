@@ -1,6 +1,6 @@
 ---
-description: Compare two result columns cell by cell. Usage /compare <before> <after>, paths under evals/results/
-argument-hint: <before> <after>
+name: compare
+description: Compare two result columns cell by cell with evals/compare.py. Usage /compare <before> <after>, both paths under evals/results/.
 allowed-tools: Bash(uv run python -m evals.compare:*)
 ---
 
