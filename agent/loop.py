@@ -265,11 +265,17 @@ async def build_tools(mcp: HoneycombMCP, config: AgentConfig) -> list[ToolSchema
 
 
 def _make_provider(config: AgentConfig, settings: Settings) -> Provider:
-    if config.provider != "anthropic":
-        raise ValueError(f"unknown provider {config.provider!r}; only 'anthropic' exists in R6")
-    from agent.providers.anthropic import AnthropicProvider
+    if config.provider == "anthropic":
+        from agent.providers.anthropic import AnthropicProvider
 
-    return AnthropicProvider(settings, model=config.model)
+        return AnthropicProvider(settings, model=config.model)
+    if config.provider == "ollama":
+        from agent.providers.ollama import OllamaProvider
+
+        return OllamaProvider(settings, model=config.model)
+    raise ValueError(
+        f"unknown provider {config.provider!r}; only 'anthropic' and 'ollama' exist so far"
+    )
 
 
 async def investigate(
@@ -446,6 +452,14 @@ class _RunState:
         key unwrapped, once per attempt this run made, accepted or rejected.
         A list, not a set: two attempts that each needed the same fix are
         two interventions, and the count is the honest number. See `submit`."""
+        self.malformed_calls = 0
+        """Tool calls a provider handed back flagged `ToolUse.malformed`
+        (`agent/providers/ollama.py`), counted here rather than only in the
+        tool log: the call still goes out with empty args and is logged like
+        any other tool call, but this is the one place that says how many of
+        them started as arguments the provider itself could not parse into
+        an object, as distinct from a call the MCP server rejected for some
+        other reason."""
 
     # -- counters ---------------------------------------------------------
 
@@ -469,6 +483,8 @@ class _RunState:
             )
 
         self.budget.calls += 1
+        if use.malformed:
+            self.malformed_calls += 1
         elapsed = self.budget.wall_s
         with self.trace.tool_span(use.name, use.id, use.args) as tool_span:
             try:
@@ -630,6 +646,11 @@ class _RunState:
         client retyped from the column schema), as `<tool>:<path>`, so
         `coerced_fields` counts both kinds the way its description says, one
         entry per attempt or call, so the same path twice is two entries.
+
+        `max_wall_s` is the budget this run was given, not what it spent
+        (that is `wall_s`): recorded so a report from the ollama provider's
+        20 minute default reads differently from one run under the 8 minute
+        default, without the reader having to know which config produced it.
         """
         cost = cost_usd(
             self.provider.model,
@@ -659,6 +680,7 @@ class _RunState:
             "cache_read_tokens": self.cache_read,
             "cache_write_tokens": self.cache_write,
             "wall_s": round(self.budget.wall_s, 2),
+            "max_wall_s": self.budget.max_wall_s,
             "cost_usd": round(cost or 0.0, 6),
             "tool_log": list(self.tool_log),
             "stop_reason": stop_reason,
@@ -666,6 +688,7 @@ class _RunState:
             "validation_failed": validation_failed,
             "validation_messages": validation_messages,
             "coerced_fields": coerced_fields,
+            "malformed_calls": self.malformed_calls,
             "error": error,
         }
         if draft is None:

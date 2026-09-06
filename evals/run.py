@@ -118,7 +118,26 @@ CONFIGS: dict[str, dict[str, Any]] = {
     "no-notchecked": {"require_not_checked": False},
 }
 
-PROVIDERS: tuple[str, ...] = ("anthropic", "bedrock")
+PROVIDERS: tuple[str, ...] = ("anthropic", "bedrock", "ollama")
+
+# The ollama provider's own wall budget default (R15, EDW-1337): 20 minutes
+# rather than the 8 every other provider gets, because prompt eval on a 30
+# to 40k token context late in a run is the expected weak spot on local
+# hardware. Applied only when `--max-wall-s` was not given on the command
+# line; an explicit value always wins, for any provider.
+OLLAMA_DEFAULT_MAX_WALL_S = 1200.0
+
+
+def resolved_max_wall_s(provider: str, max_wall_s: float | None) -> float:
+    """The wall budget a run gets: an explicit `--max-wall-s` always wins.
+
+    Left unset (`None`, argparse's default when the flag is not given),
+    ollama gets `OLLAMA_DEFAULT_MAX_WALL_S` and every other provider gets
+    `DEFAULT_MAX_WALL_S`.
+    """
+    if max_wall_s is not None:
+        return max_wall_s
+    return OLLAMA_DEFAULT_MAX_WALL_S if provider == "ollama" else DEFAULT_MAX_WALL_S
 
 
 # --------------------------------------------------------------------------
@@ -931,7 +950,15 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="emit a fresh run per scenario first; otherwise reuse the latest from runs.json",
     )
     parser.add_argument("--max-calls", type=int, default=DEFAULT_MAX_CALLS)
-    parser.add_argument("--max-wall-s", type=float, default=DEFAULT_MAX_WALL_S)
+    parser.add_argument(
+        "--max-wall-s",
+        type=float,
+        default=None,
+        help=(
+            f"default {DEFAULT_MAX_WALL_S:.0f} "
+            f"({OLLAMA_DEFAULT_MAX_WALL_S:.0f} for --provider ollama)"
+        ),
+    )
     parser.add_argument("--results-dir", type=Path, default=RESULTS_DIR)
     parser.add_argument("--runs-dir", type=Path, default=RUNS_DIR, help="where manifests live")
     parser.add_argument(
@@ -987,9 +1014,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.repeats < 1:
         print("error: --repeats must be at least 1", file=sys.stderr)
         return 2
-    if args.provider != "anthropic":
+    if args.provider == "bedrock":
         print(f"error: provider {args.provider!r} arrives in R11", file=sys.stderr)
         return 2
+    max_wall_s = resolved_max_wall_s(args.provider, args.max_wall_s)
     if args.resume and args.emit:
         print(
             "error: --resume and --emit do not combine: a fresh emit changes the run id, and a "
@@ -1020,7 +1048,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 provider=args.provider,
                 model=args.model,
                 max_calls=args.max_calls,
-                max_wall_s=args.max_wall_s,
+                max_wall_s=max_wall_s,
                 console=console,
                 telemetry=telemetry,
                 resume=args.resume,

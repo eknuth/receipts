@@ -19,11 +19,28 @@ from evals.pricing import (
 
 
 def test_the_table_is_readable_and_every_row_is_positive() -> None:
+    """Every hosted model is priced positive, output above input. Ollama's
+
+    row is the one deliberate exception: it runs locally and is priced at
+    exactly zero, not merely cheap, so it is checked on its own below rather
+    than folded into "positive" here.
+    """
     prices = load_prices()
     assert prices
-    for price in prices.values():
+    for name, price in prices.items():
+        if name == "qwen3.8:27b":
+            continue
         assert price.input > 0
         assert price.output > price.input
+
+
+def test_ollama_is_priced_at_exactly_zero() -> None:
+    """Local runs cost nothing: the eval report should say zero, not "unpriced"."""
+    price = price_for("qwen3.8:27b")
+    assert price is not None
+    assert price.input == 0
+    assert price.output == 0
+    assert cost_usd("qwen3.8:27b", 40_000, 4_000) == 0.0
 
 
 def test_the_configured_model_is_priced() -> None:

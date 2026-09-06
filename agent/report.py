@@ -426,6 +426,12 @@ class Report(BaseModel):
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
     wall_s: float = 0.0
+    max_wall_s: float = 0.0
+    """The wall-clock budget this run was given, from `AgentConfig.max_wall_s`,
+    not what it spent (`wall_s`). Anthropic and Bedrock runs default to 8
+    minutes (480); ollama runs default to 20 (1200), since a 30 to 40k token
+    context is expected to slow prompt eval late in a run. Recorded so a run
+    reads against the budget it actually had rather than an assumed one."""
     cost_usd: float = 0.0
     tool_log: list[ToolCall] = Field(default_factory=list)
 
@@ -453,6 +459,17 @@ class Report(BaseModel):
             "the per-call detail; this field is the sum. Also noted as a line in "
             "validation_messages; this is the same fact as structured data, for the eval "
             "and the README finding to count without parsing prose."
+        ),
+    )
+    malformed_calls: int = Field(
+        default=0,
+        description=(
+            "Tool calls a provider handed back with arguments it could not parse into an "
+            "object at all (JSON that decodes to a list or a scalar, or text that never "
+            "was JSON), so the call went out with args={} instead. Only agent/providers/"
+            "ollama.py raises this today; a provider that never flags a call keeps this at "
+            "zero. Each one is also in tool_log as a call whose args are empty, so this is "
+            "a count of that one cause, not a second log."
         ),
     )
     error: str | None = None

@@ -31,6 +31,9 @@ from agent.report import Evidence, Hypothesis, Report, load_report
 from evals.grader import grade_file
 from evals.run import (
     CONFIGS,
+    DEFAULT_MAX_WALL_S,
+    OLLAMA_DEFAULT_MAX_WALL_S,
+    PROVIDERS,
     GradedRun,
     RunIndex,
     agent_config,
@@ -41,6 +44,7 @@ from evals.run import (
     next_repeat,
     regrade,
     resolve_run,
+    resolved_max_wall_s,
     run_dir,
     run_matrix,
     top_permalink,
@@ -528,6 +532,51 @@ def test_configs_map_to_agent_config_knobs_only() -> None:
     assert agent_config("full", model="claude-sonnet-5", max_calls=10).max_calls == 10
     with pytest.raises(KeyError):
         agent_config("no-such-config")
+
+
+# --------------------------------------------------------------------------
+# The ollama provider (R15 / EDW-1337): choices, config, and the wall budget
+# --------------------------------------------------------------------------
+
+
+def test_ollama_is_an_accepted_provider_choice() -> None:
+    assert "ollama" in PROVIDERS
+
+
+def test_agent_config_wires_the_ollama_provider_through() -> None:
+    config = agent_config("full", provider="ollama", model="qwen3.8:27b")
+    assert config.provider == "ollama"
+    assert config.model == "qwen3.8:27b"
+
+
+def test_an_explicit_max_wall_s_always_wins() -> None:
+    assert resolved_max_wall_s("anthropic", 300.0) == 300.0
+    assert resolved_max_wall_s("ollama", 300.0) == 300.0
+
+
+def test_ollama_defaults_to_a_twenty_minute_wall_budget_when_unset() -> None:
+    assert resolved_max_wall_s("ollama", None) == OLLAMA_DEFAULT_MAX_WALL_S
+    assert OLLAMA_DEFAULT_MAX_WALL_S == 1200.0
+
+
+def test_every_other_provider_keeps_the_eight_minute_default_when_unset() -> None:
+    assert resolved_max_wall_s("anthropic", None) == DEFAULT_MAX_WALL_S
+    assert resolved_max_wall_s("bedrock", None) == DEFAULT_MAX_WALL_S
+
+
+def test_provider_ollama_is_accepted_by_argument_parsing() -> None:
+    """`--provider ollama` parses; `--provider nonsense` does not.
+
+    Argument parsing only: this never reaches Settings() or a real run, since
+    both would need a real .env and would spend the MCP rate limit or the
+    Anthropic API this test suite must not touch.
+    """
+    import evals.run as module
+
+    args = module._parse_args(["--scenarios", "control-quiet", "--provider", "ollama"])
+    assert args.provider == "ollama"
+    with pytest.raises(SystemExit):
+        module._parse_args(["--scenarios", "control-quiet", "--provider", "nonsense"])
 
 
 # --------------------------------------------------------------------------

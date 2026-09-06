@@ -3,8 +3,9 @@
 # here; 5 minute cache writes are 1.25x. Those two multipliers live in
 # evals/pricing.py rather than being repeated per model.
 #
-# Bedrock (R11) and Ollama (R15) get their own entries when those providers land.
-# Ollama runs locally, so its price is zero and the eval report says so.
+# Bedrock (R11) gets its own entries when that provider lands. Ollama (R15)
+# is qwen3.8:27b below, priced at zero: it runs locally, on hardware this
+# project already owns, so there is no per-token rate to quote.
 models:
   claude-sonnet-4-5:
     input: 3.00
@@ -24,3 +25,6 @@ models:
   claude-haiku-4-5:
     input: 1.00
     output: 5.00
+  qwen3.8:27b:
+    input: 0.0
+    output: 0.0

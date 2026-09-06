@@ -366,6 +366,44 @@ async def test_the_tool_log_records_every_call_with_its_query_id(settings: Setti
     assert entry.t >= 0
 
 
+async def test_a_malformed_tool_call_is_counted_and_still_logged(settings: Settings) -> None:
+    """A provider (agent/providers/ollama.py) that flags a call malformed still
+
+    has it go out and get logged like any other call; the loop's own count
+    is on top of that, not instead of it.
+    """
+    malformed = ToolUse(id="m1", name="run_query", args={}, malformed=True)
+    provider = FakeProvider(
+        [
+            completion(malformed),
+            completion(use(SUBMIT_REPORT, report_args(), ident="d")),
+        ]
+    )
+    report = await run_loop(provider, settings=settings)
+
+    assert report.malformed_calls == 1
+    assert report.tool_calls == 1
+    assert report.tool_log[0].name == "run_query"
+    assert report.tool_log[0].args == {}
+
+
+async def test_a_well_formed_tool_call_does_not_count_as_malformed(settings: Settings) -> None:
+    provider = FakeProvider(
+        [
+            completion(query_use("b")),
+            completion(use(SUBMIT_REPORT, report_args(), ident="d")),
+        ]
+    )
+    report = await run_loop(provider, settings=settings)
+    assert report.malformed_calls == 0
+
+
+async def test_the_report_records_the_wall_budget_it_was_given(settings: Settings) -> None:
+    provider = FakeProvider([completion(use(SUBMIT_REPORT, report_args(), ident="d"))])
+    report = await run_loop(provider, config=AgentConfig(max_wall_s=1200.0), settings=settings)
+    assert report.max_wall_s == 1200.0
+
+
 async def test_the_loop_stops_at_the_call_cap(settings: Settings) -> None:
     """The model keeps querying; the cap ends the run and no extra calls land."""
     provider = FakeProvider([completion(query_use("q"))])
