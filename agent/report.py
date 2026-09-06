@@ -207,24 +207,55 @@ class PartialCheck(BaseModel):
     column you broke down on was queried, so an entry naming it on
     `not_checked` is false and the validator rejects it; but "I broke down on
     `cart.size` and did not look at individual values below 8" is a true
-    statement, not a rejected candidate either, since nothing was measured and
-    ruled out. This is that slot: the column, what was run on it, and what
-    was not.
+    statement, and it sits outside `rejected_candidates` too, since nothing
+    was measured and ruled out. This is that slot: the column, what was run
+    on it, and what was not.
+
+    `reading` is what makes the statement checkable. Free text in `not_run`
+    let a model say "I looked at this column in isolation" about a column it
+    had just broken down on, which the tool log contradicts directly;
+    `reading` names one of a small set of things a query can fail to show,
+    and `agent/validate.py` checks the claim against the log the same way it
+    checks every other field here.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     subject: str = Field(
         description=(
-            "The column, span, service, or value exactly as it appears in the "
-            "arguments of a query you ran, for example cart.size, payments.charge, or "
-            "us-west-2. It has to be something the run queried; a subject you never "
-            "queried belongs in not_checked instead. A time window is not a subject "
-            "here: a window you did not query goes in not_checked."
+            "A column as it appears in the breakdowns, filters, or calculations of a query "
+            "you ran, for example cart.size, deployment.version, or duration_ms: something a "
+            "query broke down, filtered, or calculated over. A value the column took, such as "
+            "us-west-2, names the column here instead of being the subject itself. It has to "
+            "be something the run queried; a subject you never queried belongs in not_checked "
+            "instead. A time window is not a subject here either: a window you did not query "
+            "goes in not_checked."
         )
     )
     queried_as: str = Field(description="The measurement that was run on it, one sentence.")
-    not_run: str = Field(description="The reading of it that was not run, one sentence.")
+    reading: Literal["per_value", "over_time", "outside_selection", "other_measurement"] = Field(
+        description=(
+            "The one reading of the subject that was not run. per_value: its values were "
+            "never compared against each other. over_time: it was never read across the "
+            "window bucket by bucket. outside_selection: it was only read inside the filters "
+            "the run was carrying, never on the traffic as a whole. other_measurement: it was "
+            "read with one measurement and not with the one you name in measurement, which is "
+            "required for this reading. A breakdown answers per_value, and with a granularity "
+            "it answers over_time too, so 'looked at it in isolation' or 'checked it in a "
+            "separate query' is not one of these readings."
+        )
+    )
+    measurement: str | None = Field(
+        default=None,
+        description=(
+            "Required only when reading is other_measurement: the calculation that was not "
+            "run, written the way a query names one, OP or OP(column), for example "
+            "P99(duration_ms) or COUNT."
+        ),
+    )
+    not_run: str = Field(
+        description="One sentence giving the detail behind reading: what, exactly, was not run."
+    )
 
 
 class ReportDraft(BaseModel):
@@ -265,8 +296,8 @@ class ReportDraft(BaseModel):
     rejected_candidates: list[RejectedCandidate] = Field(
         default_factory=list,
         description=(
-            "Things you looked at and ruled out. Not required, and not a place for "
-            "everything you did not check, which is what not_checked is for."
+            "Things you looked at and ruled out. Optional, and only for that: everything "
+            "else you did not check belongs in not_checked."
         ),
     )
     partially_checked: list[PartialCheck] = Field(
@@ -274,7 +305,7 @@ class ReportDraft(BaseModel):
         description=(
             "Something you queried and did not read a particular way: the column, what "
             "you ran on it, and what you did not. A subject that was never queried at "
-            "all belongs in not_checked, not here."
+            "all belongs in not_checked instead."
         ),
     )
 
@@ -352,6 +383,22 @@ class ToolCall(BaseModel):
     hinted: bool = False
     """Whether this call's error text carries an added retry hint, from
     `agent/mcp_client.py`'s handling of `failed to calculate group indices`."""
+
+    result_values: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "For a successful run_query whose args carried breakdowns, the distinct values "
+            "each breakdown column took in the result rows, keyed by column name. Recorded "
+            "from what the server actually returned, by agent/format.py's breakdown_values, "
+            "never from the args. Only ever populated for run_query: a run_bubbleup result is "
+            "baseline-vs-selection percentages per column, not a row of values, and a "
+            "run_query with no breakdowns or whose result has no parseable rows (an error, or "
+            "a series-only response with nothing under '# Results') has nothing to read "
+            "either, so all of those are left empty rather than guessed at. Folded into "
+            "queried_terms, so a column read this way counts as checked even when the report "
+            "never puts its values in a sentence."
+        ),
+    )
 
 
 class Report(BaseModel):

@@ -314,6 +314,41 @@
       "emitted_at": "2026-09-05T23:12:18.834948Z",
       "window_start": "2026-09-05T22:50:42Z",
       "window_end": "2026-09-05T23:10:42Z"
+    },
+    {
+      "run_id": "run-5b98779e2a1f",
+      "scenario_id": "trigger-checkout-latency",
+      "emitted_at": "2026-09-06T01:22:19.075317Z",
+      "window_start": "2026-09-06T01:00:42Z",
+      "window_end": "2026-09-06T01:20:42Z"
+    },
+    {
+      "run_id": "run-df67e8ee8a45",
+      "scenario_id": "trigger-checkout-latency",
+      "emitted_at": "2026-09-06T01:52:20.420674Z",
+      "window_start": "2026-09-06T01:30:43Z",
+      "window_end": "2026-09-06T01:50:43Z"
+    },
+    {
+      "run_id": "run-f89265a20861",
+      "scenario_id": "trigger-checkout-latency",
+      "emitted_at": "2026-09-06T03:01:59.983434Z",
+      "window_start": "2026-09-06T02:40:23Z",
+      "window_end": "2026-09-06T03:00:23Z"
+    },
+    {
+      "run_id": "run-288accc0a996",
+      "scenario_id": "trigger-checkout-latency",
+      "emitted_at": "2026-09-06T03:05:22.184813Z",
+      "window_start": "2026-09-06T02:43:45Z",
+      "window_end": "2026-09-06T03:03:45Z"
+    },
+    {
+      "run_id": "run-f407d9bb3908",
+      "scenario_id": "trigger-checkout-latency",
+      "emitted_at": "2026-09-06T03:08:30.943882Z",
+      "window_start": "2026-09-06T02:46:54Z",
+      "window_end": "2026-09-06T03:06:54Z"
     }
   ]
 }

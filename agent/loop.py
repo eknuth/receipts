@@ -40,6 +40,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from agent import format as fmt
 from agent import validate
 from agent.mcp_client import HoneycombMCP, ToolNotAllowed
 from agent.providers.base import (
@@ -492,6 +493,9 @@ class _RunState:
                 )
 
             tool_span.record_result(result.text, is_error=result.is_error)
+            result_values: dict[str, list[str]] = {}
+            if not result.is_error and use.name == "run_query":
+                result_values = fmt.breakdown_values(result.raw, args=use.args)
             self._log(
                 use,
                 elapsed,
@@ -500,6 +504,7 @@ class _RunState:
                 permalink=result.permalink,
                 coerced=list(result.coerced),
                 hinted=result.hinted,
+                result_values=result_values,
             )
             content = result.text
             if not result.is_error and use.name in validate.QUERY_TOOLS:
@@ -525,6 +530,7 @@ class _RunState:
         permalink: str | None = None,
         coerced: list[str] | None = None,
         hinted: bool = False,
+        result_values: dict[str, list[str]] | None = None,
     ) -> None:
         self.tool_log.append(
             ToolCall(
@@ -536,6 +542,7 @@ class _RunState:
                 t=round(elapsed, 3),
                 coerced=coerced or [],
                 hinted=hinted,
+                result_values=result_values or {},
             )
         )
 
