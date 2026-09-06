@@ -40,11 +40,13 @@ Follow the method Honeycomb publishes in the `honeycomb-investigator` agent and 
    were not the first guess, so run it even when you think you already know the answer.
 4. **Split the candidates in time.** Split the candidates you would otherwise report, and the
    ranks BubbleUp puts up against them. That is a handful of splits, not one per row of the
-   ranking. The split is the measurement the candidate rests on, run on either side of the point
-   where the broad query showed the change. When nothing showed there, split the earliest part of
-   the window against the rest. One `run_query` with a time `granularity` and the candidate's
-   column as a breakdown puts every value of that column on both sides of the change in a single
-   call, which is the cheap way to do this. Two windowed queries answer the same question with the
+   ranking. The split is the measurement the candidate rests on, a P99 or an error rate, run on
+   either side of the point where the broad query showed the change. It is not the candidate's
+   share of the traffic: a count that holds across the onset says the population did not change
+   size, which is a different question. When nothing showed there, split the earliest part of the
+   window against the rest. One `run_query` with a time `granularity` and the candidate's column
+   as a breakdown puts every value of that column on both sides of the change in a single call,
+   which is the cheap way to do this. Two windowed queries answer the same question with the
    numbers plain, when plain numbers are what you want to quote. What comes back is one of four
    things:
    - The same size on both sides. The candidate is a standing property of the system for this
@@ -67,14 +69,59 @@ Follow the method Honeycomb publishes in the `honeycomb-investigator` agent and 
    A level that is already up in the first minute of the window may have started before the window
    opened. Say that instead of dating the onset to the start of the window.
    No candidate goes into `hypotheses` until this split has been run for it and cited.
-5. **Traces.** Add what BubbleUp found as filters, take a representative trace, and call
+5. **Select the population.** `dims` is the set of dimensions that selects the affected rows,
+   and nothing that does not narrow them. It is read from breakdowns, not from the filters you
+   carried to scope a query, and each entry is one value the column takes in the rows, or one
+   range on a numeric column. With no candidate confirmed there is nothing to select, so skip
+   this step. Start from the candidate the split confirmed. When that candidate is a symptom
+   column, the seed is the narrowest column whose one value covers the rows carrying the symptom,
+   the span or the service that runs it, until a breakdown finds something narrower. For every
+   other BubbleUp leader, and every column the split showed moving, run the measurement filtered
+   to the `dims` you have so far and broken down by that column, as one series across the onset
+   at the granularity you split on, so both sides come back in one call, with COUNT beside it so
+   a value with a handful of rows is not read as a finding. A `run_bubbleup` on a query filtered
+   to the current `dims` ranks every remaining column at once and is a fair first move; the
+   breakdown confirms it with rows. What comes back reads one of four ways:
+   - One value, or one run of values on a numeric column, carries the change and the other values
+     hold their pre-onset level in the same series. That column narrows the population. Add the
+     value to `dims`, run the remaining leaders against the grown selection, and run the first
+     dimension against it too: a candidate that stepped can stop narrowing once the dimension it
+     overlapped is in the set, and then it comes out.
+   - Every value reads about the same. The column does not select the affected rows. Leave it out
+     of `dims`. It is not a rejected candidate either: it is a property the affected rows share
+     with the rest of the traffic.
+   - Every value is up and one is up by more. The column does not select the affected rows either.
+     The extra on that one value is the standing difference the split found, so leave it out and
+     keep the split's entry in `rejected_candidates`, or, when no split was run on it, put it
+     there with this breakdown as the evidence.
+   - The column has one value on every row inside the selection. It cannot narrow a set it already
+     covers, so it does not go in on its own account. When the outside does not carry that value
+     either, it is the same population under a second name: keep the column that names rows, put
+     the other in the claim. An empty value means the selected spans do not carry the column;
+     that is neither a selector nor something you left unchecked.
+   Symptom columns describe what happened to the rows, not which rows they are: the error flag, a
+   status code, an exception or error type, the span the time went into. Those belong in `claim`
+   and `slow_or_failing_span`. A symptom column in `dims` also spoils the negation: excluding the
+   rows that failed and finding the rest healthy tests nothing. When nothing narrower than a
+   service or a span selects the affected rows, that is the selector and it goes in `dims`. Stop
+   when no remaining leader narrows the set. That is one call per leader, plus one for the seed
+   once the set has grown.
+6. **Traces.** Add the set in `dims` as filters, take a representative trace, and call
    `get_trace`. The waterfall tells you which span the time or the failure is in, which a
    dimension breakdown cannot.
-6. **Verify by negation.** Run the same measurement with the suspected cause excluded. If the
+7. **Verify by negation.** Run the same measurement with the suspected cause excluded. If the
    claim is that some population is slow or failing, then the traffic outside that population
    should look normal over the same window. A finding that survives that query is a finding. One
-   that does not is a coincidence you nearly reported.
-7. **Record.** Call `submit_report` with what you found.
+   that does not is a coincidence you nearly reported. The finding is the set in `dims`, so the
+   negation is what happens outside that set. Exclude one dimension of the set and keep the run
+   filter as it is: excluding every dimension at once would drop the rows that carry all but one
+   of them, and those rows are what show the last one narrows. The breakdowns from the population
+   step already show them reading normal, so cite them as evidence too. When the selector is a
+   span or a service that every request passes through, there is no outside on the same window:
+   its callers fail or slow because it does. Run the exclusion on the same window anyway, cite it,
+   and say in the summary that the callers carry its failure. Do not swap in an earlier window:
+   an exclusion over a different window is a baseline, not a negation.
+8. **Record.** Call `submit_report` with what you found.
 
 ## What counts as an incident
 
@@ -136,7 +183,10 @@ An empty list is not an answer. There is always something you did not look at.
 
 Rate each hypothesis honestly:
 
-- `high`: the rows carry the claim and the negation query came back the way the claim needs.
+- `high`: the rows carry the claim, every dimension in `dims` was shown to narrow the affected
+  rows, and the traffic outside the reported set read normal, or failed only by calling it. The
+  split in step 4, broken down by the column, is that check for the dimension it confirmed. A
+  `dims` entry that was never checked for narrowing caps the hypothesis at `medium`.
 - `medium`: the evidence points this way but the claim goes further than the rows strictly show,
   or the negation is weaker than the claim.
 - `low`: worth writing down, not settled.
