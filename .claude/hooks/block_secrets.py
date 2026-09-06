@@ -3,9 +3,9 @@
 What it replaces: the rule in CLAUDE.md that secrets come only from `.env` and
 never reach code, a commit, a fixture, or `~/.claude.json`. Every session so
 far has checked this by reading the diff before a commit, which is a step a
-person or a model can skip once and never notice. The transcripts show 119
-commands that touch `.env` and about a hundred commits, so the check now runs
-in code at the moment it matters.
+person or a model can skip once and never notice. The transcripts show over a
+hundred commands that touch `.env` and about a hundred commits, so the check
+now runs in code at the moment it matters.
 
 Blocks, with exit 2 and a reason on stderr:
 

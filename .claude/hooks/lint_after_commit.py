@@ -2,8 +2,8 @@
 
 What it replaces: the CLAUDE.md rule that `make lint` and `make test` pass
 before an issue is called done, applied at the commit. The transcripts show
-329 lint runs and about a hundred commits, and one PR where the lint run
-happened after the commit that needed it. A PreToolUse block on every commit
+over three hundred lint runs and about a hundred commits, and one PR where the
+lint run happened after the commit that needed it. A PreToolUse block on every commit
 would make each commit wait on the lint run; a PostToolUse warning costs the
 same second but never stands between a person and their commit.
 
