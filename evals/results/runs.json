@@ -314,6 +314,41 @@
       "emitted_at": "2026-09-05T23:12:18.834948Z",
       "window_start": "2026-09-05T22:50:42Z",
       "window_end": "2026-09-05T23:10:42Z"
+    },
+    {
+      "run_id": "run-6a0f79e321f9",
+      "scenario_id": "trigger-checkout-latency",
+      "emitted_at": "2026-09-06T02:29:23.335960Z",
+      "window_start": "2026-09-06T02:07:46Z",
+      "window_end": "2026-09-06T02:27:46Z"
+    },
+    {
+      "run_id": "run-d0c2f5a2713c",
+      "scenario_id": "trigger-checkout-latency",
+      "emitted_at": "2026-09-06T02:50:02.251755Z",
+      "window_start": "2026-09-06T02:28:25Z",
+      "window_end": "2026-09-06T02:48:25Z"
+    },
+    {
+      "run_id": "run-8aa9cbafb7ef",
+      "scenario_id": "trigger-checkout-latency",
+      "emitted_at": "2026-09-06T04:38:17.915407Z",
+      "window_start": "2026-09-06T04:16:41Z",
+      "window_end": "2026-09-06T04:36:41Z"
+    },
+    {
+      "run_id": "run-fd1ab9cda8b6",
+      "scenario_id": "trigger-checkout-latency",
+      "emitted_at": "2026-09-06T04:42:54.722946Z",
+      "window_start": "2026-09-06T04:21:18Z",
+      "window_end": "2026-09-06T04:41:18Z"
+    },
+    {
+      "run_id": "run-5de95a5f0234",
+      "scenario_id": "trigger-checkout-latency",
+      "emitted_at": "2026-09-06T04:50:46.785772Z",
+      "window_start": "2026-09-06T04:29:10Z",
+      "window_end": "2026-09-06T04:49:10Z"
     }
   ]
 }
