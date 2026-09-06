@@ -289,6 +289,14 @@ class GradedRun(BaseModel):
     tokens_out: int
     cost_usd: float
     wall_s: float
+    max_wall_s: float = 0.0
+    """The wall budget the run was given, copied from `Report.max_wall_s`. Default 0
+    for a `grade.json` written before this field existed, read by `evals/report.py`
+    as "not recorded" rather than a real zero-second budget."""
+    malformed_calls: int = 0
+    """Tool calls a provider handed back with arguments that could not be parsed at
+    all, copied from `Report.malformed_calls`. Zero both when none happened and for
+    a `grade.json` written before this field existed."""
     honeycomb_process_score: float | None
     honeycomb_process_passed: bool | None
 
@@ -354,6 +362,8 @@ def graded_run(report: Report, result: Grade, *, config: str, repeat: int) -> Gr
         tokens_out=result.process.tokens_out,
         cost_usd=result.process.cost_usd,
         wall_s=result.process.wall_s,
+        max_wall_s=report.max_wall_s,
+        malformed_calls=report.malformed_calls,
         honeycomb_process_score=result.process.honeycomb_process_score,
         honeycomb_process_passed=result.process.honeycomb_process_passed,
         grade=result,
@@ -402,6 +412,8 @@ def crashed_run(
         tokens_out=report.tokens_out if report else 0,
         cost_usd=report.cost_usd if report else 0.0,
         wall_s=report.wall_s if report else round(wall_s, 2),
+        max_wall_s=report.max_wall_s if report else 0.0,
+        malformed_calls=report.malformed_calls if report else 0,
         honeycomb_process_score=None,
         honeycomb_process_passed=None,
         grade=None,

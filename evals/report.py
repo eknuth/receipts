@@ -91,6 +91,40 @@ def config_order(name: str) -> tuple[int, str]:
     return (known.index(name), name) if name in known else (len(known), name)
 
 
+def provider_order(name: str) -> tuple[int, str]:
+    """`anthropic` first; any other provider after, alphabetically."""
+    return (0, name) if name == "anthropic" else (1, name)
+
+
+def _columns(runs: Sequence[GradedRun], *, multi_provider: bool) -> list[tuple[str, str | None]]:
+    """The `(config, provider)` pairs the scenario and process tables render one
+    column group per, in `config_order` and, within a config, `provider_order`.
+
+    `provider` is `None` when every run in the report shares one provider, which
+    is what keeps a single-provider rendering byte-identical: the column is keyed
+    by config alone, the way it always was.
+    """
+    if not multi_provider:
+        configs = sorted({item.config for item in runs}, key=config_order)
+        return [(config, None) for config in configs]
+    pairs = {(item.config, item.provider) for item in runs}
+    return sorted(pairs, key=lambda pair: (config_order(pair[0]), provider_order(pair[1])))
+
+
+def _column_label(config: str, provider: str | None) -> str:
+    """The column key: the config alone, or `<config> (<provider>)` when more than
+    one provider is present in the report."""
+    return config if provider is None else f"{config} ({provider})"
+
+
+def _column_cell(runs: Sequence[GradedRun], config: str, provider: str | None) -> list[GradedRun]:
+    return [
+        item
+        for item in runs
+        if item.config == config and (provider is None or item.provider == provider)
+    ]
+
+
 def render(runs: Sequence[GradedRun], unreadable: Sequence[str] = ()) -> str:
     """The whole report as Markdown."""
     lines: list[str] = [
@@ -118,29 +152,30 @@ def render(runs: Sequence[GradedRun], unreadable: Sequence[str] = ()) -> str:
         lines += _unreadable_section(unreadable)
         return "\n".join(lines)
 
-    configs = sorted({item.config for item in runs}, key=config_order)
+    multi_provider = len({item.provider for item in runs}) > 1
+    columns = _columns(runs, multi_provider=multi_provider)
     scenarios = sorted({item.scenario_id for item in runs})
 
     lines += ["## Scores by scenario", ""]
     header = ["scenario"]
-    for config in configs:
-        header += [f"{config} total", f"{config} outcome", f"{config} top right"]
+    for config, provider in columns:
+        label = _column_label(config, provider)
+        header += [f"{label} total", f"{label} outcome", f"{label} top right"]
     lines.append(_row(header))
     lines.append(_row(["---"] * len(header)))
     for scenario in scenarios + ["all scenarios"]:
         cells = [scenario]
-        for config in configs:
+        for config, provider in columns:
             cell = [
                 item
-                for item in runs
-                if item.config == config
-                and (scenario == "all scenarios" or item.scenario_id == scenario)
+                for item in _column_cell(runs, config, provider)
+                if scenario == "all scenarios" or item.scenario_id == scenario
             ]
             cells += _score_cells(cell)
         lines.append(_row(cells))
     lines.append("")
 
-    lines += _ablation_section(runs, configs)
+    lines += _ablation_sections(runs, multi_provider=multi_provider)
 
     lines += [
         "## Process by config",
@@ -161,7 +196,12 @@ def render(runs: Sequence[GradedRun], unreadable: Sequence[str] = ()) -> str:
         "around the whole report, and BubbleUp group values the MCP client retyped from the "
         "column schema rather than sending on as the model wrote them; blank when none were. "
         "`total cost USD` sums the same cost column instead of averaging it, and the line "
-        "under the table sums that column again across every config.",
+        "under the table sums that column again across every config. `wall cap s` is the "
+        "mean of `Report.max_wall_s`, the wall-clock budget each run was given, over the "
+        "runs in the row that recorded one; blank when none did, which is every run from "
+        "before this column existed. `malformed calls` sums `Report.malformed_calls`, tool "
+        "calls a provider handed back with arguments the client could not parse into an "
+        "object at all, across the row; blank when none.",
         "",
     ]
     header = [
@@ -176,22 +216,25 @@ def render(runs: Sequence[GradedRun], unreadable: Sequence[str] = ()) -> str:
         "mean wall s",
         "coerced",
         f"passes theirs, fails ours (total < {num(OUTCOME_FAIL_BELOW, 2)})",
+        "wall cap s",
+        "malformed calls",
     ]
     lines.append(_row(header))
     lines.append(_row(["---"] * len(header)))
     total_spend = 0.0
-    for config in configs:
-        cell = [item for item in runs if item.config == config]
+    for config, provider in columns:
+        cell = _column_cell(runs, config, provider)
         contrast = sum(
             1 for item in cell if item.honeycomb_process_passed and item.total < OUTCOME_FAIL_BELOW
         )
         coerced = sum(len(item.coerced_fields) for item in cell)
+        malformed = sum(item.malformed_calls for item in cell)
         config_spend = sum(item.cost_usd for item in cell)
         total_spend += config_spend
         lines.append(
             _row(
                 [
-                    config,
+                    _column_label(config, provider),
                     str(len(cell)),
                     str(sum(1 for item in cell if item.crashed)),
                     _mean(cell, lambda item: item.tool_calls, 1),
@@ -202,6 +245,8 @@ def render(runs: Sequence[GradedRun], unreadable: Sequence[str] = ()) -> str:
                     _mean(cell, lambda item: item.wall_s, 0),
                     str(coerced) if coerced else "",
                     f"{contrast} of {len(cell)}",
+                    _mean_recorded(cell, lambda item: item.max_wall_s, 0),
+                    str(malformed) if malformed else "",
                 ]
             )
         )
@@ -219,11 +264,10 @@ def render(runs: Sequence[GradedRun], unreadable: Sequence[str] = ()) -> str:
         "`theirs` is Honeycomb's process score with its pass mark applied.",
         "",
     ]
-    header = [
-        "scenario",
-        "config",
-        "n",
-        "run id",
+    header = ["scenario", "config", "n", "run id"]
+    if multi_provider:
+        header.append("provider")
+    header += [
         "model",
         "total",
         "outcome",
@@ -249,27 +293,23 @@ def render(runs: Sequence[GradedRun], unreadable: Sequence[str] = ()) -> str:
             stopped = f"{stopped}: {_escape(item.error)}"
         elif item.validation_failed:
             stopped = f"{stopped} (validation failed)"
-        lines.append(
-            _row(
-                [
-                    item.scenario_id,
-                    item.config,
-                    str(item.repeat),
-                    item.run_id,
-                    item.model,
-                    num(item.total, 2),
-                    num(item.outcome_score, 2),
-                    num(item.receipts_score, 2),
-                    item.top_confidence or "",
-                    stopped,
-                    str(item.tool_calls),
-                    num(item.cost_usd, 2),
-                    num(item.wall_s, 0),
-                    theirs,
-                    f"[query]({item.permalink})" if item.permalink else "",
-                ]
-            )
-        )
+        row = [item.scenario_id, item.config, str(item.repeat), item.run_id]
+        if multi_provider:
+            row.append(item.provider)
+        row += [
+            item.model,
+            num(item.total, 2),
+            num(item.outcome_score, 2),
+            num(item.receipts_score, 2),
+            item.top_confidence or "",
+            stopped,
+            str(item.tool_calls),
+            num(item.cost_usd, 2),
+            num(item.wall_s, 0),
+            theirs,
+            f"[query]({item.permalink})" if item.permalink else "",
+        ]
+        lines.append(_row(row))
     lines.append("")
     lines += _unreadable_section(unreadable)
     return "\n".join(lines)
@@ -305,6 +345,16 @@ def _score_cells(cell: Sequence[GradedRun]) -> list[str]:
 
 def _mean(cell: Sequence[GradedRun], pick: Callable[[GradedRun], float], places: int) -> str:
     return num(fmean(pick(item) for item in cell), places) if cell else ""
+
+
+def _mean_recorded(
+    cell: Sequence[GradedRun], pick: Callable[[GradedRun], float], places: int
+) -> str:
+    """Like `_mean`, but only over the runs where `pick` is truthy, for a field a
+    `grade.json` from before it existed carries as its default of zero rather than
+    a real recorded value. Blank when no run in the cell recorded one."""
+    values = [pick(item) for item in cell if pick(item)]
+    return num(fmean(values), places) if values else ""
 
 
 def _ablation_sentence(
@@ -348,8 +398,29 @@ def _ablation_sentence(
     return head + " " + " ".join(parts)
 
 
-def _ablation_section(runs: Sequence[GradedRun], configs: Sequence[str]) -> list[str]:
-    """The `## Ablation delta` section, or nothing when there is no ablation to show.
+def _ablation_sections(runs: Sequence[GradedRun], *, multi_provider: bool) -> list[str]:
+    """One `## Ablation delta` section per provider that has `full` plus at least
+    one other config, `anthropic` first then the rest alphabetically. With one
+    provider in the report this renders exactly the single section it always did,
+    heading included; with more than one, each section compares ablation configs
+    against `full` within that provider only, and the heading names the provider.
+    """
+    if not multi_provider:
+        return _ablation_section(runs, sorted({item.config for item in runs}, key=config_order))
+    lines: list[str] = []
+    providers = sorted({item.provider for item in runs}, key=provider_order)
+    for provider in providers:
+        subset = [item for item in runs if item.provider == provider]
+        configs = sorted({item.config for item in subset}, key=config_order)
+        lines += _ablation_section(subset, configs, heading=f"## Ablation delta ({provider})")
+    return lines
+
+
+def _ablation_section(
+    runs: Sequence[GradedRun], configs: Sequence[str], *, heading: str = "## Ablation delta"
+) -> list[str]:
+    """The ablation delta section for one provider's runs, or nothing when there is
+    no ablation to show.
 
     `configs` is already sorted `full` first (`config_order`). The section
     is rendered only when `full` is among the configs and at least one other
@@ -391,7 +462,7 @@ def _ablation_section(runs: Sequence[GradedRun], configs: Sequence[str]) -> list
 
     full_scenarios = scenarios_of("full")
     lines = [
-        "## Ablation delta",
+        heading,
         "",
         "Each row is one config's mean `total`, `outcome`, and `receipts` over the scenarios "
         "it shares with `full`, the difference from `full` on each, and the difference in "
