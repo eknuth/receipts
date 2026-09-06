@@ -792,6 +792,30 @@ def test_a_second_unqueried_name_in_the_entry_is_not_read_as_a_qualifier() -> No
     assert "partially_checked" not in issues[0].message
 
 
+def test_a_dash_separated_qualifier_is_still_pointed_at_partially_checked() -> None:
+    """A regression from the fix above: "cart.size - explanation" has a
+    subject of just "cart.size" (per _candidates's own separator rule), and
+    the explanation naming a measurement like P99(duration_ms) is context,
+    not a second unqueried name. _remainder_names_something_else has to read
+    the same subject text _candidates does, or an explanation that happens to
+    mention an identifier-shaped measurement gets misread as one."""
+    log = [*good_log(), query_call("Q4", breakdowns=["cart.size"])]
+    entry = "cart.size - broke down but did not compare values below 8 on P99(duration_ms)"
+    issues = validate_draft(draft(not_checked=[entry]), log, run_id=RUN_ID)
+    assert [issue.code for issue in issues] == ["not_checked_false"]
+    assert "partially_checked" in issues[0].message
+    assert "split it out" not in issues[0].message
+
+
+def test_a_colon_separated_qualifier_is_still_pointed_at_partially_checked() -> None:
+    log = [*good_log(), query_call("Q4", breakdowns=["cart.size"])]
+    entry = "cart.size: broke down but did not compare values below 8 on P99(duration_ms)"
+    issues = validate_draft(draft(not_checked=[entry]), log, run_id=RUN_ID)
+    assert [issue.code for issue in issues] == ["not_checked_false"]
+    assert "partially_checked" in issues[0].message
+    assert "split it out" not in issues[0].message
+
+
 # --------------------------------------------------------------------------
 # What the model is handed back
 # --------------------------------------------------------------------------
@@ -1448,6 +1472,112 @@ def test_column_usage_keys_by_the_column_as_the_call_named_it() -> None:
     usage = column_usage(log)
     assert "Deployment.Version" in usage
     assert "deployment.version" not in usage
+
+
+# --------------------------------------------------------------------------
+# column_usage: orders, havings, and a list_spans call with no query_id.
+# `queried_terms` (via `_collect`) already treats these columns as queried;
+# column_usage used to have no entry for them at all, which made a true
+# subject fail as partially_checked_subject_not_a_column.
+# --------------------------------------------------------------------------
+
+
+def test_a_column_named_only_in_orders_gets_a_harmless_usage_record() -> None:
+    log = [
+        ToolCall(
+            name="run_query",
+            args={
+                "query_spec": {
+                    "calculations": [{"op": "P99", "column": "duration_ms"}],
+                    "orders": [{"column": "cart.size", "order": "descending"}],
+                }
+            },
+            query_id="Q1",
+        )
+    ]
+    usage = column_usage(log)
+    assert "cart.size" in usage
+    record = usage["cart.size"][0]
+    assert record.in_breakdowns is False
+    assert record.in_filters is False
+    assert record.in_calculations is False
+    assert record.calculations == ()
+
+
+def test_a_column_named_only_in_havings_gets_a_harmless_usage_record() -> None:
+    log = [
+        ToolCall(
+            name="run_query",
+            args={
+                "query_spec": {
+                    "calculations": [{"op": "COUNT"}],
+                    "havings": [
+                        {"calculate_op": "COUNT", "column": "cloud.region", "op": ">", "value": 0}
+                    ],
+                }
+            },
+            query_id="Q1",
+        )
+    ]
+    usage = column_usage(log)
+    assert "cloud.region" in usage
+    assert usage["cloud.region"][0].calculations == ()
+
+
+def test_an_orders_only_column_is_not_rejected_as_not_a_column_and_contradicts_nothing() -> None:
+    """The real risk of adding orders/havings columns: an order-only column
+    must not inherit the query's own calculations, or a claim that it was
+    read with other_measurement X would be falsely contradicted by a
+    calculation the column had nothing to do with."""
+    log = [
+        ToolCall(
+            name="run_query",
+            args={
+                "query_spec": {
+                    "calculations": [{"op": "P99", "column": "duration_ms"}],
+                    "orders": [{"column": "cart.size", "order": "descending"}],
+                }
+            },
+            query_id="Q1",
+        ),
+        baseline_call(),
+    ]
+    terms = queried_terms(log, run_id=RUN_ID)
+    assert "cart.size" in terms
+    for reading in ("per_value", "over_time", "outside_selection"):
+        check = partial_check(subject="cart.size", reading=reading)
+        assert partially_checked_issues([check], log, terms) == [], reading
+    check = partial_check(
+        subject="cart.size", reading="other_measurement", measurement="P99(duration_ms)"
+    )
+    assert partially_checked_issues([check], log, terms) == []
+
+
+def test_a_list_spans_call_with_no_query_id_still_gets_a_column_usage_record() -> None:
+    log = [
+        ToolCall(
+            name="list_spans",
+            args={"query_spec": {"filters": [{"column": "cart.size", "op": ">=", "value": 8}]}},
+            query_id=None,
+        )
+    ]
+    usage = column_usage(log)
+    assert "cart.size" in usage
+    assert usage["cart.size"][0].in_filters is True
+
+
+def test_a_column_from_a_query_id_less_list_spans_call_is_not_rejected_as_not_a_column() -> None:
+    log = [
+        ToolCall(
+            name="list_spans",
+            args={"query_spec": {"filters": [{"column": "cart.size", "op": ">=", "value": 8}]}},
+            query_id=None,
+        ),
+        baseline_call(),
+    ]
+    terms = queried_terms(log, run_id=RUN_ID)
+    check = partial_check(subject="cart.size", reading="per_value")
+    assert partially_checked_issues([check], log, terms) == []
 
 
 def test_a_granularity_of_zero_does_not_count_as_a_granularity() -> None:

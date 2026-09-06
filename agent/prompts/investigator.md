@@ -173,8 +173,10 @@ and that you did not query. This is the part of the window you are not speaking 
 needs it as much as the finding.
 
 The list is checked against your tool calls. An entry may not name any column or value that
-appears in the arguments of a query you ran. If you broke down by a column, that column has been
-checked and does not belong on this list. Write what you left alone, not what you covered.
+appears in the arguments of a query you ran. It is also checked against the values a breakdown's
+rows actually returned, up to the rows a result showed you. If you broke down by a column, that
+column has been checked and does not belong on this list. Write what you left alone, not what you
+covered.
 
 An entry here is a bare name: the column, span, service, or window, nothing about how it might
 have been read. A column you broke down on is not on this list whatever you did not do with it;

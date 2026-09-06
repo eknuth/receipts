@@ -292,6 +292,18 @@ def test_the_ablated_not_checked_prompt_does_not_teach_the_ablated_rule() -> Non
     assert "not_checked" not in no_list
 
 
+def test_the_prompt_says_breakdown_result_values_are_checked_too() -> None:
+    """The validator folds a breakdown's own result values (capped to the
+    rows shown) into what counts as queried; Rule two has to say so, and the
+    no-notchecked ablation should still drop it along with the rest of Rule
+    two."""
+    full = render_prompt(RUN, AgentConfig())
+    assert "values a breakdown's" in full
+
+    no_list = render_prompt(RUN, AgentConfig(require_not_checked=False))
+    assert "values a breakdown's" not in no_list
+
+
 def test_the_prompt_names_every_system_column_prefix_and_name() -> None:
     """Pinned against agent/validate.py's SYSTEM_COLUMNS so the two documents
     of what is out of scope for not_checked cannot drift apart."""

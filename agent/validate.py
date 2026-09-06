@@ -386,9 +386,16 @@ class Usage:
     (`scenario.run_id`, on every query by construction) and the subject
     column itself are excluded, so an empty set means nothing else narrowed
     the population this query looked at.
+
+    A column named only by an `orders` or `havings` entry, never a breakdown,
+    filter, or calculation, still gets a record (so `partially_checked` does
+    not call it `partially_checked_subject_not_a_column`), but every flag on
+    it is False and `calculations` is empty: sorting or filtering on a
+    having-clause result by a column says nothing about how that column was
+    read, so no reading of it should ever be contradicted from this record.
     """
 
-    query_id: str
+    query_id: str | None
     in_breakdowns: bool
     in_filters: bool
     in_calculations: bool
@@ -396,7 +403,10 @@ class Usage:
     calculations: tuple[str, ...]
     """Every calculation on this query, as `OP` or `OP(column)`, the way a
     query names one. Not filtered to the subject's own column: `other_measurement`
-    asks whether the query computed a particular calculation anywhere in it."""
+    asks whether the query computed a particular calculation anywhere in it.
+    Empty for a column named only by `orders` or `havings`, so that reading
+    can never be contradicted by a calculation the column had nothing to do
+    with."""
     has_granularity: bool
 
 
@@ -457,18 +467,39 @@ def _calc_reprs(calculations: object) -> tuple[str, ...]:
     return tuple(reprs)
 
 
+def _spec_secondary_columns(spec: Mapping[str, object], key: str) -> set[str]:
+    """The columns named by `spec[key]` (`"orders"` or `"havings"`).
+
+    Each entry there is shaped like a calculation (`op`, an optional
+    `column`, plus `order` for `orders` or `calculate_op`/`op`/`value` for
+    `havings`); an entry that sorts or filters on a calculation such as
+    `COUNT` rather than a raw column names no column at all.
+    """
+    out: set[str] = set()
+    for entry in spec.get(key) or []:
+        if isinstance(entry, dict) and isinstance(entry.get("column"), str):
+            out.add(entry["column"])
+    return out
+
+
 def column_usage(tool_log: Sequence[ToolCall]) -> dict[str, list[Usage]]:
     """Every column a successful `QUERY_TOOLS` call touched, and how.
 
     Keyed by the column exactly as the call named it (not lowercased; callers
     that need a case-insensitive lookup, such as `partially_checked_issues`,
     do that themselves). A column earns an entry here when a call broke down
-    on it, filtered on it, or calculated over it; a call that never mentions
+    on it, filtered on it, calculated over it, or sorted or filtered its
+    calculations by it in `orders` or `havings`; a call that never mentions
     the column contributes nothing for it.
+
+    A call with no `query_id` still counts: `list_spans`, per the server's
+    own docs, does not always return one, and `queried_terms` does not
+    require one either, so requiring one here made a column `list_spans`
+    alone had touched look never queried at all.
     """
     usage: dict[str, list[Usage]] = {}
     for call in tool_log:
-        if call.name not in QUERY_TOOLS or call.is_error or not call.query_id:
+        if call.name not in QUERY_TOOLS or call.is_error:
             continue
         spec = _effective_spec(call.args)
         breakdowns = {c for c in (spec.get("breakdowns") or []) if isinstance(c, str)}
@@ -480,10 +511,14 @@ def column_usage(tool_log: Sequence[ToolCall]) -> dict[str, list[Usage]]:
         }
         calc_reprs = _calc_reprs(calculations)
         filters = _spec_filter_columns(spec) | _bubbleup_filter_columns(call.args)
+        secondary = _spec_secondary_columns(spec, "orders") | _spec_secondary_columns(
+            spec, "havings"
+        )
         granularity = _parse_number(spec.get("granularity"))
         has_granularity = granularity is not None and granularity > 0
 
-        for column in breakdowns | filters | calc_columns:
+        touched = breakdowns | filters | calc_columns
+        for column in touched | secondary:
             other_filters = frozenset(filters - {column, "scenario.run_id"})
             usage.setdefault(column, []).append(
                 Usage(
@@ -492,7 +527,7 @@ def column_usage(tool_log: Sequence[ToolCall]) -> dict[str, list[Usage]]:
                     in_filters=column in filters,
                     in_calculations=column in calc_columns,
                     other_filter_columns=other_filters,
-                    calculations=calc_reprs,
+                    calculations=calc_reprs if column in touched else (),
                     has_granularity=has_granularity,
                 )
             )
@@ -897,8 +932,15 @@ def _remainder_names_something_else(entry: str, named: Sequence[str]) -> bool:
     `partially_checked` to describe a reading of `cart.size` that was never
     claimed; the entry names two different things, and only one of them was
     queried.
+
+    The remainder is computed over `_subject_text(entry)`, the same text
+    `_candidates` read `named` from, not the whole entry: "cart.size - broke
+    down but did not compare values below 8 on P99(duration_ms)" has a
+    subject of just "cart.size", and the explanation naming
+    "P99(duration_ms)" is context, the same way `_has_qualifier` already
+    reads it as one.
     """
-    remainder = _remainder(entry, named)
+    remainder = _remainder(_subject_text(entry), named)
     return bool(_TOKEN.search(remainder)) or bool(_QUOTED.search(remainder))
 
 
@@ -1074,6 +1116,21 @@ def _reading_contradiction(entry: PartialCheck, usages: Sequence[Usage]) -> Issu
     )
 
 
+def _subject_text(entry: str) -> str:
+    """The part of `entry` that names the claim: the text before a " - " or
+    ": " separator, when there is one, otherwise the whole entry.
+
+    Shared by `_candidates` and `_remainder_names_something_else`, so both
+    agree on what counts as the claim and what counts as explanation. A live
+    regression had them disagree: `_candidates` read only the subject before
+    the separator, while the other read the whole entry, so an explanation
+    that happened to mention a second identifier-shaped word (a measurement
+    such as `P99(duration_ms)`) was read as a second, unqueried name.
+    """
+    subject = _SUBJECT.match(entry)
+    return subject.group(1) if subject and subject.group(1).strip() else entry
+
+
 def _candidates(entry: str) -> set[str]:
     """The columns one entry claims were not checked.
 
@@ -1087,8 +1144,7 @@ def _candidates(entry: str) -> set[str]:
     for, and a false rejection burns a turn and reads as the validator being
     wrong about a report that was honest.
     """
-    subject = _SUBJECT.match(entry)
-    text = subject.group(1) if subject and subject.group(1).strip() else entry
+    text = _subject_text(entry)
     found = set(_TOKEN.findall(text))
     found |= set(_QUOTED.findall(text))
     stripped = text.strip().strip("`\"'").strip()
