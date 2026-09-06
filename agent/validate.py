@@ -63,9 +63,11 @@ that failed its own rules is a result the grader should see and punish.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 from agent.report import (
     PRIMARY_EVIDENCE_TOOL,
@@ -563,16 +565,24 @@ def validate_draft(
     tool_log: Sequence[ToolCall],
     *,
     run_id: str | None = None,
+    window_start: str | None = None,
+    window_end: str | None = None,
     require_negation: bool = True,
     require_not_checked: bool = True,
 ) -> list[Issue]:
-    """Every reason this report should not be accepted. Empty means accepted."""
+    """Every reason this report should not be accepted. Empty means accepted.
+
+    `window_start` and `window_end` are the run window, in the same string
+    form `ScenarioRun` carries it, and are optional the way `run_id` is: when
+    given, `_check_baseline` also rejects a baseline query that never touches
+    the window at all.
+    """
     issues: list[Issue] = []
     index = index_log(tool_log)
     terms = queried_terms(tool_log, run_id=run_id)
 
     issues += _check_hypotheses(draft, index, terms, require_negation=require_negation)
-    issues += _check_baseline(draft, index)
+    issues += _check_baseline(draft, index, window_start=window_start, window_end=window_end)
     issues += partially_checked_issues(draft.partially_checked, tool_log, terms)
     if require_not_checked:
         issues += not_checked_issues(draft.not_checked, terms)
@@ -755,7 +765,13 @@ def _check_negation(
     return []
 
 
-def _check_baseline(draft: ReportDraft, index: LogIndex) -> list[Issue]:
+def _check_baseline(
+    draft: ReportDraft,
+    index: LogIndex,
+    *,
+    window_start: str | None = None,
+    window_end: str | None = None,
+) -> list[Issue]:
     """Both answers need the baseline, and for the same reason.
 
     This used to be asked only of a report that said nothing happened, which
@@ -767,6 +783,16 @@ def _check_baseline(draft: ReportDraft, index: LogIndex) -> list[Issue]:
     What the baseline query has to show is not prescribed here. The phases
     live in the prompt and the model picks its own queries, so a check that
     demanded a particular shape would be this module writing the method.
+
+    One shape is checked, when the run window is known: a baseline_evidence
+    entry whose run_query has a time range that lies entirely before or after
+    the window has no rows from this run in it at all, whatever number it
+    returned. A live run cited "0% error rate for the 10 minutes before the
+    window" from a query that ended exactly when the window began, a period
+    this run has no rows for, so the baseline was a rate over an empty
+    population. `window_start` and `window_end` are optional, and the check
+    is skipped without both of them: the window is context the loop passes
+    in, not something every caller of this module has to supply.
     """
     issues = _check_ids(draft.baseline_evidence, index, "baseline_evidence")
     for candidate in draft.rejected_candidates:
@@ -800,7 +826,115 @@ def _check_baseline(draft: ReportDraft, index: LogIndex) -> list[Issue]:
                 "is a claim about rows.",
             )
         )
+
+    if window_start and window_end:
+        issues += _out_of_window_baseline_issues(
+            draft.baseline_evidence, index, window_start=window_start, window_end=window_end
+        )
     return issues
+
+
+def _parse_time_bound(value: object) -> datetime | None:
+    """A query spec's `from`/`to`, or a run window bound: an epoch number, or
+    an ISO 8601 string (`Z` or offset).
+
+    Mirrors `agent/format.py`'s function of the same name rather than
+    importing it: that one is a private helper of a module about rendering
+    query results, and this reading is a different question, whether a
+    query's own range falls inside the run's window at all.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(value, tz=UTC)
+        except (OverflowError, OSError, ValueError):
+            return None
+    if isinstance(value, str):
+        text = value.strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed
+    return None
+
+
+def _query_time_bounds(spec: Mapping[str, object]) -> tuple[datetime | None, datetime | None]:
+    """The range one `run_query` spec named: `from`/`to` when either is
+    present, otherwise the older `start_time`/`end_time` names (see
+    `agent/format.py:401-408` for the same fallback, read for display rather
+    than for this check)."""
+    if spec.get("from") is not None or spec.get("to") is not None:
+        return _parse_time_bound(spec.get("from")), _parse_time_bound(spec.get("to"))
+    return _parse_time_bound(spec.get("start_time")), _parse_time_bound(spec.get("end_time"))
+
+
+def _out_of_window_baseline_issues(
+    evidence: Sequence[Evidence],
+    index: LogIndex,
+    *,
+    window_start: str,
+    window_end: str,
+) -> list[Issue]:
+    """`baseline_evidence` entries whose cited run_query has no rows from this
+    run at all: its range ends at or before the window opens, or starts at or
+    after the window closes. Silently skipped, per entry, when the window
+    bounds do not both parse, the query_id does not resolve to a run_query
+    call, or the query's own range does not both parse: a bound that fails to
+    parse is not evidence either way, and this case only adds a reason to
+    reject a query that is checkable, on top of the cases above.
+    """
+    start = _parse_time_bound(window_start)
+    end = _parse_time_bound(window_end)
+    if start is None or end is None:
+        return []
+    issues: list[Issue] = []
+    for item in evidence:
+        calls = index.calls_for(item.query_id, tool=PRIMARY_EVIDENCE_TOOL)
+        if not calls:
+            continue
+        spec = _spec_for_time_bounds(calls[0].args)
+        query_from, query_to = _query_time_bounds(spec)
+        if query_from is None or query_to is None:
+            continue
+        if query_to <= start or query_from >= end:
+            issues.append(
+                Issue(
+                    "unsupported",
+                    f"baseline_evidence cites {item.query_id!r}, whose range "
+                    f"{_stamp(query_from)} to {_stamp(query_to)} lies entirely outside "
+                    f"the run window {_stamp(start)} to {_stamp(end)}. A period with no "
+                    "rows in it has no rate. Cite a query that runs inside the window instead.",
+                )
+            )
+    return issues
+
+
+def _spec_for_time_bounds(args: Mapping[str, object]) -> Mapping[str, object]:
+    """`_effective_spec`, plus the case where `query_spec` arrived as a JSON
+    string. Twenty-one live `run_query` calls carried the spec that way, and
+    `_effective_spec` hands back the outer args for those, which have no time
+    bounds, so the check would walk past them. Kept local to this check:
+    widening `_effective_spec` would change what Rule two counts as queried
+    for those calls, which is a separate decision."""
+    spec = args.get("query_spec")
+    if isinstance(spec, str):
+        try:
+            parsed = json.loads(spec)
+        except json.JSONDecodeError:
+            return args
+        return parsed if isinstance(parsed, dict) else args
+    return _effective_spec(args)
+
+
+def _stamp(moment: datetime) -> str:
+    """The `Z` spelling the prompt, the logs, and the model all use."""
+    return moment.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _check_ids(evidence: Sequence[Evidence], index: LogIndex, label: str) -> list[Issue]:

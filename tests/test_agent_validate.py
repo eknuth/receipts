@@ -7,11 +7,15 @@ log disagree, so the log has to be something a test can lie about.
 
 from __future__ import annotations
 
+import json
 from typing import Any
+
+import pytest
 
 from agent.report import Evidence, Hypothesis, PartialCheck, ReportDraft, ToolCall
 from agent.validate import (
     SYSTEM_COLUMNS,
+    _parse_time_bound,
     column_usage,
     excluded_columns,
     partially_checked_issues,
@@ -31,14 +35,31 @@ def query_call(
     breakdowns: list[str] | None = None,
     filters: list[dict[str, Any]] | None = None,
     calculations: list[dict[str, Any]] | None = None,
+    from_: str | None = None,
+    to: str | None = None,
+    start_time: str | None = None,
+    end_time: str | None = None,
 ) -> ToolCall:
-    """One `run_query` in the log, with the shape the hosted MCP takes."""
+    """One `run_query` in the log, with the shape the hosted MCP takes.
+
+    `from_`/`to` and `start_time`/`end_time` are the two spellings a query's
+    own time range comes in (`agent/format.py:401-408`); a test that wants a
+    range on the spec passes one pair or the other, never both.
+    """
     spec: dict[str, Any] = {
         "calculations": calculations or [{"op": "COUNT"}],
         "filters": [{"column": "scenario.run_id", "op": "=", "value": RUN_ID}, *(filters or [])],
     }
     if breakdowns:
         spec["breakdowns"] = breakdowns
+    if from_ is not None:
+        spec["from"] = from_
+    if to is not None:
+        spec["to"] = to
+    if start_time is not None:
+        spec["start_time"] = start_time
+    if end_time is not None:
+        spec["end_time"] = end_time
     return ToolCall(
         name=name,
         args={"dataset_slug": "receipts-shop", "query_spec": spec},
@@ -1170,6 +1191,93 @@ def test_a_baseline_citing_a_query_that_was_never_run_is_rejected() -> None:
 
 
 # --------------------------------------------------------------------------
+# EDW-1366: a baseline with no rows in the run
+#
+# A query outside the run window returned a real answer, just not one about
+# this run's traffic. The live case: "0% error rate for the 10 minutes
+# before the window", from a query that ended exactly when the window began.
+# --------------------------------------------------------------------------
+
+WINDOW_START = "2026-09-04T06:30:30Z"
+WINDOW_END = "2026-09-04T06:50:30Z"
+
+
+def test_a_baseline_entirely_before_the_window_is_rejected() -> None:
+    log = [
+        *good_log(),
+        query_call("Q4", from_="2026-09-04T06:20:30Z", to="2026-09-04T06:25:30Z"),
+    ]
+    report = draft(baseline_evidence=[Evidence(query_id="Q4", summary="0% error before onset")])
+    issues = validate_draft(
+        report, log, run_id=RUN_ID, window_start=WINDOW_START, window_end=WINDOW_END
+    )
+    assert [issue.code for issue in issues] == ["unsupported"]
+    assert "Q4" in issues[0].message
+    assert "outside the run window" in issues[0].message
+
+
+def test_a_baseline_ending_exactly_at_the_window_start_is_rejected() -> None:
+    """The live case: a query that ends the instant the window opens has no
+    rows from this run, even though its `to` matches the window's own start."""
+    log = [
+        *good_log(),
+        query_call("Q4", from_="2026-09-04T06:20:30Z", to=WINDOW_START),
+    ]
+    report = draft(baseline_evidence=[Evidence(query_id="Q4", summary="0% error before onset")])
+    issues = validate_draft(
+        report, log, run_id=RUN_ID, window_start=WINDOW_START, window_end=WINDOW_END
+    )
+    assert [issue.code for issue in issues] == ["unsupported"]
+    assert "Q4" in issues[0].message
+
+
+def test_a_baseline_overlapping_the_window_edge_is_accepted() -> None:
+    log = [
+        *good_log(),
+        query_call("Q4", from_="2026-09-04T06:20:30Z", to="2026-09-04T06:35:30Z"),
+    ]
+    report = draft(baseline_evidence=[Evidence(query_id="Q4", summary="flat across onset")])
+    issues = validate_draft(
+        report, log, run_id=RUN_ID, window_start=WINDOW_START, window_end=WINDOW_END
+    )
+    assert issues == []
+
+
+def test_a_baseline_inside_the_window_is_accepted() -> None:
+    log = [
+        *good_log(),
+        query_call("Q4", from_="2026-09-04T06:31:00Z", to="2026-09-04T06:40:00Z"),
+    ]
+    report = draft(baseline_evidence=[Evidence(query_id="Q4", summary="flat")])
+    issues = validate_draft(
+        report, log, run_id=RUN_ID, window_start=WINDOW_START, window_end=WINDOW_END
+    )
+    assert issues == []
+
+
+def test_no_window_given_means_the_out_of_window_check_is_skipped() -> None:
+    log = [
+        *good_log(),
+        query_call("Q4", from_="2026-09-04T06:20:30Z", to="2026-09-04T06:25:30Z"),
+    ]
+    report = draft(baseline_evidence=[Evidence(query_id="Q4", summary="0% error before onset")])
+    assert validate_draft(report, log, run_id=RUN_ID) == []
+
+
+def test_a_baseline_using_start_time_and_end_time_is_checked_the_same_way() -> None:
+    log = [
+        *good_log(),
+        query_call("Q4", start_time="2026-09-04T06:20:30Z", end_time="2026-09-04T06:25:30Z"),
+    ]
+    report = draft(baseline_evidence=[Evidence(query_id="Q4", summary="0% error before onset")])
+    issues = validate_draft(
+        report, log, run_id=RUN_ID, window_start=WINDOW_START, window_end=WINDOW_END
+    )
+    assert [issue.code for issue in issues] == ["unsupported"]
+    assert "Q4" in issues[0].message
+
+
+# --------------------------------------------------------------------------
 # A candidate that was ruled out
 # --------------------------------------------------------------------------
 
@@ -1644,3 +1752,63 @@ def test_system_columns_cover_the_documented_prefixes_and_names() -> None:
 
 def test_system_columns_match_case_insensitively() -> None:
     assert "Trace.Span_Id" in SYSTEM_COLUMNS
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "2026-09-04T06:30:30Z",
+        "2026-09-04T06:30:30+00:00",
+        "2026-09-04T06:30:30",
+        "2026-09-04 06:30:30Z",
+        "2026-09-04T06:30:30.250Z",
+        1788_000_000,
+        1788_000_000.5,
+    ],
+)
+def test_a_time_bound_in_a_shape_the_logs_carry_parses(value: object) -> None:
+    assert _parse_time_bound(value) is not None
+
+
+@pytest.mark.parametrize("value", ["-2h", "", None, True, 1788_000_000_000, "-1e20", "now"])
+def test_a_time_bound_that_is_not_a_moment_does_not_parse(value: object) -> None:
+    """Relative and open-ended bounds (`-2h` appears in live logs) are not a
+    moment, so the out-of-window check has nothing to compare and skips
+    the entry. Epoch milliseconds are past the year 50000 and count as
+    unparseable rather than as a date."""
+    assert _parse_time_bound(value) is None
+
+
+def test_a_baseline_with_only_a_from_bound_is_accepted() -> None:
+    """`from: -2h` with no `to` is an open range the check cannot place, so it
+    neither adds nor removes an issue."""
+    log = [*good_log(), query_call("Q4", from_="-2h")]
+    report = draft(baseline_evidence=[Evidence(query_id="Q4", summary="last two hours")])
+    issues = validate_draft(
+        report, log, run_id=RUN_ID, window_start=WINDOW_START, window_end=WINDOW_END
+    )
+    assert issues == []
+
+
+def test_a_baseline_whose_spec_arrived_as_a_json_string_is_still_checked() -> None:
+    """Twenty-one live run_query calls carried `query_spec` as a JSON string.
+    The bounds inside it count the same as a dict's."""
+    call = query_call("Q4", from_="2026-09-04T06:20:30Z", to="2026-09-04T06:30:30Z")
+    call = call.model_copy(
+        update={"args": {**call.args, "query_spec": json.dumps(call.args["query_spec"])}}
+    )
+    report = draft(baseline_evidence=[Evidence(query_id="Q4", summary="0% before the window")])
+    issues = validate_draft(
+        report, [*good_log(), call], run_id=RUN_ID, window_start=WINDOW_START, window_end=WINDOW_END
+    )
+    assert [issue.code for issue in issues] == ["unsupported"]
+    assert "2026-09-04T06:30:30Z" in issues[0].message
+    assert "+00:00" not in issues[0].message
+
+
+def test_an_unparseable_window_bound_skips_the_check() -> None:
+    log = [*good_log(), query_call("Q4", from_="2026-09-04T06:20:30Z", to="2026-09-04T06:25:30Z")]
+    report = draft(baseline_evidence=[Evidence(query_id="Q4", summary="before")])
+    assert (
+        validate_draft(report, log, run_id=RUN_ID, window_start="soon", window_end=WINDOW_END) == []
+    )

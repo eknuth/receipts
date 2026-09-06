@@ -611,6 +611,8 @@ class _RunState:
                 draft,
                 self.tool_log,
                 run_id=self.run.run_id,
+                window_start=self.run.window_start,
+                window_end=self.run.window_end,
                 require_negation=self.config.require_negation,
                 require_not_checked=self.config.require_not_checked,
             )
