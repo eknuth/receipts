@@ -780,7 +780,7 @@ async def test_coerced_then_schema_rejected_twice_still_records_the_coercion(
     )
     report = await run_loop(provider, settings=settings)
 
-    assert report.stop_reason == "report"
+    assert report.stop_reason == "schema"  # nothing was filed, and the record says so
     assert report.validation_failed is True
     assert report.hypotheses == []  # the schema-rejected draft was never kept
     # Two attempts each needed the coercion, so two entries: the count is

@@ -54,13 +54,15 @@ Crashes. A run that raises out of `investigate`, or that the loop ended with
 whatever process fields were measured. It skips the grader, because an
 empty report on a control scenario grades as a correct "no incident" there.
 Every other stop reason is graded. A run that filed within the grace turns
-after a cap has `stop_reason == "report"`. A run with `call_cap`, `wall_cap`,
-or `model_stopped` filed nothing, and its empty report goes through the
-grader as it is: on an incident scenario that scores near zero, on a control
-it scores as restraint. The `stopped by` column in the report shows which
-runs those were; changing what they score is the grader's decision, not the
-runner's. If the MCP session fails to close after the report was filed, the
-report is graded and the close error is kept in the grade's notes.
+after a cap has `stop_reason == "report"`. A run with `schema` (its last
+submit_report did not parse as a draft), `call_cap`, `wall_cap`, or
+`model_stopped` filed nothing, and its empty report goes through the grader,
+which scores it as no answer: the outcome components are 0 on an incident
+scenario and on a control alike, because the default `incident_present` is
+not a claim the model made. The `stopped by` column in the report shows
+which runs those were. If the MCP session fails to close after the report
+was filed, the report is graded and the close error is kept in the grade's
+notes.
 
 Honeycomb's harness, for the contrast the README draws. In
 `honeycombio/agent-skill` (read on 2026-09-03 from `main` at commit

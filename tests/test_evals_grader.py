@@ -120,6 +120,7 @@ def report(**overrides: Any) -> Report:
         "tokens_out": 200,
         "cost_usd": 0.0123,
         "wall_s": 12.5,
+        "stop_reason": "report",
     }
     base.update(overrides)
     return Report.model_validate(base)
@@ -323,6 +324,53 @@ def test_a_low_hypothesis_on_a_control_keeps_the_outcome_components() -> None:
     assert result.components.onset == 1.0
     assert result.penalties.calibration == -0.10
     assert result.total == pytest.approx(0.90)
+
+
+@pytest.mark.parametrize("stop_reason", ["schema", "call_cap", "wall_cap", "model_stopped"])
+def test_a_control_run_that_filed_nothing_earns_no_restraint(stop_reason: str) -> None:
+    """The empty defaults say incident_present=False, which is what a control
+    wants to hear, but nobody said it."""
+    result = grade_synthetic(control_report(stop_reason=stop_reason, baseline_evidence=[]))
+    assert result.components.dims == 0.0
+    assert result.components.span == 0.0
+    assert result.components.onset == 0.0
+    assert result.components.incident == 0.0
+    assert result.outcome_score == 0.0
+    assert result.jaccard is None
+    assert result.penalties.calibration == 0.0
+    assert any(
+        note.startswith("not filed: the run stopped on " + stop_reason) for note in result.notes
+    )
+
+
+def test_a_schema_stop_on_a_control_scores_the_validation_penalty_and_nothing_else() -> None:
+    result = grade_synthetic(
+        control_report(
+            stop_reason="schema",
+            validation_failed=True,
+            baseline_evidence=[],
+            not_checked=[],
+        )
+    )
+    assert result.before_penalties == 0.0
+    assert result.total == pytest.approx(-0.25)
+
+
+def test_an_incident_run_that_filed_nothing_scores_as_before() -> None:
+    """On an incident scenario the defaults were already worth nothing; the
+    only change is the note."""
+    result = grade_synthetic(
+        report(stop_reason="wall_cap", incident_present=False, hypotheses=[], onset_estimate=None)
+    )
+    assert result.outcome_score == 0.0
+    assert result.components.incident == 0.0
+    assert any(note.startswith("not filed") for note in result.notes)
+
+
+def test_a_filed_control_report_still_scores_restraint() -> None:
+    result = grade_synthetic(control_report(stop_reason="report"))
+    assert result.components.incident == 1.0
+    assert result.components.dims == 1.0
 
 
 def test_a_quiet_report_with_no_baseline_query_has_no_receipts() -> None:

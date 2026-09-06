@@ -142,9 +142,11 @@ def render(runs: Sequence[GradedRun], unreadable: Sequence[str] = ()) -> str:
         "weight without changing an answer; whether it changed the answer is a question about "
         "`outcome`. `top right` counts runs whose top hypothesis scored at least 0.5 on the "
         "grader's dims component, which is the grader's own line for a wrong hypothesis. On "
-        "a control a report with no hypothesis, or only low ones, scores 1 there and counts; "
-        "on an incident scenario a report with no hypothesis scores 0 and does not; a crash "
-        "never does. Ranges are the lowest and highest single run.",
+        "a control a filed report with no hypothesis, or only low ones, scores 1 there and "
+        "counts; on an incident scenario a report with no hypothesis scores 0 and does not; a "
+        "run that filed nothing (stopped by a cap, or by a submit_report that never matched "
+        "the schema) scores 0 on both, and a crash never does. Ranges are the lowest and "
+        "highest single run.",
         "",
     ]
     if not runs:

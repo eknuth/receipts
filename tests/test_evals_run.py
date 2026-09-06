@@ -786,10 +786,11 @@ async def test_the_call_cap_ends_a_run_that_is_graded_normally(
     assert graded.total == graded.grade.total
 
 
-async def test_a_cap_ended_run_on_a_control_grades_as_restraint_and_says_how_it_stopped(
+async def test_a_cap_ended_run_on_a_control_grades_as_no_answer_and_says_how_it_stopped(
     settings: Settings, results_dir: Path, runs_dir: Path
 ) -> None:
-    """A model that never files anything on a control scores 0.75 on the grader.
+    """A model that never files anything on a control scores 0 on the grader:
+    the default `incident_present` is not restraint the model showed.
 
     The runner does not change that: the grader is not touched here, and the
     `stop_reason` in the row is what tells the reader nothing was filed.
@@ -808,9 +809,9 @@ async def test_a_cap_ended_run_on_a_control_grades_as_restraint_and_says_how_it_
     assert graded.stop_reason == "call_cap"
     assert not graded.crashed
     assert graded.grade is not None
-    assert graded.total == pytest.approx(0.75)
-    assert graded.dims == 1.0
-    assert graded.top_right is True
+    assert graded.total == pytest.approx(0.0)
+    assert graded.dims == 0.0
+    assert graded.top_right is False
     assert graded.top_confidence is None
 
 

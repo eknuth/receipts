@@ -400,6 +400,12 @@ class ToolCall(BaseModel):
     )
 
 
+SCHEMA_REJECTION = "The report did not match the submit_report schema and was not filed:"
+"""The first line of the rejection the loop sends back when a submit_report
+call does not parse as a `ReportDraft`. `Report.name_the_schema_stop` reads it
+to recognise reports written before `stop_reason == "schema"` existed."""
+
+
 class Report(BaseModel):
     """One investigation, findings and process both."""
 
@@ -436,7 +442,10 @@ class Report(BaseModel):
     tool_log: list[ToolCall] = Field(default_factory=list)
 
     stop_reason: str = "unknown"
-    """Why the loop ended: report, call_cap, wall_cap, model_stopped, or error."""
+    """Why the loop ended: report, schema, call_cap, wall_cap, model_stopped,
+    or error. Only `report` means a draft was filed; `schema` is a run whose
+    last submit_report did not parse as a draft, so the findings fields hold
+    their defaults and say nothing the model said."""
 
     model_stop_reason: str | None = None
     """What the provider said about the last turn, such as `refusal` or
@@ -502,6 +511,22 @@ class Report(BaseModel):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(self.model_dump_json(indent=2) + "\n")
         return path
+
+    @model_validator(mode="after")
+    def name_the_schema_stop(self) -> Report:
+        """Reports written before the `schema` stop reason existed recorded a
+        second schema rejection as `stop_reason == "report"` with
+        `validation_failed` and the rejection text as the first message, though
+        nothing was filed. Read them as what they were, so a regrade of an old
+        results directory and a fresh run grade the same way."""
+        if (
+            self.stop_reason == "report"
+            and self.validation_failed
+            and self.validation_messages
+            and self.validation_messages[0].startswith(SCHEMA_REJECTION)
+        ):
+            self.stop_reason = "schema"
+        return self
 
 
 def submit_report_schema() -> dict[str, Any]:

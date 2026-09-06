@@ -51,7 +51,7 @@ from agent.providers.base import (
     ToolUse,
     Turn,
 )
-from agent.report import Report, ReportDraft, ToolCall, submit_report_schema
+from agent.report import SCHEMA_REJECTION, Report, ReportDraft, ToolCall, submit_report_schema
 from agent.telemetry import RunTrace, disabled_run_trace
 from evals.pricing import cost_usd
 from receipts.settings import Settings
@@ -592,13 +592,14 @@ class _RunState:
                 self.coerced.extend(coercion_context.get("coerced_fields", []))
                 self.rejections += 1
                 self.last_rejection = (
-                    "The report did not match the submit_report schema and was not filed:\n"
-                    f"{exc}\nFix the fields and call submit_report again."
+                    f"{SCHEMA_REJECTION}\n{exc}\nFix the fields and call submit_report again."
                 )
                 span.record_validation_rejection(self.last_rejection)
                 if self.rejections > 1:
+                    # Nothing was filed: the stop reason says so, and the grader
+                    # scores it as no answer rather than as the empty defaults.
                     return self.finish(
-                        stop_reason="report",
+                        stop_reason="schema",
                         validation_failed=True,
                         messages=[self.last_rejection],
                     )
