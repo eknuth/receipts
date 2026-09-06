@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from agent.report import (
     Evidence,
     Hypothesis,
+    PartialCheck,
     RejectedCandidate,
     Report,
     ReportDraft,
@@ -64,6 +65,7 @@ def test_the_submit_report_schema_matches_the_draft() -> None:
     schema = submit_report_schema()
     assert schema["additionalProperties"] is False
     assert set(schema["properties"]) == set(ReportDraft.model_fields)
+    assert "partially_checked" in schema["properties"]
     assert schema["required"] == ["incident_present"]
     # Every field the model has to reason about carries prose describing it.
     assert all("description" in prop for prop in schema["properties"].values())
@@ -330,6 +332,65 @@ def test_the_adyen_4_shape_validates_to_the_same_report_as_the_plain_form() -> N
     wrapped = ReportDraft.model_validate({"permalink": _valid_report_dict()}, context=context)
     assert wrapped == plain
     assert context["coerced_fields"] == ["wrapper:permalink"]
+
+
+# --------------------------------------------------------------------------
+# EDW-1365: partially_checked, the third list between not_checked and
+# rejected_candidates
+# --------------------------------------------------------------------------
+
+
+def test_partially_checked_round_trips_through_the_draft() -> None:
+    check = PartialCheck(
+        subject="cart.size",
+        queried_as="broke down duration_ms by cart.size across the window",
+        not_run="did not look at individual values below 8 for a threshold",
+    )
+    parsed = draft(partially_checked=[check])
+    assert parsed.partially_checked == [check]
+
+
+def test_partially_checked_as_a_json_string_coerces() -> None:
+    entries = [
+        {
+            "subject": "cart.size",
+            "queried_as": "broke down duration_ms by cart.size",
+            "not_run": "did not look at values below 8",
+        }
+    ]
+    as_list = draft(partially_checked=entries)
+    as_json_string = draft(partially_checked=json.dumps(entries))
+    assert as_list == as_json_string
+
+
+def test_partially_checked_forbids_an_unknown_field() -> None:
+    with pytest.raises(ValidationError):
+        PartialCheck.model_validate(
+            {
+                "subject": "cart.size",
+                "queried_as": "x",
+                "not_run": "y",
+                "extra": "z",
+            }
+        )
+
+
+def test_partially_checked_round_trips_through_report_write_and_load(tmp_path: Path) -> None:
+    check = PartialCheck(
+        subject="exception.type",
+        queried_as="broke down errors by exception.type",
+        not_run="did not read exception.message for each type",
+    )
+    report = Report.from_draft(
+        draft(partially_checked=[check]),
+        run_id="run-partial",
+        scenario_id="s",
+        provider="fake",
+        model="fake-model",
+    )
+    path = report.write(tmp_path)
+    reloaded = load_report(path)
+    assert reloaded.partially_checked == [check]
 
 
 def test_a_two_key_wrapper_still_fails() -> None:

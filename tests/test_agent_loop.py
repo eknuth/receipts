@@ -433,6 +433,110 @@ async def test_a_provider_failure_is_recorded_not_raised(settings: Settings) -> 
     assert "no credit" in (report.error or "")
 
 
+async def test_a_successful_query_result_carries_the_queried_so_far_footer(
+    settings: Settings,
+) -> None:
+    provider = FakeProvider(
+        [
+            completion(query_use("b"), negation_use("c"), baseline_use("d")),
+            completion(use(SUBMIT_REPORT, report_args(), ident="d")),
+        ]
+    )
+    await run_loop(provider, settings=settings)
+
+    turns = provider.seen[-1][1]
+    footers = [
+        result.content
+        for turn in turns
+        for result in turn.tool_results
+        if "Queried so far:" in (result.content or "")
+    ]
+    assert footers
+    assert footers[0].endswith("Queried so far: deployment.version, duration_ms")
+
+
+def region_breakdown_use(ident: str = "e") -> ToolUse:
+    """A fourth query, over a column no other call in the test names, so a
+    footer taken after it has grown over the ones before it."""
+    return use(
+        "run_query",
+        {
+            "dataset_slug": "receipts-shop",
+            "query_spec": {
+                "calculations": [{"op": "COUNT"}],
+                "filters": [{"column": "scenario.run_id", "op": "=", "value": RUN.run_id}],
+                "breakdowns": ["cloud.region"],
+            },
+        },
+        ident,
+    )
+
+
+async def test_the_footer_grows_as_more_queries_run(settings: Settings) -> None:
+    # The fourth call is not cited by report_args(), so it does not change what
+    # the report needs to validate; it only grows the queried-terms set the
+    # footer after it reports.
+    provider = FakeProvider(
+        [
+            completion(
+                query_use("b"), negation_use("c"), baseline_use("d"), region_breakdown_use("e")
+            ),
+            completion(use(SUBMIT_REPORT, report_args(), ident="f")),
+        ]
+    )
+    await run_loop(provider, settings=settings)
+
+    # Only the last snapshot has the full, non-overlapping turn history: each
+    # earlier snapshot is a prefix of it, so summing footers across snapshots
+    # would double-count the ones common to more than one.
+    turns = provider.seen[-1][1]
+    footers = [
+        result.content
+        for turn in turns
+        for result in turn.tool_results
+        if "Queried so far:" in (result.content or "")
+    ]
+    assert len(footers) == 4
+    assert "cloud.region" not in footers[0]
+    assert "cloud.region" in footers[-1]
+
+
+async def test_an_error_result_carries_no_footer(settings: Settings) -> None:
+    class Failing(FakeMCP):
+        async def call(
+            self, name: str, args: dict[str, Any] | None = None, **kwargs: Any
+        ) -> ToolResult:
+            self.calls.append((name, dict(args or {})))
+            raise RuntimeError("dataset not found")
+
+    provider = FakeProvider(
+        [completion(query_use("q")), completion(use(SUBMIT_REPORT, report_args(), ident="d"))]
+    )
+    await run_loop(provider, Failing(), settings=settings)
+
+    error_results = [
+        result
+        for _, turns, _ in provider.seen
+        for turn in turns
+        for result in turn.tool_results
+        if result.is_error
+    ]
+    assert error_results
+    assert all("Queried so far" not in (result.content or "") for result in error_results)
+
+
+async def test_the_footer_is_not_stored_in_the_tool_log(settings: Settings) -> None:
+    provider = FakeProvider(
+        [
+            completion(query_use("b"), negation_use("c"), baseline_use("d")),
+            completion(use(SUBMIT_REPORT, report_args(), ident="d")),
+        ]
+    )
+    report = await run_loop(provider, settings=settings)
+
+    assert not any("Queried so far" in str(call.model_dump()) for call in report.tool_log)
+
+
 async def test_a_failing_mcp_call_becomes_a_tool_result_the_model_can_read(
     settings: Settings,
 ) -> None:

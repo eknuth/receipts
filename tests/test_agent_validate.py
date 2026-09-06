@@ -9,9 +9,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent.report import Evidence, Hypothesis, ReportDraft, ToolCall
+from agent.report import Evidence, Hypothesis, PartialCheck, ReportDraft, ToolCall
 from agent.validate import (
     excluded_columns,
+    partially_checked_issues,
     queried_terms,
     query_ids,
     rejection_message,
@@ -268,6 +269,88 @@ def test_require_not_checked_off_skips_the_list_entirely() -> None:
 
 
 # --------------------------------------------------------------------------
+# The partially-checked list
+# --------------------------------------------------------------------------
+
+
+def partial_check(**overrides: Any) -> PartialCheck:
+    base: dict[str, Any] = {
+        "subject": "deployment.version",
+        "queried_as": "broke down P99 duration_ms by deployment.version",
+        "not_run": "did not look at values below the current release",
+    }
+    base.update(overrides)
+    return PartialCheck.model_validate(base)
+
+
+def test_a_queried_subject_is_accepted() -> None:
+    terms = queried_terms(good_log(), run_id=RUN_ID)
+    assert partially_checked_issues([partial_check()], terms) == []
+
+
+def test_a_queried_subject_is_accepted_case_insensitively() -> None:
+    terms = queried_terms(good_log(), run_id=RUN_ID)
+    issues = partially_checked_issues([partial_check(subject="Deployment.Version")], terms)
+    assert issues == []
+
+
+def test_an_unqueried_subject_is_rejected() -> None:
+    terms = queried_terms(good_log(), run_id=RUN_ID)
+    issues = partially_checked_issues([partial_check(subject="never.queried")], terms)
+    assert [issue.code for issue in issues] == ["partially_checked_false"]
+    assert "never.queried" in issues[0].message
+    assert "not_checked" in issues[0].message
+
+
+def test_partially_checked_runs_whether_or_not_not_checked_is_required() -> None:
+    """This check is not the R10 ablation knob; it always runs."""
+    bad = draft(partially_checked=[partial_check(subject="never.queried")])
+    for require_not_checked in (True, False):
+        issues = validate_draft(
+            bad, good_log(), run_id=RUN_ID, require_not_checked=require_not_checked
+        )
+        assert any(issue.code == "partially_checked_false" for issue in issues)
+
+
+def test_queried_as_and_not_run_are_free_text() -> None:
+    """Only subject is checked against the log; the other two fields are prose."""
+    terms = queried_terms(good_log(), run_id=RUN_ID)
+    odd = partial_check(queried_as="whatever I feel like", not_run="anything at all")
+    assert partially_checked_issues([odd], terms) == []
+
+
+# --------------------------------------------------------------------------
+# not_checked_false: a bare name vs. an entry with a qualifier
+# --------------------------------------------------------------------------
+
+
+def test_a_bare_name_entry_is_told_to_take_it_off_the_list() -> None:
+    issues = validate_draft(draft(not_checked=["deployment.version"]), good_log(), run_id=RUN_ID)
+    assert [issue.code for issue in issues] == ["not_checked_false"]
+    assert "take it off the list" in issues[0].message.lower()
+    assert "partially_checked" not in issues[0].message
+
+
+def test_a_qualified_entry_is_pointed_at_partially_checked() -> None:
+    entry = "deployment.version was never broken down on"
+    issues = validate_draft(draft(not_checked=[entry]), good_log(), run_id=RUN_ID)
+    assert [issue.code for issue in issues] == ["not_checked_false"]
+    assert "partially_checked" in issues[0].message
+    assert "deployment.version" in issues[0].message
+
+
+def test_a_quoted_bare_name_is_still_told_to_take_it_off_the_list() -> None:
+    log = [
+        query_call("Q1", breakdowns=["error"]),
+        query_call("Q2", filters=[{"column": "deployment.version", "op": "!=", "value": "9.9.9"}]),
+        baseline_call(),
+    ]
+    issues = validate_draft(draft(not_checked=["`error`"]), log, run_id=RUN_ID)
+    assert [issue.code for issue in issues] == ["not_checked_false"]
+    assert "partially_checked" not in issues[0].message
+
+
+# --------------------------------------------------------------------------
 # What the model is handed back
 # --------------------------------------------------------------------------
 
@@ -278,11 +361,25 @@ def test_the_rejection_message_names_every_issue() -> None:
         good_log(),
         run_id=RUN_ID,
     )
-    message = rejection_message(issues)
+    terms = queried_terms(good_log(), run_id=RUN_ID)
+    message = rejection_message(issues, terms)
     assert len(issues) == 3
     for issue in issues:
         assert issue.message in message
     assert "call submit_report again" in message
+
+
+def test_the_rejection_message_ends_with_the_queried_terms() -> None:
+    issues = validate_draft(draft(not_checked=[]), good_log(), run_id=RUN_ID)
+    message = rejection_message(issues, queried_terms(good_log(), run_id=RUN_ID))
+    last_line = message.splitlines()[-1]
+    assert last_line.startswith("Columns and values your queries used: ")
+    assert "deployment.version" in last_line
+
+
+def test_the_rejection_message_says_so_when_there_are_no_terms_yet() -> None:
+    message = rejection_message([], [])
+    assert message.splitlines()[-1] == "Columns and values your queries used: none yet."
 
 
 # --------------------------------------------------------------------------
