@@ -283,6 +283,27 @@ def test_the_ablations_remove_whole_rules_from_the_prompt() -> None:
     assert "WHERE NOT" in no_list
 
 
+def test_the_ablated_not_checked_prompt_does_not_teach_the_ablated_rule() -> None:
+    """The Finishing section used to explain not_checked and the "Queried so
+    far" footer outside the optional block, so the no-notchecked ablation
+    still taught the rule it was supposed to remove."""
+    no_list = render_prompt(RUN, AgentConfig(require_not_checked=False))
+    assert "Queried so far" not in no_list
+    assert "not_checked" not in no_list
+
+
+def test_the_prompt_names_every_system_column_prefix_and_name() -> None:
+    """Pinned against agent/validate.py's SYSTEM_COLUMNS so the two documents
+    of what is out of scope for not_checked cannot drift apart."""
+    from agent.validate import SYSTEM_COLUMNS
+
+    prompt = render_prompt(RUN, AgentConfig())
+    for prefix in SYSTEM_COLUMNS.prefixes:
+        assert f"`{prefix}*`" in prompt, prefix
+    for name in SYSTEM_COLUMNS.names:
+        assert f"`{name}`" in prompt, name
+
+
 # --------------------------------------------------------------------------
 # Tools
 # --------------------------------------------------------------------------
@@ -566,21 +587,25 @@ async def test_a_breakdown_result_is_recorded_into_result_values(settings: Setti
 
 
 async def test_recorded_result_values_feed_the_queried_so_far_footer(settings: Settings) -> None:
+    """The footer line itself has to carry the values, not just the results
+    table above it: this used to pass only because the table happened to
+    contain them too."""
     provider = FakeProvider(
         [completion(query_use("b")), completion(use(SUBMIT_REPORT, report_args(), ident="d"))]
     )
     await run_loop(provider, BreakdownMCP(), settings=settings)
 
     turns = provider.seen[-1][1]
-    footers = [
-        result.content
+    footer_lines = [
+        line
         for turn in turns
         for result in turn.tool_results
-        if "Queried so far:" in (result.content or "")
+        for line in (result.content or "").splitlines()
+        if line.startswith("Queried so far:")
     ]
-    assert footers
-    assert "9.9.9" in footers[0]
-    assert "9.9.8" in footers[0]
+    assert footer_lines
+    assert "9.9.9" in footer_lines[0]
+    assert "9.9.8" in footer_lines[0]
 
 
 async def test_a_failing_mcp_call_becomes_a_tool_result_the_model_can_read(

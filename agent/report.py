@@ -207,15 +207,15 @@ class PartialCheck(BaseModel):
     column you broke down on was queried, so an entry naming it on
     `not_checked` is false and the validator rejects it; but "I broke down on
     `cart.size` and did not look at individual values below 8" is a true
-    statement, not a rejected candidate either, since nothing was measured and
-    ruled out. This is that slot: the column, what was run on it, and what
-    was not.
+    statement, and it sits outside `rejected_candidates` too, since nothing
+    was measured and ruled out. This is that slot: the column, what was run
+    on it, and what was not.
 
     `reading` is what makes the statement checkable. Free text in `not_run`
     let a model say "I looked at this column in isolation" about a column it
-    had just broken down on, which the tool log flatly contradicts; `reading`
-    names one of a small set of things a query can fail to show, and
-    `agent/validate.py` checks the claim against the log the same way it
+    had just broken down on, which the tool log contradicts directly;
+    `reading` names one of a small set of things a query can fail to show,
+    and `agent/validate.py` checks the claim against the log the same way it
     checks every other field here.
     """
 
@@ -224,11 +224,12 @@ class PartialCheck(BaseModel):
     subject: str = Field(
         description=(
             "A column as it appears in the breakdowns, filters, or calculations of a query "
-            "you ran, for example cart.size, payments.charge, or deployment.version. A value "
-            "the column took, such as us-west-2, is not a subject; name the column instead. "
-            "It has to be something the run queried; a subject you never queried belongs in "
-            "not_checked instead. A time window is not a subject here: a window you did not "
-            "query goes in not_checked."
+            "you ran, for example cart.size, deployment.version, or duration_ms: something a "
+            "query broke down, filtered, or calculated over. A value the column took, such as "
+            "us-west-2, names the column here instead of being the subject itself. It has to "
+            "be something the run queried; a subject you never queried belongs in not_checked "
+            "instead. A time window is not a subject here either: a window you did not query "
+            "goes in not_checked."
         )
     )
     queried_as: str = Field(description="The measurement that was run on it, one sentence.")
@@ -295,8 +296,8 @@ class ReportDraft(BaseModel):
     rejected_candidates: list[RejectedCandidate] = Field(
         default_factory=list,
         description=(
-            "Things you looked at and ruled out. Not required, and not a place for "
-            "everything you did not check, which is what not_checked is for."
+            "Things you looked at and ruled out. Optional, and only for that: everything "
+            "else you did not check belongs in not_checked."
         ),
     )
     partially_checked: list[PartialCheck] = Field(
@@ -304,7 +305,7 @@ class ReportDraft(BaseModel):
         description=(
             "Something you queried and did not read a particular way: the column, what "
             "you ran on it, and what you did not. A subject that was never queried at "
-            "all belongs in not_checked, not here."
+            "all belongs in not_checked instead."
         ),
     )
 
