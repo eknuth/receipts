@@ -99,8 +99,9 @@ uv run python -m evals.run --scenarios all --configs full --repeats 3 --provider
 uv run python -m evals.report
 ```
 
-The second command writes its column under a separate results directory; the report keys columns
-by provider when more than one is present.
+Both commands write to `evals/results/full/`, so run the second with `--results-dir` pointing
+somewhere else and copy its `full/` directory in beside the first as `evals/results/full-nvidia/`.
+The report keys columns by provider when more than one is present.
 
 ## Status
 
