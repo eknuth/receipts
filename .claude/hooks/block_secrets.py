@@ -20,10 +20,12 @@ Blocks, with exit 2 and a reason on stderr:
 The diff is read where the commit will run: the hook walks the command's
 segments in order, follows `cd <path>`, and honors `git -C <path>`, starting
 from the payload's `cwd`. `.env.example` is read from that repository's top
-level. Text after a heredoc marker (`<<`) is a document, not shell, and is not
-read. Everything else passes through: exit 0, no output. Any unexpected error
-also exits 0, because a hook that fails closed would block every Bash call.
-Standard library only, no network.
+level. In a worktree session `CLAUDE_PROJECT_DIR` stays at the main checkout,
+so the hook that runs is main's copy, and it inspects the repository at the
+payload `cwd`, which is the worktree. Text after a heredoc marker (`<<`) is a
+document, not shell, and is not read. Everything else passes through: exit 0,
+no output. Any unexpected error also exits 0, because a hook that fails closed
+would block every Bash call. Standard library only, no network.
 """
 
 from __future__ import annotations

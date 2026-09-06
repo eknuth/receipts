@@ -1,39 +1,52 @@
 """PreToolUse hook on Bash: a parked results column sits four levels deep.
 
-What it replaces: the gotcha in every handoff memory since 2026-09-05. The
-report reads `evals/results/*/*/*/grade.json`, so a column moved to
-`evals/results/<park>/<scenario>/<n>` is counted as a live config named
-`<park>`, and the mean in `evals/report.md` moves for a reason that has
-nothing to do with the change under test. It happened once with a three-level
-park and was found by reading the report. A parked column goes to
-`evals/results/<park>/<config>/<scenario>/<n>`.
+What it replaces: the gotcha in every handoff memory since 2026-09-05, and one
+of the things EDW-1368's Context lists as got wrong: a parked column at three
+levels counted as live. The mechanism is in `evals/report.py`, which globs
+`evals/results/*/*/*/grade.json` and keys each cell by the `config` and
+`provider` fields inside its `grade.json`, never by the directory name. So a
+column moved to `evals/results/<anything>/<scenario>/<n>` adds its cells to
+the live column whose `config` they carry, and that column's n doubles. A
+parked column goes to `evals/results/<park>/<config>/<scenario>/<n>`.
 
 The hook simulates the command's `mkdir`, `mv`, and `cp` segments in order,
 following `cd`, and blocks only when the final layout leaves cells at three
-levels under `evals/results/` under a name that is not a live config (`full`,
-`no-negation`, `no-notchecked`, each with an optional provider suffix such as
-`full-nvidia`). A destination that exists on disk, was created earlier in the
-same command, or ends in a slash is read as "move into", so
+levels under a directory name other than the ones `evals/run.py` writes:
+`<config>` for a config in its `CONFIGS`, or `<config>-<provider>` for a
+provider in its `PROVIDERS` (the lists are mirrored here, since the hook is
+standard library only; a test keeps them equal). A destination that exists on
+disk or was created earlier in the same command is read as "move into", so
 `mkdir -p evals/results/r18-pass && mv evals/results/full evals/results/r18-pass`
 lands at four levels and passes, and so does a move through a temporary name
-that ends at four levels. Renaming a live column to another live name passes.
-`rsync`, `tar`, and moves done from inside a script are not covered.
-Everything else passes through: exit 0, no output, and so does any unexpected
-error. Standard library only.
+that ends at four levels. A trailing slash on a destination that does not
+exist is a rename, which is how `mv` treats it. Renaming a live column to
+another live name passes. `rsync`, `tar`, and moves done from inside a script
+are not covered. In a worktree session `CLAUDE_PROJECT_DIR` stays at the main
+checkout, so the hook that runs is main's copy; this hook checks the disk at
+the payload `cwd`. Everything else passes through: exit 0, no output, and so
+does any unexpected error.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import re
 import shlex
 import sys
 from pathlib import Path
 
-LIVE_COLUMN = re.compile(r"^(full|no-negation|no-notchecked)(-[a-z0-9]+)?$")
+# Mirrors `evals.run.CONFIGS` (keys) and `evals.run.PROVIDERS`; tests/test_hooks.py checks.
+CONFIGS = ("full", "no-negation", "no-notchecked")
+PROVIDERS = ("anthropic", "bedrock", "ollama", "nvidia")
 RESULTS = "evals/results/"
 SEPARATORS = set("&|;\n()")
+
+
+def live_name(name: str) -> bool:
+    """Whether `name` is a column directory `evals/run.py` writes or the report expects."""
+    if name in CONFIGS:
+        return True
+    return any(name == f"{c}-{p}" for c in CONFIGS for p in PROVIDERS)
 
 
 def segments(command: str) -> list[list[str]]:
@@ -124,7 +137,7 @@ class Layout:
                 self.cells_below.pop(src, None)
             if dest is None or cells is None:
                 continue
-            into = raw_dest.endswith("/") or self.is_dir(raw_dest, dest)
+            into = self.is_dir(raw_dest, dest)
             final = f"{dest}/{Path(src).name}".strip("/") if into else dest
             self.cells_below[final] = cells
             if not copy:
@@ -133,7 +146,7 @@ class Layout:
     def offenders(self) -> list[str]:
         out = []
         for rel, cells in self.cells_below.items():
-            if depth(rel) + cells == 3 and not LIVE_COLUMN.match(rel.split("/")[0]):
+            if depth(rel) + cells == 3 and not live_name(rel.split("/")[0]):
                 out.append(rel)
         return out
 
@@ -156,9 +169,10 @@ def check(command: str, cwd: Path) -> str | None:
     where = ", ".join(f"evals/results/{rel}" for rel in offenders)
     return (
         f"blocked: {where} would leave cells at three levels under evals/results/, where "
-        "evals/report.py reads them as a live config. Park a column four levels deep: "
-        "mkdir -p evals/results/<park> && mv evals/results/<config> "
-        "evals/results/<park>/<config> (CLAUDE.md, Tooling)."
+        "evals/report.py adds them to the live column whose config field they carry and "
+        "that column's n doubles. Park a column four levels deep: mkdir -p "
+        "evals/results/<park> && mv evals/results/<config> evals/results/<park>/<config> "
+        "(CLAUDE.md, Tooling)."
     )
 
 

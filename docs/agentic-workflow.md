@@ -79,7 +79,9 @@ Hooks under `.claude/hooks/`, each tested in `tests/test_hooks.py` with stdin JS
 - `block_double_emit.py` (PreToolUse): an emit, or a `*pass*.sh` launch, while `evals.run` or
   `gen.emit` is running is refused, naming the 4,000 events per second cap.
 - `block_parked_column.py` (PreToolUse): `mkdir`, `mv`, and `cp` are simulated in order and
-  an end state with cells at three levels under a non-config name is refused.
+  an end state with cells at three levels under any name other than the ones `evals/run.py`
+  writes is refused, since the report merges such cells into the live column whose `config`
+  they carry.
 - `lint_after_commit.py` (PostToolUse): `make lint` runs in the cwd's repository after a
   commit and a red result comes back as a warning.
 
@@ -91,16 +93,16 @@ Linear, or Honeycomb.
 
 ## What the hooks would have caught
 
-Two incidents are in the memory files. A before column was parked at three levels under
-`evals/results/`, the report read it as a live config, and the headline moved; it was found by
-reading the report, and the 2026-09-06 handoff carries the rule as a gotcha.
-`block_parked_column.py` refuses that `mv` and prints the four-level shape. The NVIDIA pass
-queued behind the EDW-1367 after-pass on 2026-09-05 was started by a loop polling the other
-pass's log once a minute, the shape in which one pass's tail overlaps the next one's head, and
-the issue that added the hook records two emits run at once. `block_double_emit.py` refuses
-the second emit while the first pass's `evals.run` is alive. A false block costs one retry in
-the shape the message asks for; each hook exits 0 on anything it cannot judge, so the failure
-mode is a missed block, never a stuck session.
+Two incidents are on record. EDW-1368's Context lists a parked column at three levels counted
+as live, and the 2026-09-06 handoff carries the rule as a gotcha: four levels. The mechanism
+is in `evals/report.py`, which globs `*/*/*/grade.json` and keys cells by the `config` and
+`provider` fields inside each `grade.json`, whatever the directory is called, so a three-level
+column under any name adds its cells to the live column whose `config` they carry and n
+doubles. `block_parked_column.py` refuses that `mv` and prints the four-level shape. The same
+Context lists two emits run at once, and the handoff memory carries the rule never to run
+overlapping emits. `block_double_emit.py` refuses an emit while another pass's `evals.run` is
+alive. A false block costs one retry in the shape the message asks for; each hook exits 0 on
+anything it cannot judge, so the failure mode is a missed block, never a stuck session.
 
 ## Left out
 

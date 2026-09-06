@@ -319,6 +319,41 @@ def test_double_emit_ignores_a_run_without_emit(marker: str) -> None:
     assert_pass(run_hook(DOUBLE_EMIT, bash("ls scripts/*.sh"), env=env))
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        'git commit -m "add afterpass.sh to the skill"',
+        'grep -n "pass.sh" .claude/skills/pass-run/SKILL.md',
+        "cat /private/tmp/x/scratchpad/r19pass.sh",
+        "ls tests/test_pass.sh",
+        'echo "uv run python -m evals.run --emit"',
+        "python3 - <<EOF\nprint('uv run python -m evals.run --emit')\nEOF",
+        "bash bypass.sh",
+        "head -3 nvidiapass.sh | grep emit",
+    ],
+)
+def test_double_emit_passes_ordinary_commands_while_a_marker_runs(
+    command: str, marker: str
+) -> None:
+    """A pass runs for ninety minutes; the hook must not refuse every command that
+    mentions a pass script or an emit in a string, a filename, or a heredoc body."""
+    assert_pass(run_hook(DOUBLE_EMIT, bash(command), env={"RECEIPTS_EMIT_PATTERN": marker}))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "zsh /tmp/scratch/r20pass.sh",
+        "sh ./afterpass.sh > log 2>&1 &",
+        "LOG=/tmp/x.log nohup time env zsh /tmp/scratch/pass1.sh &",
+        "cd /repo && uv run python -m evals.run --scenarios all --repeats 1 --emit",
+    ],
+)
+def test_double_emit_blocks_launch_shapes_while_a_marker_runs(command: str, marker: str) -> None:
+    proc = run_hook(DOUBLE_EMIT, bash(command), env={"RECEIPTS_EMIT_PATTERN": marker})
+    assert proc.returncode == 2, command
+
+
 # --------------------------------------------------------------------------
 # block_parked_column
 # --------------------------------------------------------------------------
@@ -334,6 +369,13 @@ R = "evals/results"
         f"mv {R}/full/control-quiet {R}/parked/control-quiet",
         f"mkdir -p {R}/r18 && mv {R}/full {R}/r18-tmp",
         f"cd /x && mv {R}/full {R}/r18-tmp && mv {R}/r18-tmp {R}/r18-b",
+        # A config-shaped name the runner never writes: the report merges these cells into
+        # the live `full` column by the config field inside grade.json.
+        f"mv {R}/full {R}/full-old",
+        f"mv {R}/full {R}/full-2",
+        # A trailing slash on a directory that does not exist is a rename, not a move into.
+        f"mv {R}/full {R}/r20-pass/",
+        f"mv {R}/full/ {R}/r18-pass/",
     ],
 )
 def test_parked_three_levels_is_blocked(command: str, tmp_path: Path) -> None:
@@ -352,8 +394,8 @@ def test_parked_three_levels_is_blocked(command: str, tmp_path: Path) -> None:
         f"mkdir -p {R}/r18-pass && mv {R}/full {R}/r18-pass/",
         f"mkdir -p {R}/r18-pass && mv {R}/full {R}/r18-pass",
         f"mkdir -p {R}/r18-pass && cp -r {R}/full {R}/r18-pass/",
-        f"mv {R}/full/ {R}/r18-pass/",
-        f"mv {R}/full/control-quiet {R}/r18-pass/full/",
+        f"mkdir -p {R}/r18-pass && mv {R}/full/ {R}/r18-pass/",
+        f"mkdir -p {R}/r18-pass/full && mv {R}/full/control-quiet {R}/r18-pass/full/",
         f"mv {R}/full/control-quiet {R}/r18-pass/full/control-quiet",
         f"mkdir -p {R}/r18-pass && mv {R}/full {R}/r18-pass/full",
         f"mv {R}/full {R}/full-nvidia",
@@ -376,6 +418,28 @@ def test_parked_destination_that_exists_on_disk_means_into(tmp_path: Path) -> No
     other.mkdir()
     assert run_hook(PARKED, bash(f"mv {R}/full {R}/r18-pass", other)).returncode == 2
     assert_pass(run_hook(PARKED, bash(f"cd {tmp_path} && mv {R}/full {R}/r18-pass", other)))
+    # A trailing slash means "into" only for a directory that exists or was just made.
+    assert_pass(run_hook(PARKED, bash(f"mv {R}/full {R}/r18-pass/", tmp_path)))
+    assert run_hook(PARKED, bash(f"mv {R}/full {R}/r20-pass/", tmp_path)).returncode == 2
+    assert_pass(
+        run_hook(PARKED, bash(f"mkdir {R}/r20-pass && mv {R}/full {R}/r20-pass/", tmp_path))
+    )
+
+
+def test_parked_hook_allows_exactly_the_names_the_runner_writes() -> None:
+    """The hook is stdlib only and mirrors the runner's lists; this keeps them equal."""
+    import importlib.util
+
+    from evals.run import CONFIGS, PROVIDERS
+
+    spec = importlib.util.spec_from_file_location("block_parked_column", PARKED)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    assert module.CONFIGS == tuple(CONFIGS)
+    assert module.PROVIDERS == tuple(PROVIDERS)
+    assert module.live_name("full") and module.live_name("no-negation-ollama")
+    assert not module.live_name("full-old") and not module.live_name("r18-pass")
 
 
 # --------------------------------------------------------------------------

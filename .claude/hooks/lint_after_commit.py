@@ -10,8 +10,11 @@ the same second but never stands between a person and their commit.
 After any `git commit` this runs `make lint` at the top level of the git
 repository the session's `cwd` is in (`git rev-parse --show-toplevel`), so a
 worktree session lints the checkout it committed to; `CLAUDE_PROJECT_DIR` is
-the fallback outside a repository. When lint fails, the tail of its output goes
-to stderr with exit 2, which PostToolUse feeds back to the model as a warning;
+the fallback outside a repository. In a worktree session `CLAUDE_PROJECT_DIR`
+stays at the main checkout, so the hook that runs is main's copy, and it
+inspects the repository at the payload `cwd`, which is the worktree. When lint
+fails, the tail of its output goes to stderr with exit 2, which PostToolUse
+feeds back to the model as a warning;
 the commit already happened and nothing is undone. When it passes, or the
 command was not a commit, exit 0 with no output, and so does any unexpected
 error. Standard library only, no network.
