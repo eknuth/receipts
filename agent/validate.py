@@ -30,8 +30,10 @@ against the tool log. Nothing in this module trusts a field the model wrote.
   for a column that was measured but not read one particular way, which is
   neither absent from the log nor a candidate that was ruled out. The reading
   it claims was missing is itself checked against the log: a query that broke
-  down on the subject contradicts `per_value`, one that broke down or filtered
-  on it with a granularity contradicts `over_time`, one that carried it with no
+  down on the subject contradicts `per_value`, one that broke down on it with
+  a granularity contradicts `over_time` (a filter to one of its values with a
+  granularity reads that value over time, not the column, and the EDW-1367
+  after-pass had two entries rejected on exactly that), one that carried it with no
   other filter narrowing the traffic contradicts `outside_selection`, and one
   whose calculations already computed the named `measurement` contradicts
   `other_measurement`.
@@ -926,16 +928,14 @@ def _reading_contradiction(entry: PartialCheck, usages: Sequence[Usage]) -> Issu
         )
 
     if entry.reading == "over_time":
-        hit = next(
-            (u for u in usages if (u.in_breakdowns or u.in_filters) and u.has_granularity), None
-        )
+        hit = next((u for u in usages if u.in_breakdowns and u.has_granularity), None)
         if hit is None:
             return None
         return Issue(
             "partially_checked_contradicted",
             f"partially_checked entry for {entry.subject!r} claims reading over_time: that it "
             f"was never read bucket by bucket across the window. But query {hit.query_id!r} "
-            "carried it with a granularity, which is exactly that reading.",
+            "broke down on it with a granularity, which is exactly that reading.",
         )
 
     if entry.reading == "outside_selection":

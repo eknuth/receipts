@@ -420,6 +420,32 @@ def test_over_time_is_accepted_without_a_granularity() -> None:
     assert partially_checked_issues([check], log, terms) == []
 
 
+def test_over_time_is_not_contradicted_by_a_filter_to_one_value_with_a_granularity() -> None:
+    """A query filtered to name = payments.charge with a granularity reads that one
+    span over time. It does not read the `name` column over time, so an entry saying
+    `name` was never read bucket by bucket stands. Two cells of the EDW-1367 after-pass
+    lost 0.25 each to the opposite reading of this case."""
+    filtered = ToolCall(
+        name="run_query",
+        args={
+            "dataset_slug": "receipts-shop",
+            "query_spec": {
+                "calculations": [{"op": "COUNT"}],
+                "filters": [
+                    {"column": "scenario.run_id", "op": "=", "value": RUN_ID},
+                    {"column": "name", "op": "=", "value": "payments.charge"},
+                ],
+                "granularity": 60,
+            },
+        },
+        query_id="Q1",
+    )
+    log = [filtered, baseline_call()]
+    terms = queried_terms(log, run_id=RUN_ID)
+    check = partial_check(subject="name", reading="over_time")
+    assert partially_checked_issues([check], log, terms) == []
+
+
 def test_over_time_is_contradicted_by_a_granularity() -> None:
     granular = ToolCall(
         name="run_query",
