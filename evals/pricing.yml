@@ -6,6 +6,16 @@
 # Bedrock (R11) gets its own entries when that provider lands. Ollama (R15)
 # is qwen3.8:27b below, priced at zero: it runs locally, on hardware this
 # project already owns, so there is no per-token rate to quote.
+#
+# nvidia/nemotron-3-super-120b-a12b (also R15) is priced at zero, for a
+# different reason: NVIDIA's build.nvidia.com developer endpoint publishes
+# no per-token rate at all. It is the NVIDIA_MODEL default: on this key it
+# answered eight back-to-back 22k-token requests with 200 in about a second
+# each. moonshotai/kimi-k3 was tried first and is priced at zero the same
+# way; on this key it returns 429 after the first request and stays
+# throttled for over five minutes, so it is kept as a row here but is not
+# the default. deepseek-ai/deepseek-v4-pro-0813 is priced at zero the same
+# way too; on this key every request timed out at 120s.
 models:
   claude-sonnet-4-5:
     input: 3.00
@@ -26,5 +36,14 @@ models:
     input: 1.00
     output: 5.00
   qwen3.8:27b:
+    input: 0.0
+    output: 0.0
+  moonshotai/kimi-k3:
+    input: 0.0
+    output: 0.0
+  nvidia/nemotron-3-super-120b-a12b:
+    input: 0.0
+    output: 0.0
+  deepseek-ai/deepseek-v4-pro-0813:
     input: 0.0
     output: 0.0

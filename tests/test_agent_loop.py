@@ -992,3 +992,30 @@ async def test_the_model_stop_reason_is_recorded_next_to_the_loop_reason(
     report = await run_loop(FakeProvider([refusal]), settings=settings)
     assert report.stop_reason == "model_stopped"
     assert report.model_stop_reason == "refusal"
+
+
+# --------------------------------------------------------------------------
+# The provider factory (R15 / EDW-1337): _make_provider picks the right class
+# --------------------------------------------------------------------------
+
+
+def test_make_provider_returns_an_nvidia_provider_for_provider_nvidia(clean_env: None) -> None:
+    """A dummy key, built the same way as the other Settings fixtures in this
+
+    suite, so no real NVIDIA_API_KEY is ever needed to prove the wiring.
+    """
+    from agent.loop import _make_provider
+    from agent.providers.nvidia import NvidiaProvider
+
+    nvidia_settings = Settings(
+        _env_file=None,
+        honeycomb_ingest_key="fake-ingest-key",
+        honeycomb_mcp_key="fake-key-id:fake-secret",
+        anthropic_api_key="fake-anthropic-key",
+        anthropic_workspace_id="fake-workspace-id",
+        nvidia_api_key="fake-nvidia-key",
+    )
+    config = AgentConfig(provider="nvidia", model="nvidia/nemotron-3-super-120b-a12b")
+    made = _make_provider(config, nvidia_settings)
+    assert isinstance(made, NvidiaProvider)
+    assert made.model == "nvidia/nemotron-3-super-120b-a12b"

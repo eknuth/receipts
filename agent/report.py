@@ -467,9 +467,9 @@ class Report(BaseModel):
             "Tool calls a provider handed back with arguments it could not parse into an "
             "object at all (JSON that decodes to a list or a scalar, or text that never "
             "was JSON), so the call went out with args={} instead. Only agent/providers/"
-            "ollama.py raises this today; a provider that never flags a call keeps this at "
-            "zero. Each one is also in tool_log as a call whose args are empty, so this is "
-            "a count of that one cause, not a second log."
+            "ollama.py and agent/providers/nvidia.py raise this today; a provider that "
+            "never flags a call keeps this at zero. Each one is also in tool_log as a call "
+            "whose args are empty, so this is a count of that one cause, not a second log."
         ),
     )
     error: str | None = None

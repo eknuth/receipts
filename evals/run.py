@@ -118,7 +118,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
     "no-notchecked": {"require_not_checked": False},
 }
 
-PROVIDERS: tuple[str, ...] = ("anthropic", "bedrock", "ollama")
+PROVIDERS: tuple[str, ...] = ("anthropic", "bedrock", "ollama", "nvidia")
 
 # The ollama provider's own wall budget default (R15, EDW-1337): 20 minutes
 # rather than the 8 every other provider gets, because prompt eval on a 30

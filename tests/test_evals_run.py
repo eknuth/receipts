@@ -580,6 +580,41 @@ def test_provider_ollama_is_accepted_by_argument_parsing() -> None:
 
 
 # --------------------------------------------------------------------------
+# The nvidia provider (R15 / EDW-1337): choices, config, and the wall budget
+# --------------------------------------------------------------------------
+
+
+def test_nvidia_is_an_accepted_provider_choice() -> None:
+    assert "nvidia" in PROVIDERS
+
+
+def test_agent_config_wires_the_nvidia_provider_through() -> None:
+    config = agent_config("full", provider="nvidia", model="nvidia/nemotron-3-super-120b-a12b")
+    assert config.provider == "nvidia"
+    assert config.model == "nvidia/nemotron-3-super-120b-a12b"
+
+
+def test_nvidia_keeps_the_eight_minute_default_when_unset() -> None:
+    """Only ollama gets a longer default; nvidia is a hosted endpoint, so it
+
+    gets the same eight minute budget every other provider gets.
+    """
+    assert resolved_max_wall_s("nvidia", None) == DEFAULT_MAX_WALL_S
+
+
+def test_an_explicit_max_wall_s_always_wins_for_nvidia_too() -> None:
+    assert resolved_max_wall_s("nvidia", 300.0) == 300.0
+
+
+def test_provider_nvidia_is_accepted_by_argument_parsing() -> None:
+    """`--provider nvidia` parses, same as `--provider ollama` above."""
+    import evals.run as module
+
+    args = module._parse_args(["--scenarios", "control-quiet", "--provider", "nvidia"])
+    assert args.provider == "nvidia"
+
+
+# --------------------------------------------------------------------------
 # Crashes and caps
 # --------------------------------------------------------------------------
 

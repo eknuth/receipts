@@ -273,8 +273,13 @@ def _make_provider(config: AgentConfig, settings: Settings) -> Provider:
         from agent.providers.ollama import OllamaProvider
 
         return OllamaProvider(settings, model=config.model)
+    if config.provider == "nvidia":
+        from agent.providers.nvidia import NvidiaProvider
+
+        return NvidiaProvider(settings, model=config.model)
     raise ValueError(
-        f"unknown provider {config.provider!r}; only 'anthropic' and 'ollama' exist so far"
+        f"unknown provider {config.provider!r}; only 'anthropic', 'ollama', and 'nvidia' "
+        "exist so far"
     )
 
 

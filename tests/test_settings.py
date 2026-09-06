@@ -97,3 +97,10 @@ def test_ollama_defaults(settings: Settings) -> None:
     """R15: not required to be set, and blank .env.example values still resolve to these."""
     assert settings.ollama_host == "http://localhost:11434"
     assert settings.ollama_model == "qwen3.8:27b"
+
+
+def test_nvidia_defaults(settings: Settings) -> None:
+    """R15: not required to be set, and blank .env.example values still resolve to these."""
+    assert settings.nvidia_api_key is None
+    assert settings.nvidia_base_url == "https://integrate.api.nvidia.com/v1"
+    assert settings.nvidia_model == "nvidia/nemotron-3-super-120b-a12b"

@@ -42,7 +42,9 @@ shape failure below that: arguments that arrive as a JSON-encoded string are
 decoded, same as `agent/providers/anthropic.py` does for the Anthropic API;
 arguments that, after decoding, are not a JSON object at all (a list, a bare
 number, a string that is not JSON) cannot be trusted as this call's input, so
-the `ToolUse` comes back with `args={}` and `malformed=True`. `agent/loop.py`
+the `ToolUse` comes back with `args={}` and `malformed=True`. That decision
+lives in `agent/providers/_args.py`, shared with `agent/providers/nvidia.py`
+(R15), so the two providers cannot quietly diverge on it. `agent/loop.py`
 sends that call to the MCP server exactly like any other: the server's own
 schema rejects the empty args the ordinary way, through the same tool-error
 path a well-formed but invalid call already takes, and the loop counts the
@@ -63,13 +65,13 @@ any tool calls, `end_turn` otherwise.
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 from typing import Any
 
 import httpx2
 
+from agent.providers._args import decode_args as _decode_args
 from agent.providers.base import Completion, ToolSchema, ToolUse, Turn, Usage
 from receipts.settings import Settings
 
@@ -188,27 +190,6 @@ def _to_tool_spec(tool: ToolSchema) -> dict[str, Any]:
             "parameters": tool.input_schema,
         },
     }
-
-
-def _decode_args(value: Any) -> tuple[dict[str, Any], bool]:
-    """One tool call's arguments, or (`{}`, malformed) when they cannot be trusted.
-
-    `None` (no arguments) is not malformed; it is an empty call, the same
-    reading `agent/providers/anthropic.py` gives a `tool_use` block with no
-    input. A JSON-encoded string is decoded first, same as that module. What
-    is left after that, if it is not a JSON object, is what gets flagged:
-    a list, a bare scalar, or text that never was JSON at all.
-    """
-    if value is None:
-        return {}, False
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except ValueError:
-            return {}, True
-    if not isinstance(value, dict):
-        return {}, True
-    return value, False
 
 
 def _to_completion(data: dict[str, Any]) -> Completion:
