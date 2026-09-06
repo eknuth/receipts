@@ -40,16 +40,17 @@ medium 0.25, at low 0.10; a report the validator rejected twice costs 0.25.
 
 29 of 30 runs named the right cause or, on a control, held back. The miss is `control-noisy`
 repeat 2, total -0.50. That scenario's herring is a one minute burst of paypal errors that stops
-on its own, and the agent filed a high confidence incident on `payments.charge` errors across
-every provider. The other two repeats on the same data said no incident.
+on its own, and the agent filed a high confidence incident on `payments.charge` errors with no
+dimension narrower than the span name. The other two repeats on the same data said no incident.
 
 Thirteen of the 30 runs are `report (validation failed)` rows, each costing 0.25. Most are
 `partially_checked` entries claiming a dimension was never read a certain way when one of the
 run's own queries had read it exactly that way. Several list instrumentation columns such as
 `span.kind` as not checked. One, `dependency-inventory-db-timeouts` repeat 1, ran a negation
 that excluded nothing, so the receipts rule failed and the run scored 0.50. The answer was right
-in all thirteen. What was wrong was the agent's account of what it had and had not checked, and
-that account is the part a reader has to trust.
+in twelve of the thirteen; the thirteenth is the `control-noisy` miss above. In the twelve, what
+was wrong was the agent's account of what it had and had not checked, and that account is the
+part a reader has to trust.
 
 ### Nemotron
 
@@ -94,8 +95,12 @@ metered, so its cost column reads $0.
 
 ```
 uv run python -m evals.run --scenarios all --configs full --repeats 3
+uv run python -m evals.run --scenarios all --configs full --repeats 3 --provider nvidia
 uv run python -m evals.report
 ```
+
+The second command writes its column under a separate results directory; the report keys columns
+by provider when more than one is present.
 
 ## Status
 
