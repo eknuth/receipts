@@ -11,6 +11,7 @@ from pathlib import Path
 
 from agent.format import (
     MAX_JSON_BYTES,
+    MAX_QUERY_ROWS,
     breakdown_values,
     extract_bubbleup_result_id,
     extract_ids,
@@ -202,14 +203,17 @@ def test_breakdown_values_drops_the_other_and_total_placeholder_rows() -> None:
     assert breakdown_values(text, args=args) == {"deployment.version": ["2.5.1"]}
 
 
-def test_breakdown_values_is_not_capped_at_25_rows() -> None:
-    """The compact table shown to the model caps at MAX_QUERY_ROWS; this
-    reads the full parsed table, all 30 distinct customer ids."""
+def test_breakdown_values_is_capped_at_max_query_rows() -> None:
+    """A row beyond MAX_QUERY_ROWS was never in the table the model saw, so a
+    value that appears only there must not be recorded as read: a
+    not_checked entry naming it would otherwise be false on a row the model
+    never saw."""
     fixture = load("run_query_synthetic_30rows")
     values = breakdown_values(text_of(fixture), args=fixture["args"])
-    assert len(values["customer.id"]) == 30
+    assert len(values["customer.id"]) == MAX_QUERY_ROWS
     assert "customer-0000" in values["customer.id"]
-    assert "customer-0029" in values["customer.id"]
+    assert "customer-0024" in values["customer.id"]
+    assert "customer-0029" not in values["customer.id"]
 
 
 def test_breakdown_values_absent_without_a_breakdown() -> None:

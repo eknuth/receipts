@@ -210,13 +210,14 @@ def format_tool_result(name: str, payload: Any, *, args: dict[str, Any] | None =
 def breakdown_values(payload: Any, *, args: dict[str, Any] | None = None) -> dict[str, list[str]]:
     """The values each breakdown column took in a `run_query` result's rows.
 
-    Read from the same `# Results` table `_format_run_query` renders, so a
-    value recorded here is one the server actually returned; the table read
-    is the full parsed one, not the `MAX_QUERY_ROWS`-capped view a model sees.
-    `OTHER` and `TOTAL`, the two placeholder rows the server adds when a
-    breakdown has more groups than the query asked to see, are not values of
-    the column and are left out; so is a blank cell, which means the column
-    is absent from that row rather than naming a value.
+    Read from the same `# Results` table `_format_run_query` renders, capped
+    to the same `MAX_QUERY_ROWS` rows the rendered table shows: a row beyond
+    that cap was never in what the model saw, so a value that appears only
+    there does not count as read. `OTHER` and `TOTAL`, the two placeholder
+    rows the server adds when a breakdown has more groups than the query
+    asked to see, are not values of the column and are left out; so is a
+    blank cell, which means the column is absent from that row rather than
+    naming a value.
 
     Empty for anything that is not a `run_query` result read this way: a
     `run_bubbleup` result is baseline-vs-selection percentages per column, not
@@ -237,6 +238,7 @@ def breakdown_values(payload: Any, *, args: dict[str, Any] | None = None) -> dic
     if table is None:
         return {}
     headers, rows = table
+    rows = rows[:MAX_QUERY_ROWS]
     out: dict[str, list[str]] = {}
     for column in breakdowns:
         if not isinstance(column, str) or column not in headers:
