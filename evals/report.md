@@ -6,19 +6,19 @@ Every number here is read from a `grade.json` under `evals/results/`, written by
 
 ## Scores by scenario
 
-| scenario | full total | full outcome | full top right |
-| --- | --- | --- | --- |
-| checkout-error-surge-adyen | 0.45 (-0.10 to 0.85) | 0.45 (0.15 to 0.60) | 2 of 3 |
-| control-noisy | -0.25 (-0.25 to -0.25) | 0.00 (0.00 to 0.00) | 0 of 3 |
-| control-quiet | -0.25 (-0.25 to -0.25) | 0.00 (0.00 to 0.00) | 0 of 3 |
-| dependency-inventory-db-timeouts | -0.25 (-0.50 to 0.00) | 0.08 (0.00 to 0.25) | 0 of 3 |
-| deploy-regression-v260 | 0.35 (-0.25 to 0.85) | 0.40 (0.00 to 0.60) | 2 of 3 |
-| error-surge-exceptions | -0.22 (-0.40 to 0.00) | 0.08 (0.00 to 0.25) | 0 of 3 |
-| herring-customer-whale | 0.20 (-0.25 to 0.85) | 0.28 (0.00 to 0.60) | 1 of 3 |
-| herring-region-vs-version | 0.20 (0.00 to 0.60) | 0.20 (0.00 to 0.60) | 1 of 3 |
-| payments-stripe-v251-uswest | 0.00 (0.00 to 0.00) | 0.00 (0.00 to 0.00) | 0 of 3 |
-| trigger-checkout-latency | -0.30 (-0.40 to -0.25) | 0.08 (0.00 to 0.25) | 0 of 3 |
-| all scenarios | -0.01 (-0.50 to 0.85) | 0.16 (0.00 to 0.60) | 6 of 30 |
+| scenario | full (anthropic) total | full (anthropic) outcome | full (anthropic) top right | full (nvidia) total | full (nvidia) outcome | full (nvidia) top right |
+| --- | --- | --- | --- | --- | --- | --- |
+| checkout-error-surge-adyen | 0.80 (0.75 to 0.90) | 0.75 (0.75 to 0.75) | 3 of 3 | 0.45 (-0.10 to 0.85) | 0.45 (0.15 to 0.60) | 2 of 3 |
+| control-noisy | 0.30 (-0.50 to 0.75) | 0.50 (0.00 to 0.75) | 2 of 3 | -0.25 (-0.25 to -0.25) | 0.00 (0.00 to 0.00) | 0 of 3 |
+| control-quiet | 1.00 (1.00 to 1.00) | 0.75 (0.75 to 0.75) | 3 of 3 | -0.25 (-0.25 to -0.25) | 0.00 (0.00 to 0.00) | 0 of 3 |
+| dependency-inventory-db-timeouts | 0.75 (0.50 to 1.00) | 0.75 (0.75 to 0.75) | 3 of 3 | -0.25 (-0.50 to 0.00) | 0.08 (0.00 to 0.25) | 0 of 3 |
+| deploy-regression-v260 | 0.97 (0.90 to 1.00) | 0.75 (0.75 to 0.75) | 3 of 3 | 0.35 (-0.25 to 0.85) | 0.40 (0.00 to 0.60) | 2 of 3 |
+| error-surge-exceptions | 0.92 (0.75 to 1.00) | 0.75 (0.75 to 0.75) | 3 of 3 | -0.22 (-0.40 to 0.00) | 0.08 (0.00 to 0.25) | 0 of 3 |
+| herring-customer-whale | 0.80 (0.65 to 1.00) | 0.75 (0.75 to 0.75) | 3 of 3 | 0.20 (-0.25 to 0.85) | 0.28 (0.00 to 0.60) | 1 of 3 |
+| herring-region-vs-version | 0.92 (0.75 to 1.00) | 0.75 (0.75 to 0.75) | 3 of 3 | 0.20 (0.00 to 0.60) | 0.20 (0.00 to 0.60) | 1 of 3 |
+| payments-stripe-v251-uswest | 0.92 (0.75 to 1.00) | 0.75 (0.75 to 0.75) | 3 of 3 | 0.00 (0.00 to 0.00) | 0.00 (0.00 to 0.00) | 0 of 3 |
+| trigger-checkout-latency | 0.88 (0.65 to 1.00) | 0.75 (0.75 to 0.75) | 3 of 3 | -0.30 (-0.40 to -0.25) | 0.08 (0.00 to 0.25) | 0 of 3 |
+| all scenarios | 0.82 (-0.50 to 1.00) | 0.72 (0.00 to 0.75) | 29 of 30 | -0.01 (-0.50 to 0.85) | 0.16 (0.00 to 0.60) | 6 of 30 |
 
 ## Process by config
 
@@ -26,43 +26,74 @@ Means over every run in the config, crashes included. `passes theirs, fails ours
 
 | config | runs | crashed | mean calls | mean tokens in | mean tokens out | mean cost USD | total cost USD | mean wall s | coerced | passes theirs, fails ours (total < 0.50) | wall cap s | malformed calls |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| full | 30 | 0 | 33.9 | 1,501,110 | 26,815 | 0.00 | 0.00 | 352 |  | 25 of 30 | 480 |  |
+| full (anthropic) | 30 | 0 | 25.3 | 543 | 10,308 | 0.54 | 16.19 | 187 | 13 | 1 of 30 |  |  |
+| full (nvidia) | 30 | 0 | 33.9 | 1,501,110 | 26,815 | 0.00 | 0.00 | 352 |  | 25 of 30 | 480 |  |
 
-Total Anthropic spend across every run in this results directory: $0.00.
+Total Anthropic spend across every run in this results directory: $16.19.
 
 ## Runs
 
 One row per investigation. `query` links to the first evidence query of the top hypothesis, or to the first baseline query when the report names no hypothesis. `theirs` is Honeycomb's process score with its pass mark applied.
 
-| scenario | config | n | run id | model | total | outcome | receipts | top confidence | stopped by | calls | cost USD | wall s | theirs | query |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| checkout-error-surge-adyen | full | 1 | run-974f4e6bd0ed | nvidia/nemotron-3-super-120b-a12b | -0.10 | 0.15 | 0.10 | low | report (validation failed) | 40 | 0.00 | 458 | 1.00 pass |  |
-| checkout-error-surge-adyen | full | 2 | run-974f4e6bd0ed | nvidia/nemotron-3-super-120b-a12b | 0.60 | 0.60 | 0.25 | high | report (validation failed) | 28 | 0.00 | 273 | 0.95 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/qhQieLM6z79) |
-| checkout-error-surge-adyen | full | 3 | run-974f4e6bd0ed | nvidia/nemotron-3-super-120b-a12b | 0.85 | 0.60 | 0.25 | high | report | 40 | 0.00 | 225 | 0.70 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/j5FzgQjpXHy) |
-| control-noisy | full | 1 | run-ae8e20c5f076 | nvidia/nemotron-3-super-120b-a12b | -0.25 | 0.00 | 0.00 |  | schema (validation failed) | 40 | 0.00 | 234 | 0.95 pass |  |
-| control-noisy | full | 2 | run-ae8e20c5f076 | nvidia/nemotron-3-super-120b-a12b | -0.25 | 0.00 | 0.00 |  | schema (validation failed) | 35 | 0.00 | 363 | 0.95 pass |  |
-| control-noisy | full | 3 | run-ae8e20c5f076 | nvidia/nemotron-3-super-120b-a12b | -0.25 | 0.00 | 0.25 | high | report | 32 | 0.00 | 309 | 0.95 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/iFbE9jazNxj) |
-| control-quiet | full | 1 | run-a265adf6e322 | nvidia/nemotron-3-super-120b-a12b | -0.25 | 0.00 | 0.00 |  | schema (validation failed) | 38 | 0.00 | 308 | 0.90 pass |  |
-| control-quiet | full | 2 | run-a265adf6e322 | nvidia/nemotron-3-super-120b-a12b | -0.25 | 0.00 | 0.00 |  | schema (validation failed) | 33 | 0.00 | 179 | 0.90 pass |  |
-| control-quiet | full | 3 | run-a265adf6e322 | nvidia/nemotron-3-super-120b-a12b | -0.25 | 0.00 | 0.00 |  | schema (validation failed) | 32 | 0.00 | 308 | 0.95 pass |  |
-| dependency-inventory-db-timeouts | full | 1 | run-e10b6c1bf2dc | nvidia/nemotron-3-super-120b-a12b | -0.25 | 0.00 | 0.00 |  | schema (validation failed) | 40 | 0.00 | 450 | 0.75 pass |  |
-| dependency-inventory-db-timeouts | full | 2 | run-e10b6c1bf2dc | nvidia/nemotron-3-super-120b-a12b | -0.50 | 0.25 | 0.00 | high | report (validation failed) | 35 | 0.00 | 282 | 0.95 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/2CAf9Gf5NXS) |
-| dependency-inventory-db-timeouts | full | 3 | run-e10b6c1bf2dc | nvidia/nemotron-3-super-120b-a12b | 0.00 | 0.00 | 0.00 |  | call_cap | 40 | 0.00 | 432 | 0.95 pass |  |
-| deploy-regression-v260 | full | 1 | run-2ef344b96d57 | nvidia/nemotron-3-super-120b-a12b | 0.85 | 0.60 | 0.25 | high | report | 24 | 0.00 | 328 | 0.95 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/DenbKDnStXf?tab=bubbleup&bubbleup_result=FFWFB1d3KdQ) |
-| deploy-regression-v260 | full | 2 | run-2ef344b96d57 | nvidia/nemotron-3-super-120b-a12b | 0.45 | 0.60 | 0.10 | high | report (validation failed) | 27 | 0.00 | 332 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/bbuj725fotB) |
-| deploy-regression-v260 | full | 3 | run-2ef344b96d57 | nvidia/nemotron-3-super-120b-a12b | -0.25 | 0.00 | 0.00 |  | schema (validation failed) | 34 | 0.00 | 458 | 0.82 pass |  |
-| error-surge-exceptions | full | 1 | run-a6353e4f46f8 | nvidia/nemotron-3-super-120b-a12b | 0.00 | 0.00 | 0.00 |  | wall_cap | 40 | 0.00 | 480 | 0.95 pass |  |
-| error-surge-exceptions | full | 2 | run-a6353e4f46f8 | nvidia/nemotron-3-super-120b-a12b | -0.40 | 0.25 | 0.10 | high | report (validation failed) | 40 | 0.00 | 308 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/fmhm4HCTeb1) |
-| error-surge-exceptions | full | 3 | run-a6353e4f46f8 | nvidia/nemotron-3-super-120b-a12b | -0.25 | 0.00 | 0.00 |  | schema (validation failed) | 40 | 0.00 | 393 | 0.90 pass |  |
-| herring-customer-whale | full | 1 | run-29580981edf1 | nvidia/nemotron-3-super-120b-a12b | 0.85 | 0.60 | 0.25 | high | report | 12 | 0.00 | 125 | 0.95 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/hc4TZScZRK7) |
-| herring-customer-whale | full | 2 | run-29580981edf1 | nvidia/nemotron-3-super-120b-a12b | 0.00 | 0.00 | 0.00 |  | call_cap | 40 | 0.00 | 374 | 0.90 pass |  |
-| herring-customer-whale | full | 3 | run-29580981edf1 | nvidia/nemotron-3-super-120b-a12b | -0.25 | 0.25 | 0.00 | medium | report (validation failed) | 40 | 0.00 | 300 | 0.95 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/4gbDS5Zx9Wp) |
-| herring-region-vs-version | full | 1 | run-cd1ec0dcfc51 | nvidia/nemotron-3-super-120b-a12b | 0.60 | 0.60 | 0.25 | high | report (validation failed) | 35 | 0.00 | 312 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/yA5yV1gB2e) |
-| herring-region-vs-version | full | 2 | run-cd1ec0dcfc51 | nvidia/nemotron-3-super-120b-a12b | 0.00 | 0.00 | 0.00 |  | call_cap | 40 | 0.00 | 468 | 0.95 pass |  |
-| herring-region-vs-version | full | 3 | run-cd1ec0dcfc51 | nvidia/nemotron-3-super-120b-a12b | 0.00 | 0.00 | 0.00 |  | wall_cap | 33 | 0.00 | 480 | 0.95 pass |  |
-| payments-stripe-v251-uswest | full | 1 | run-f0d47eec0615 | nvidia/nemotron-3-super-120b-a12b | 0.00 | 0.00 | 0.00 |  | wall_cap | 30 | 0.00 | 480 | 0.95 pass |  |
-| payments-stripe-v251-uswest | full | 2 | run-f0d47eec0615 | nvidia/nemotron-3-super-120b-a12b | 0.00 | 0.00 | 0.00 |  | wall_cap | 22 | 0.00 | 480 | 0.95 pass |  |
-| payments-stripe-v251-uswest | full | 3 | run-f0d47eec0615 | nvidia/nemotron-3-super-120b-a12b | 0.00 | 0.00 | 0.00 |  | wall_cap | 32 | 0.00 | 480 | 0.95 pass |  |
-| trigger-checkout-latency | full | 1 | run-8aa9cbafb7ef | nvidia/nemotron-3-super-120b-a12b | -0.40 | 0.25 | 0.10 | high | report (validation failed) | 29 | 0.00 | 239 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/tDtyQRfZxvb) |
-| trigger-checkout-latency | full | 2 | run-fd1ab9cda8b6 | nvidia/nemotron-3-super-120b-a12b | -0.25 | 0.00 | 0.00 |  | schema (validation failed) | 40 | 0.00 | 434 | 0.95 pass |  |
-| trigger-checkout-latency | full | 3 | run-5de95a5f0234 | nvidia/nemotron-3-super-120b-a12b | -0.25 | 0.00 | 0.00 |  | schema (validation failed) | 25 | 0.00 | 281 | 0.95 pass |  |
+| scenario | config | n | run id | provider | model | total | outcome | receipts | top confidence | stopped by | calls | cost USD | wall s | theirs | query |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| checkout-error-surge-adyen | full | 1 | run-974f4e6bd0ed | anthropic | claude-sonnet-4-5 | 0.90 | 0.75 | 0.15 | high | report | 24 | 0.56 | 173 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/J8cHjvvzPW) |
+| checkout-error-surge-adyen | full | 1 | run-974f4e6bd0ed | nvidia | nvidia/nemotron-3-super-120b-a12b | -0.10 | 0.15 | 0.10 | low | report (validation failed) | 40 | 0.00 | 458 | 1.00 pass |  |
+| checkout-error-surge-adyen | full | 2 | run-974f4e6bd0ed | anthropic | claude-sonnet-4-5 | 0.75 | 0.75 | 0.25 | high | report (validation failed) | 23 | 0.46 | 172 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/sKDnHYbnWia) |
+| checkout-error-surge-adyen | full | 2 | run-974f4e6bd0ed | nvidia | nvidia/nemotron-3-super-120b-a12b | 0.60 | 0.60 | 0.25 | high | report (validation failed) | 28 | 0.00 | 273 | 0.95 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/qhQieLM6z79) |
+| checkout-error-surge-adyen | full | 3 | run-974f4e6bd0ed | anthropic | claude-sonnet-4-5 | 0.75 | 0.75 | 0.25 | high | report (validation failed) | 29 | 0.50 | 210 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/fqW91S9qZYa) |
+| checkout-error-surge-adyen | full | 3 | run-974f4e6bd0ed | nvidia | nvidia/nemotron-3-super-120b-a12b | 0.85 | 0.60 | 0.25 | high | report | 40 | 0.00 | 225 | 0.70 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/j5FzgQjpXHy) |
+| control-noisy | full | 1 | run-ae8e20c5f076 | anthropic | claude-sonnet-4-5 | 0.75 | 0.75 | 0.25 |  | report (validation failed) | 26 | 0.56 | 179 | 0.95 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/EDoqvjjmYHD) |
+| control-noisy | full | 1 | run-ae8e20c5f076 | nvidia | nvidia/nemotron-3-super-120b-a12b | -0.25 | 0.00 | 0.00 |  | schema (validation failed) | 40 | 0.00 | 234 | 0.95 pass |  |
+| control-noisy | full | 2 | run-ae8e20c5f076 | anthropic | claude-sonnet-4-5 | -0.50 | 0.00 | 0.25 | high | report (validation failed) | 34 | 0.63 | 269 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/8ct1S382bZV) |
+| control-noisy | full | 2 | run-ae8e20c5f076 | nvidia | nvidia/nemotron-3-super-120b-a12b | -0.25 | 0.00 | 0.00 |  | schema (validation failed) | 35 | 0.00 | 363 | 0.95 pass |  |
+| control-noisy | full | 3 | run-ae8e20c5f076 | anthropic | claude-sonnet-4-5 | 0.65 | 0.75 | 0.15 |  | report (validation failed) | 24 | 0.47 | 200 | 0.95 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/3BqacPg1L9H) |
+| control-noisy | full | 3 | run-ae8e20c5f076 | nvidia | nvidia/nemotron-3-super-120b-a12b | -0.25 | 0.00 | 0.25 | high | report | 32 | 0.00 | 309 | 0.95 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/iFbE9jazNxj) |
+| control-quiet | full | 1 | run-a265adf6e322 | anthropic | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 |  | report | 27 | 0.61 | 171 | 0.95 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/jCao9PBRayC) |
+| control-quiet | full | 1 | run-a265adf6e322 | nvidia | nvidia/nemotron-3-super-120b-a12b | -0.25 | 0.00 | 0.00 |  | schema (validation failed) | 38 | 0.00 | 308 | 0.90 pass |  |
+| control-quiet | full | 2 | run-a265adf6e322 | anthropic | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 |  | report | 24 | 0.46 | 158 | 0.90 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/jSYxzHKmVYc) |
+| control-quiet | full | 2 | run-a265adf6e322 | nvidia | nvidia/nemotron-3-super-120b-a12b | -0.25 | 0.00 | 0.00 |  | schema (validation failed) | 33 | 0.00 | 179 | 0.90 pass |  |
+| control-quiet | full | 3 | run-a265adf6e322 | anthropic | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 |  | report | 27 | 0.40 | 154 | 0.75 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/wsHVDSFrBj8) |
+| control-quiet | full | 3 | run-a265adf6e322 | nvidia | nvidia/nemotron-3-super-120b-a12b | -0.25 | 0.00 | 0.00 |  | schema (validation failed) | 32 | 0.00 | 308 | 0.95 pass |  |
+| dependency-inventory-db-timeouts | full | 1 | run-e10b6c1bf2dc | anthropic | claude-sonnet-4-5 | 0.50 | 0.75 | 0.00 | high | report (validation failed) | 27 | 0.66 | 225 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/CxdmB1gHoAc) |
+| dependency-inventory-db-timeouts | full | 1 | run-e10b6c1bf2dc | nvidia | nvidia/nemotron-3-super-120b-a12b | -0.25 | 0.00 | 0.00 |  | schema (validation failed) | 40 | 0.00 | 450 | 0.75 pass |  |
+| dependency-inventory-db-timeouts | full | 2 | run-e10b6c1bf2dc | anthropic | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 31 | 0.68 | 230 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/2ia8LaqMFm7) |
+| dependency-inventory-db-timeouts | full | 2 | run-e10b6c1bf2dc | nvidia | nvidia/nemotron-3-super-120b-a12b | -0.50 | 0.25 | 0.00 | high | report (validation failed) | 35 | 0.00 | 282 | 0.95 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/2CAf9Gf5NXS) |
+| dependency-inventory-db-timeouts | full | 3 | run-e10b6c1bf2dc | anthropic | claude-sonnet-4-5 | 0.75 | 0.75 | 0.25 | high | report (validation failed) | 29 | 0.58 | 200 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/7bed46ehmec) |
+| dependency-inventory-db-timeouts | full | 3 | run-e10b6c1bf2dc | nvidia | nvidia/nemotron-3-super-120b-a12b | 0.00 | 0.00 | 0.00 |  | call_cap | 40 | 0.00 | 432 | 0.95 pass |  |
+| deploy-regression-v260 | full | 1 | run-2ef344b96d57 | anthropic | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 26 | 0.66 | 202 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/zCbmv167acM) |
+| deploy-regression-v260 | full | 1 | run-2ef344b96d57 | nvidia | nvidia/nemotron-3-super-120b-a12b | 0.85 | 0.60 | 0.25 | high | report | 24 | 0.00 | 328 | 0.95 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/DenbKDnStXf?tab=bubbleup&bubbleup_result=FFWFB1d3KdQ) |
+| deploy-regression-v260 | full | 2 | run-2ef344b96d57 | anthropic | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 19 | 0.41 | 152 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/a5ttdtzfBZH) |
+| deploy-regression-v260 | full | 2 | run-2ef344b96d57 | nvidia | nvidia/nemotron-3-super-120b-a12b | 0.45 | 0.60 | 0.10 | high | report (validation failed) | 27 | 0.00 | 332 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/bbuj725fotB) |
+| deploy-regression-v260 | full | 3 | run-2ef344b96d57 | anthropic | claude-sonnet-4-5 | 0.90 | 0.75 | 0.15 | high | report | 21 | 0.42 | 138 | 0.88 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/bnx9b844D58) |
+| deploy-regression-v260 | full | 3 | run-2ef344b96d57 | nvidia | nvidia/nemotron-3-super-120b-a12b | -0.25 | 0.00 | 0.00 |  | schema (validation failed) | 34 | 0.00 | 458 | 0.82 pass |  |
+| error-surge-exceptions | full | 1 | run-a6353e4f46f8 | anthropic | claude-sonnet-4-5 | 0.75 | 0.75 | 0.25 | high | report (validation failed) | 32 | 0.78 | 263 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/8ENXeYam1jZ) |
+| error-surge-exceptions | full | 1 | run-a6353e4f46f8 | nvidia | nvidia/nemotron-3-super-120b-a12b | 0.00 | 0.00 | 0.00 |  | wall_cap | 40 | 0.00 | 480 | 0.95 pass |  |
+| error-surge-exceptions | full | 2 | run-a6353e4f46f8 | anthropic | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 24 | 0.48 | 219 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/k4DDhWBQwpz) |
+| error-surge-exceptions | full | 2 | run-a6353e4f46f8 | nvidia | nvidia/nemotron-3-super-120b-a12b | -0.40 | 0.25 | 0.10 | high | report (validation failed) | 40 | 0.00 | 308 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/fmhm4HCTeb1) |
+| error-surge-exceptions | full | 3 | run-a6353e4f46f8 | anthropic | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 22 | 0.48 | 246 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/zsqhFARiQcH) |
+| error-surge-exceptions | full | 3 | run-a6353e4f46f8 | nvidia | nvidia/nemotron-3-super-120b-a12b | -0.25 | 0.00 | 0.00 |  | schema (validation failed) | 40 | 0.00 | 393 | 0.90 pass |  |
+| herring-customer-whale | full | 1 | run-29580981edf1 | anthropic | claude-sonnet-4-5 | 0.75 | 0.75 | 0.25 | high | report (validation failed) | 28 | 0.63 | 185 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/kpctYpGRrYB) |
+| herring-customer-whale | full | 1 | run-29580981edf1 | nvidia | nvidia/nemotron-3-super-120b-a12b | 0.85 | 0.60 | 0.25 | high | report | 12 | 0.00 | 125 | 0.95 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/hc4TZScZRK7) |
+| herring-customer-whale | full | 2 | run-29580981edf1 | anthropic | claude-sonnet-4-5 | 0.65 | 0.75 | 0.15 | high | report (validation failed) | 33 | 0.67 | 225 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/cjKUhtUHpjp) |
+| herring-customer-whale | full | 2 | run-29580981edf1 | nvidia | nvidia/nemotron-3-super-120b-a12b | 0.00 | 0.00 | 0.00 |  | call_cap | 40 | 0.00 | 374 | 0.90 pass |  |
+| herring-customer-whale | full | 3 | run-29580981edf1 | anthropic | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 28 | 0.56 | 179 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/y9KSuqUnmB) |
+| herring-customer-whale | full | 3 | run-29580981edf1 | nvidia | nvidia/nemotron-3-super-120b-a12b | -0.25 | 0.25 | 0.00 | medium | report (validation failed) | 40 | 0.00 | 300 | 0.95 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/4gbDS5Zx9Wp) |
+| herring-region-vs-version | full | 1 | run-cd1ec0dcfc51 | anthropic | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 23 | 0.52 | 170 | 0.80 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/FaRnz7s6jBz) |
+| herring-region-vs-version | full | 1 | run-cd1ec0dcfc51 | nvidia | nvidia/nemotron-3-super-120b-a12b | 0.60 | 0.60 | 0.25 | high | report (validation failed) | 35 | 0.00 | 312 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/yA5yV1gB2e) |
+| herring-region-vs-version | full | 2 | run-cd1ec0dcfc51 | anthropic | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 21 | 0.46 | 160 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/e7LFmm9HEB2) |
+| herring-region-vs-version | full | 2 | run-cd1ec0dcfc51 | nvidia | nvidia/nemotron-3-super-120b-a12b | 0.00 | 0.00 | 0.00 |  | call_cap | 40 | 0.00 | 468 | 0.95 pass |  |
+| herring-region-vs-version | full | 3 | run-cd1ec0dcfc51 | anthropic | claude-sonnet-4-5 | 0.75 | 0.75 | 0.25 | high | report (validation failed) | 22 | 0.45 | 160 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/mPuucQn1p9r) |
+| herring-region-vs-version | full | 3 | run-cd1ec0dcfc51 | nvidia | nvidia/nemotron-3-super-120b-a12b | 0.00 | 0.00 | 0.00 |  | wall_cap | 33 | 0.00 | 480 | 0.95 pass |  |
+| payments-stripe-v251-uswest | full | 1 | run-f0d47eec0615 | anthropic | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 24 | 0.52 | 161 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/bSdmDasU3Hv) |
+| payments-stripe-v251-uswest | full | 1 | run-f0d47eec0615 | nvidia | nvidia/nemotron-3-super-120b-a12b | 0.00 | 0.00 | 0.00 |  | wall_cap | 30 | 0.00 | 480 | 0.95 pass |  |
+| payments-stripe-v251-uswest | full | 2 | run-f0d47eec0615 | anthropic | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 20 | 0.37 | 138 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/nXYQV4ppESt) |
+| payments-stripe-v251-uswest | full | 2 | run-f0d47eec0615 | nvidia | nvidia/nemotron-3-super-120b-a12b | 0.00 | 0.00 | 0.00 |  | wall_cap | 22 | 0.00 | 480 | 0.95 pass |  |
+| payments-stripe-v251-uswest | full | 3 | run-f0d47eec0615 | anthropic | claude-sonnet-4-5 | 0.75 | 0.75 | 0.25 | high | report (validation failed) | 28 | 0.60 | 210 | 0.80 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/G4cTrCnUwM5) |
+| payments-stripe-v251-uswest | full | 3 | run-f0d47eec0615 | nvidia | nvidia/nemotron-3-super-120b-a12b | 0.00 | 0.00 | 0.00 |  | wall_cap | 32 | 0.00 | 480 | 0.95 pass |  |
+| trigger-checkout-latency | full | 1 | run-f89265a20861 | anthropic | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 22 | 0.55 | 163 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/qNgvapCBj1z) |
+| trigger-checkout-latency | full | 1 | run-8aa9cbafb7ef | nvidia | nvidia/nemotron-3-super-120b-a12b | -0.40 | 0.25 | 0.10 | high | report (validation failed) | 29 | 0.00 | 239 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/tDtyQRfZxvb) |
+| trigger-checkout-latency | full | 2 | run-288accc0a996 | anthropic | claude-sonnet-4-5 | 1.00 | 0.75 | 0.25 | high | report | 21 | 0.53 | 150 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/G93ebCChs3N) |
+| trigger-checkout-latency | full | 2 | run-fd1ab9cda8b6 | nvidia | nvidia/nemotron-3-super-120b-a12b | -0.25 | 0.00 | 0.00 |  | schema (validation failed) | 40 | 0.00 | 434 | 0.95 pass |  |
+| trigger-checkout-latency | full | 3 | run-f407d9bb3908 | anthropic | claude-sonnet-4-5 | 0.65 | 0.75 | 0.15 | high | report (validation failed) | 21 | 0.50 | 148 | 1.00 pass | [query](https://ui.honeycomb.io/joymath/environments/receipts-demo/datasets/receipts-shop/result/HexEaCzPzWp) |
+| trigger-checkout-latency | full | 3 | run-5de95a5f0234 | nvidia | nvidia/nemotron-3-super-120b-a12b | -0.25 | 0.00 | 0.00 |  | schema (validation failed) | 25 | 0.00 | 281 | 0.95 pass |  |
