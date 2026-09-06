@@ -19,9 +19,10 @@ from pathlib import Path
 import pytest
 
 from agent.report import load_report
-from evals.grader import grade_file
+from evals.grader import Grade, grade_file
 from evals.report import (
     OUTCOME_FAIL_BELOW,
+    _signed,
     config_order,
     load_results,
     main,
@@ -34,6 +35,49 @@ from evals.run import GradedRun, crashed_run, graded_run, run_dir, write_run
 FIXTURES = Path(__file__).parent / "fixtures" / "reports"
 RUNS_DIR = FIXTURES / "runs"
 PINNED = FIXTURES / "report.md"
+
+
+def _run(
+    config: str,
+    scenario_id: str,
+    total: float,
+    outcome_score: float,
+    repeat: int = 1,
+    *,
+    receipts_score: float = 0.0,
+    dims: float = 0.0,
+) -> GradedRun:
+    """A minimal `GradedRun` for exercising the renderer directly. `render` reads the
+    flat fields and `top_right`, which needs a grade to be present and `dims` at or over
+    the grader's line, so the grade is a bare `Grade.model_construct` carrying nothing
+    the renderer reads. Enough to drive the ablation delta section without the grader or
+    the disk layout."""
+    return GradedRun(
+        config=config,
+        scenario_id=scenario_id,
+        run_id=f"run-{config}-{repeat}",
+        repeat=repeat,
+        provider="fake",
+        model="m",
+        total=total,
+        outcome_score=outcome_score,
+        receipts_score=receipts_score,
+        dims=dims,
+        top_wrong=dims < 0.5,
+        top_confidence=None,
+        stop_reason="report",
+        error=None,
+        validation_failed=False,
+        permalink=None,
+        tool_calls=1,
+        tokens_in=1,
+        tokens_out=1,
+        cost_usd=0.1,
+        wall_s=1.0,
+        honeycomb_process_score=None,
+        honeycomb_process_passed=None,
+        grade=Grade.model_construct(run_id=f"run-{config}-{repeat}", scenario_id=scenario_id),
+    )
 
 
 def _repeat_of(path: Path) -> int:
@@ -191,7 +235,10 @@ def test_a_crash_is_a_zero_row_with_its_error_and_no_link(tmp_path: Path) -> Non
     )
     assert "crash: RuntimeError: killed \\| mid-run" in row
     assert row.endswith("| 7 | 0.00 | 12 |  |  |")
-    process = next(line for line in text.splitlines() if line.startswith("| no-negation |"))
+    process_section = text.split("## Process by config", 1)[1]
+    process = next(
+        line for line in process_section.splitlines() if line.startswith("| no-negation |")
+    )
     assert process.startswith("| no-negation | 1 | 1 | 7.0 |")
     assert process.endswith("| 0 of 1 |")
 
@@ -255,6 +302,156 @@ def test_the_cli_writes_the_report(live_results: Path, tmp_path: Path, capsys: o
     out = tmp_path / "report.md"
     assert main(["--results-dir", str(live_results), "--out", str(out)]) == 0
     assert out.read_bytes() == PINNED.read_bytes()
+
+
+# --------------------------------------------------------------------------
+# Ablation delta
+# --------------------------------------------------------------------------
+
+
+def test_ablation_section_appears_with_full_and_an_ablation_and_is_absent_with_full_alone() -> None:
+    full_only = [_run("full", "payments-stripe-v251-uswest", 0.5, 0.4)]
+    assert "## Ablation delta" not in render(full_only)
+
+    with_ablation = full_only + [_run("no-negation", "payments-stripe-v251-uswest", 0.4, 0.4)]
+    assert "## Ablation delta" in render(with_ablation)
+
+
+def test_an_empty_results_directory_and_a_single_config_directory_carry_no_ablation_section(
+    live_results: Path,
+) -> None:
+    assert "## Ablation delta" not in render(load_results(live_results))
+    assert "## Ablation delta" not in render([])
+
+
+def test_ablation_delta_decomposes_the_total_move_and_signs_every_delta() -> None:
+    runs = [
+        _run("full", "s1", 0.750, 0.500, receipts_score=0.250, dims=1.0),
+        _run("no-negation", "s1", 0.461, 0.500, receipts_score=0.211, dims=1.0),
+    ]
+    text = render(runs)
+    section = text.split("## Ablation delta", 1)[1].split("## Process by config", 1)[0]
+    full_row = next(line for line in section.splitlines() if line.startswith("| full |"))
+    ablation_row = next(line for line in section.splitlines() if line.startswith("| no-negation |"))
+    assert full_row == "| full | 0.750 |  | 0.500 |  | 0.250 |  |  | 1 of 1 |  |"
+    cells = [cell.strip() for cell in ablation_row.strip("|").split("|")]
+    assert cells[1:8] == ["0.461", "-0.289", "0.500", "0.000", "0.211", "-0.039", "-0.250"]
+    assert cells[8] == "1 of 1"
+    assert cells[9] == "0 / 0 of 1"
+
+
+def test_a_delta_that_rounds_to_nothing_carries_no_sign() -> None:
+    assert _signed(-0.0004, 3) == "0.000"
+    assert _signed(0.0004, 3) == "0.000"
+    assert _signed(-0.0395, 3) == "-0.040"
+    assert _signed(0.05, 3) == "+0.050"
+
+
+def test_ablation_sentence_names_outcome_receipts_and_penalties_and_reads_outcome() -> None:
+    """A total move inside the rule's weight says nothing about which part moved, so the
+    sentence is built from the decomposition and the verdict comes from outcome."""
+    runs = [
+        _run("full", "s1", 0.750, 0.500, receipts_score=0.250, dims=1.0),
+        _run("no-negation", "s1", 0.650, 0.400, receipts_score=0.250, dims=1.0),
+    ]
+    text = render(runs)
+    assert (
+        "Removing the negation rule moved mean total by -0.100: outcome -0.100, receipts "
+        "0.000, penalties 0.000. 0 of 1 scenarios have fewer right top hypotheses than `full` "
+        "and 0 have more. Outcome fell, so some answers changed; the scenario table says "
+        "which. The receipts score did not fall, so the model kept doing what the removed "
+        "rule asked without being asked."
+    ) in text
+
+
+def test_ablation_sentence_with_outcome_held_puts_the_loss_in_receipts() -> None:
+    runs = [
+        _run("full", "s1", 0.750, 0.500, receipts_score=0.250, dims=1.0),
+        _run("no-notchecked", "s1", 0.650, 0.500, receipts_score=0.150, dims=1.0),
+    ]
+    text = render(runs)
+    assert (
+        "Removing the not-checked rule moved mean total by -0.100: outcome 0.000, receipts "
+        "-0.100, penalties 0.000. 0 of 1 scenarios have fewer right top hypotheses than `full` "
+        "and 0 have more. The answers held; the loss is in receipts and penalties."
+    ) in text
+
+
+def test_ablation_sentence_for_a_higher_total_still_reads_outcome_first() -> None:
+    """A higher total with a lower outcome is not "does not reduce the score"."""
+    runs = [
+        _run("full", "s1", 0.800, 0.700, receipts_score=0.100, dims=1.0),
+        _run("no-notchecked", "s1", 0.850, 0.550, receipts_score=0.300, dims=1.0),
+    ]
+    text = render(runs)
+    assert "Outcome fell, so some answers changed" in text
+    assert "It does not reduce the score." not in text
+    up = [
+        _run("full", "s1", 0.700, 0.500, receipts_score=0.200, dims=1.0),
+        _run("no-notchecked", "s1", 0.750, 0.500, receipts_score=0.250, dims=1.0),
+    ]
+    assert "It does not reduce the score." in render(up)
+
+
+def test_unknown_ablation_config_gets_a_generic_subject_and_no_rule_talk() -> None:
+    runs = [
+        _run("full", "s1", 0.600, 0.500, receipts_score=0.100, dims=1.0),
+        _run("mystery", "s1", 0.590, 0.490, receipts_score=0.100, dims=1.0),
+    ]
+    text = render(runs)
+    assert "Config mystery moved mean total by -0.010: outcome -0.010" in text
+    assert "removed rule" not in text.split("## Ablation delta", 1)[1].split("## Process", 1)[0]
+
+
+def test_ablation_counts_scenarios_with_fewer_and_more_right_top_hypotheses() -> None:
+    runs = [
+        _run("full", "s1", 1.0, 0.75, receipts_score=0.25, dims=1.0),
+        _run("full", "s2", 0.0, 0.0, receipts_score=0.0, dims=0.0),
+        _run("no-negation", "s1", 0.0, 0.0, receipts_score=0.0, dims=0.0),
+        _run("no-negation", "s2", 1.0, 0.75, receipts_score=0.25, dims=1.0),
+    ]
+    text = render(runs)
+    assert "| 1 / 1 of 2 |" in text
+    assert "1 of 2 scenarios have fewer right top hypotheses than `full` and 1 have more" in text
+
+
+def test_ablation_deltas_are_over_shared_scenarios_and_say_what_was_left_out() -> None:
+    runs = [
+        _run("full", "s1", 1.0, 0.75, receipts_score=0.25, dims=1.0),
+        _run("no-negation", "s1", 1.0, 0.75, receipts_score=0.25, dims=1.0),
+        _run("no-negation", "s2", 0.0, 0.0, receipts_score=0.0, dims=0.0),
+    ]
+    text = render(runs)
+    section = text.split("## Ablation delta", 1)[1].split("## Process by config", 1)[0]
+    row = next(line for line in section.splitlines() if line.startswith("| no-negation |"))
+    cells = [cell.strip() for cell in row.strip("|").split("|")]
+    assert cells[1:3] == ["1.000", "0.000"]
+    assert "`no-negation` is compared with `full` over 1 shared scenarios; left out: s2." in text
+
+
+def test_ablation_section_names_scenarios_emitted_more_than_once() -> None:
+    a = _run("full", "trig", 1.0, 0.75, receipts_score=0.25, dims=1.0)
+    b = _run("no-negation", "trig", 1.0, 0.75, receipts_score=0.25, dims=1.0)
+    b.run_id = "run-other"
+    text = render([a, b])
+    assert (
+        "Emitted more than once, so its cells differ in data as well as in config: `trig`." in text
+    )
+
+
+# --------------------------------------------------------------------------
+# Total spend
+# --------------------------------------------------------------------------
+
+
+def test_the_total_spend_line_equals_the_sum_of_the_cost_column(live_results: Path) -> None:
+    runs = load_results(live_results)
+    text = render(runs)
+    total = sum(item.cost_usd for item in runs)
+    assert (
+        f"Total Anthropic spend across every run in this results directory: ${num(total, 2)}."
+        in text
+    )
 
 
 def regenerate(path: Path = PINNED) -> Path:
