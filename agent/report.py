@@ -401,6 +401,12 @@ class ToolCall(BaseModel):
     )
 
 
+SCHEMA_REJECTION = "The report did not match the submit_report schema and was not filed:"
+"""The first line of the rejection the loop sends back when a submit_report
+call does not parse as a `ReportDraft`. `Report.name_the_schema_stop` reads it
+to recognise reports written before `stop_reason == "schema"` existed."""
+
+
 class Report(BaseModel):
     """One investigation, findings and process both."""
 
@@ -427,11 +433,20 @@ class Report(BaseModel):
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
     wall_s: float = 0.0
+    max_wall_s: float = 0.0
+    """The wall-clock budget this run was given, from `AgentConfig.max_wall_s`,
+    not what it spent (`wall_s`). Anthropic and Bedrock runs default to 8
+    minutes (480); ollama runs default to 20 (1200), since a 30 to 40k token
+    context is expected to slow prompt eval late in a run. Recorded so a run
+    reads against the budget it actually had rather than an assumed one."""
     cost_usd: float = 0.0
     tool_log: list[ToolCall] = Field(default_factory=list)
 
     stop_reason: str = "unknown"
-    """Why the loop ended: report, call_cap, wall_cap, model_stopped, or error."""
+    """Why the loop ended: report, schema, call_cap, wall_cap, model_stopped,
+    or error. Only `report` means a draft was filed; `schema` is a run whose
+    last submit_report did not parse as a draft, so the findings fields hold
+    their defaults and say nothing the model said."""
 
     model_stop_reason: str | None = None
     """What the provider said about the last turn, such as `refusal` or
@@ -454,6 +469,17 @@ class Report(BaseModel):
             "the per-call detail; this field is the sum. Also noted as a line in "
             "validation_messages; this is the same fact as structured data, for the eval "
             "and the README finding to count without parsing prose."
+        ),
+    )
+    malformed_calls: int = Field(
+        default=0,
+        description=(
+            "Tool calls a provider handed back with arguments it could not parse into an "
+            "object at all (JSON that decodes to a list or a scalar, or text that never "
+            "was JSON), so the call went out with args={} instead. Only agent/providers/"
+            "ollama.py and agent/providers/nvidia.py raise this today; a provider that "
+            "never flags a call keeps this at zero. Each one is also in tool_log as a call "
+            "whose args are empty, so this is a count of that one cause, not a second log."
         ),
     )
     error: str | None = None
@@ -486,6 +512,22 @@ class Report(BaseModel):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(self.model_dump_json(indent=2) + "\n")
         return path
+
+    @model_validator(mode="after")
+    def name_the_schema_stop(self) -> Report:
+        """Reports written before the `schema` stop reason existed recorded a
+        second schema rejection as `stop_reason == "report"` with
+        `validation_failed` and the rejection text as the first message, though
+        nothing was filed. Read them as what they were, so a regrade of an old
+        results directory and a fresh run grade the same way."""
+        if (
+            self.stop_reason == "report"
+            and self.validation_failed
+            and self.validation_messages
+            and self.validation_messages[0].startswith(SCHEMA_REJECTION)
+        ):
+            self.stop_reason = "schema"
+        return self
 
 
 def submit_report_schema() -> dict[str, Any]:

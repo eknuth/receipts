@@ -54,13 +54,15 @@ Crashes. A run that raises out of `investigate`, or that the loop ended with
 whatever process fields were measured. It skips the grader, because an
 empty report on a control scenario grades as a correct "no incident" there.
 Every other stop reason is graded. A run that filed within the grace turns
-after a cap has `stop_reason == "report"`. A run with `call_cap`, `wall_cap`,
-or `model_stopped` filed nothing, and its empty report goes through the
-grader as it is: on an incident scenario that scores near zero, on a control
-it scores as restraint. The `stopped by` column in the report shows which
-runs those were; changing what they score is the grader's decision, not the
-runner's. If the MCP session fails to close after the report was filed, the
-report is graded and the close error is kept in the grade's notes.
+after a cap has `stop_reason == "report"`. A run with `schema` (its last
+submit_report did not parse as a draft), `call_cap`, `wall_cap`, or
+`model_stopped` filed nothing, and its empty report goes through the grader,
+which scores it as no answer: the outcome components are 0 on an incident
+scenario and on a control alike, because the default `incident_present` is
+not a claim the model made. The `stopped by` column in the report shows
+which runs those were. If the MCP session fails to close after the report
+was filed, the report is graded and the close error is kept in the grade's
+notes.
 
 Honeycomb's harness, for the contrast the README draws. In
 `honeycombio/agent-skill` (read on 2026-09-03 from `main` at commit
@@ -118,7 +120,26 @@ CONFIGS: dict[str, dict[str, Any]] = {
     "no-notchecked": {"require_not_checked": False},
 }
 
-PROVIDERS: tuple[str, ...] = ("anthropic", "bedrock")
+PROVIDERS: tuple[str, ...] = ("anthropic", "bedrock", "ollama", "nvidia")
+
+# The ollama provider's own wall budget default (R15, EDW-1337): 20 minutes
+# rather than the 8 every other provider gets, because prompt eval on a 30
+# to 40k token context late in a run is the expected weak spot on local
+# hardware. Applied only when `--max-wall-s` was not given on the command
+# line; an explicit value always wins, for any provider.
+OLLAMA_DEFAULT_MAX_WALL_S = 1200.0
+
+
+def resolved_max_wall_s(provider: str, max_wall_s: float | None) -> float:
+    """The wall budget a run gets: an explicit `--max-wall-s` always wins.
+
+    Left unset (`None`, argparse's default when the flag is not given),
+    ollama gets `OLLAMA_DEFAULT_MAX_WALL_S` and every other provider gets
+    `DEFAULT_MAX_WALL_S`.
+    """
+    if max_wall_s is not None:
+        return max_wall_s
+    return OLLAMA_DEFAULT_MAX_WALL_S if provider == "ollama" else DEFAULT_MAX_WALL_S
 
 
 # --------------------------------------------------------------------------
@@ -270,6 +291,14 @@ class GradedRun(BaseModel):
     tokens_out: int
     cost_usd: float
     wall_s: float
+    max_wall_s: float = 0.0
+    """The wall budget the run was given, copied from `Report.max_wall_s`. Default 0
+    for a `grade.json` written before this field existed, read by `evals/report.py`
+    as "not recorded" rather than a real zero-second budget."""
+    malformed_calls: int = 0
+    """Tool calls a provider handed back with arguments that could not be parsed at
+    all, copied from `Report.malformed_calls`. Zero both when none happened and for
+    a `grade.json` written before this field existed."""
     honeycomb_process_score: float | None
     honeycomb_process_passed: bool | None
 
@@ -335,6 +364,8 @@ def graded_run(report: Report, result: Grade, *, config: str, repeat: int) -> Gr
         tokens_out=result.process.tokens_out,
         cost_usd=result.process.cost_usd,
         wall_s=result.process.wall_s,
+        max_wall_s=report.max_wall_s,
+        malformed_calls=report.malformed_calls,
         honeycomb_process_score=result.process.honeycomb_process_score,
         honeycomb_process_passed=result.process.honeycomb_process_passed,
         grade=result,
@@ -383,6 +414,8 @@ def crashed_run(
         tokens_out=report.tokens_out if report else 0,
         cost_usd=report.cost_usd if report else 0.0,
         wall_s=report.wall_s if report else round(wall_s, 2),
+        max_wall_s=report.max_wall_s if report else 0.0,
+        malformed_calls=report.malformed_calls if report else 0,
         honeycomb_process_score=None,
         honeycomb_process_passed=None,
         grade=None,
@@ -931,7 +964,15 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="emit a fresh run per scenario first; otherwise reuse the latest from runs.json",
     )
     parser.add_argument("--max-calls", type=int, default=DEFAULT_MAX_CALLS)
-    parser.add_argument("--max-wall-s", type=float, default=DEFAULT_MAX_WALL_S)
+    parser.add_argument(
+        "--max-wall-s",
+        type=float,
+        default=None,
+        help=(
+            f"default {DEFAULT_MAX_WALL_S:.0f} "
+            f"({OLLAMA_DEFAULT_MAX_WALL_S:.0f} for --provider ollama)"
+        ),
+    )
     parser.add_argument("--results-dir", type=Path, default=RESULTS_DIR)
     parser.add_argument("--runs-dir", type=Path, default=RUNS_DIR, help="where manifests live")
     parser.add_argument(
@@ -987,9 +1028,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.repeats < 1:
         print("error: --repeats must be at least 1", file=sys.stderr)
         return 2
-    if args.provider != "anthropic":
+    if args.provider == "bedrock":
         print(f"error: provider {args.provider!r} arrives in R11", file=sys.stderr)
         return 2
+    max_wall_s = resolved_max_wall_s(args.provider, args.max_wall_s)
     if args.resume and args.emit:
         print(
             "error: --resume and --emit do not combine: a fresh emit changes the run id, and a "
@@ -1020,7 +1062,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 provider=args.provider,
                 model=args.model,
                 max_calls=args.max_calls,
-                max_wall_s=args.max_wall_s,
+                max_wall_s=max_wall_s,
                 console=console,
                 telemetry=telemetry,
                 resume=args.resume,

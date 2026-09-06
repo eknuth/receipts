@@ -27,6 +27,7 @@ from evals.report import (
     load_results,
     main,
     num,
+    provider_order,
     render,
     write_report,
 )
@@ -46,6 +47,9 @@ def _run(
     *,
     receipts_score: float = 0.0,
     dims: float = 0.0,
+    provider: str = "fake",
+    max_wall_s: float = 0.0,
+    malformed_calls: int = 0,
 ) -> GradedRun:
     """A minimal `GradedRun` for exercising the renderer directly. `render` reads the
     flat fields and `top_right`, which needs a grade to be present and `dims` at or over
@@ -55,9 +59,9 @@ def _run(
     return GradedRun(
         config=config,
         scenario_id=scenario_id,
-        run_id=f"run-{config}-{repeat}",
+        run_id=f"run-{config}-{provider}-{repeat}",
         repeat=repeat,
-        provider="fake",
+        provider=provider,
         model="m",
         total=total,
         outcome_score=outcome_score,
@@ -74,6 +78,8 @@ def _run(
         tokens_out=1,
         cost_usd=0.1,
         wall_s=1.0,
+        max_wall_s=max_wall_s,
+        malformed_calls=malformed_calls,
         honeycomb_process_score=None,
         honeycomb_process_passed=None,
         grade=Grade.model_construct(run_id=f"run-{config}-{repeat}", scenario_id=scenario_id),
@@ -152,7 +158,9 @@ def test_the_contrast_column_counts_runs_that_pass_theirs_and_fail_ours(
     assert len(under) == 3
     text = render(runs)
     process = next(line for line in text.splitlines() if line.startswith("| full |"))
-    assert process.endswith("| 3 of 8 |")
+    # `contrast` sits before the two process columns this test doesn't cover
+    # (`wall cap s`, `malformed calls`), so it is no longer the row's last cell.
+    assert process.split("|")[-4].strip() == "3 of 8"
     assert f"total < {num(OUTCOME_FAIL_BELOW, 2)}" in text
 
 
@@ -164,7 +172,8 @@ def test_the_coerced_column_is_blank_when_no_run_needed_it_and_a_count_when_one_
     config, not the count of runs."""
     text = render(load_results(live_results))
     process = next(line for line in text.splitlines() if line.startswith("| full |"))
-    assert process.split("|")[-3].strip() == ""
+    # `coerced` sits before `contrast`, `wall cap s`, and `malformed calls`.
+    assert process.split("|")[-5].strip() == ""
 
     report_path = FIXTURES / "run-ebc9c1e4be3d" / "report.json"
     report = load_report(report_path)
@@ -175,7 +184,7 @@ def test_the_coerced_column_is_blank_when_no_run_needed_it_and_a_count_when_one_
 
     text = render(load_results(live_results))
     process = next(line for line in text.splitlines() if line.startswith("| full |"))
-    assert process.split("|")[-3].strip() == "2"
+    assert process.split("|")[-5].strip() == "2"
 
 
 def test_the_coerced_column_counts_a_wrapper_and_a_tool_argument_coercion_as_two(
@@ -194,7 +203,7 @@ def test_the_coerced_column_counts_a_wrapper_and_a_tool_argument_coercion_as_two
 
     text = render(load_results(live_results))
     process = next(line for line in text.splitlines() if line.startswith("| full |"))
-    assert process.split("|")[-3].strip() == "2"
+    assert process.split("|")[-5].strip() == "2"
 
 
 def test_every_run_row_links_its_top_evidence_query(live_results: Path) -> None:
@@ -216,6 +225,10 @@ def test_a_crash_is_a_zero_row_with_its_error_and_no_link(tmp_path: Path) -> Non
         error="RuntimeError: killed | mid-run",
         tool_calls=7,
         wall_s=12.3,
+        # Same provider as the live fixtures: this test is about crash
+        # formatting, not the provider column, and a bare "" provider would
+        # otherwise read as a second provider and add the "(provider)" suffix.
+        provider="anthropic",
     )
     write_run(run_dir(results_dir, "no-negation", "control-quiet", 1), crash, None)
 
@@ -240,7 +253,10 @@ def test_a_crash_is_a_zero_row_with_its_error_and_no_link(tmp_path: Path) -> Non
         line for line in process_section.splitlines() if line.startswith("| no-negation |")
     )
     assert process.startswith("| no-negation | 1 | 1 | 7.0 |")
-    assert process.endswith("| 0 of 1 |")
+    # `contrast` sits before `wall cap s` and `malformed calls`, both blank: this
+    # crash carries no `max_wall_s` or `malformed_calls` of its own.
+    assert process.split("|")[-4].strip() == "0 of 1"
+    assert process.endswith("|  |  |")
 
 
 def test_an_unreadable_grade_is_listed_and_the_rest_still_render(tmp_path: Path) -> None:
@@ -437,6 +453,142 @@ def test_ablation_section_names_scenarios_emitted_more_than_once() -> None:
     assert (
         "Emitted more than once, so its cells differ in data as well as in config: `trig`." in text
     )
+
+
+# --------------------------------------------------------------------------
+# Providers (R15, EDW-1337)
+# --------------------------------------------------------------------------
+
+
+def test_provider_order_puts_anthropic_first_then_the_rest_alphabetically() -> None:
+    names = ["ollama", "bedrock", "anthropic"]
+    assert sorted(names, key=provider_order) == ["anthropic", "bedrock", "ollama"]
+
+
+def test_a_single_provider_directory_gets_no_provider_suffix() -> None:
+    """Every run shares one provider, so the column key stays the config alone,
+    the same as before providers existed."""
+    runs = [
+        _run("full", "s1", 0.90, 0.70, dims=1.0, provider="ollama"),
+        _run("no-negation", "s1", 0.50, 0.40, dims=0.0, provider="ollama"),
+    ]
+    text = render(runs)
+    header = next(line for line in text.splitlines() if line.startswith("| scenario |"))
+    assert header == (
+        "| scenario | full total | full outcome | full top right | "
+        "no-negation total | no-negation outcome | no-negation top right |"
+    )
+
+
+def test_multi_provider_columns_are_keyed_by_config_and_provider_in_order() -> None:
+    """Configs in `config_order`, and within a config `anthropic` first then the
+    rest alphabetically. `full` here has both providers, `no-negation` only
+    `anthropic`, so its column carries no `ollama` counterpart at all."""
+    runs = [
+        _run("full", "s1", 0.80, 0.60, dims=1.0, provider="ollama"),
+        _run("full", "s1", 0.90, 0.70, dims=1.0, provider="anthropic"),
+        _run("no-negation", "s1", 0.50, 0.40, dims=0.0, provider="anthropic"),
+    ]
+    text = render(runs)
+    header = next(line for line in text.splitlines() if line.startswith("| scenario |"))
+    assert header == (
+        "| scenario | full (anthropic) total | full (anthropic) outcome | "
+        "full (anthropic) top right | full (ollama) total | full (ollama) outcome | "
+        "full (ollama) top right | no-negation (anthropic) total | "
+        "no-negation (anthropic) outcome | no-negation (anthropic) top right |"
+    )
+    row = next(line for line in text.splitlines() if line.startswith("| s1 |"))
+    assert row == (
+        "| s1 | 0.90 (0.90 to 0.90) | 0.70 (0.70 to 0.70) | 1 of 1 | "
+        "0.80 (0.80 to 0.80) | 0.60 (0.60 to 0.60) | 1 of 1 | "
+        "0.50 (0.50 to 0.50) | 0.40 (0.40 to 0.40) | 0 of 1 |"
+    )
+    process_section = text.split("## Process by config", 1)[1].split("## Runs", 1)[0]
+    labels = [
+        line.split("|")[1].strip()
+        for line in process_section.splitlines()
+        if line.startswith("| full") or line.startswith("| no-negation")
+    ]
+    assert labels == ["full (anthropic)", "full (ollama)", "no-negation (anthropic)"]
+
+
+def test_runs_table_gets_a_provider_column_only_when_more_than_one_provider_is_present() -> None:
+    single = [_run("full", "s1", 0.5, 0.4, dims=1.0, provider="ollama")]
+    text = render(single)
+    runs_section = text.split("## Runs", 1)[1]
+    header = next(line for line in runs_section.splitlines() if line.startswith("| scenario |"))
+    assert "| run id | model |" in header
+    row = next(line for line in runs_section.splitlines() if line.startswith("| s1 |"))
+    assert "| ollama |" not in row
+
+    multi = [
+        _run("full", "s1", 0.5, 0.4, dims=1.0, provider="anthropic"),
+        _run("full", "s1", 0.6, 0.4, dims=1.0, provider="ollama"),
+    ]
+    text = render(multi)
+    runs_section = text.split("## Runs", 1)[1]
+    header = next(line for line in runs_section.splitlines() if line.startswith("| scenario |"))
+    assert "| run id | provider | model |" in header
+    rows = [line for line in runs_section.splitlines() if line.startswith("| s1 |")]
+    assert any("| ollama | m |" in row for row in rows)
+    assert any("| anthropic | m |" in row for row in rows)
+
+
+def test_wall_cap_and_malformed_calls_columns_render_and_are_blank_at_zero() -> None:
+    runs = [
+        _run("full", "s1", 0.5, 0.4, dims=1.0, max_wall_s=480.0, malformed_calls=2),
+        _run("full", "s1", 0.6, 0.4, dims=1.0, repeat=2, max_wall_s=480.0, malformed_calls=0),
+    ]
+    text = render(runs)
+    assert "`wall cap s`" in text
+    assert "`malformed calls`" in text
+    process_section = text.split("## Process by config", 1)[1].split("## Runs", 1)[0]
+    process = next(line for line in process_section.splitlines() if line.startswith("| full |"))
+    cells = [cell.strip() for cell in process.strip("|").split("|")]
+    assert cells[-2] == "480"
+    assert cells[-1] == "2"
+
+    zero_runs = [_run("full", "s1", 0.5, 0.4, dims=1.0)]
+    text = render(zero_runs)
+    process_section = text.split("## Process by config", 1)[1].split("## Runs", 1)[0]
+    process = next(line for line in process_section.splitlines() if line.startswith("| full |"))
+    cells = [cell.strip() for cell in process.strip("|").split("|")]
+    assert cells[-2] == ""
+    assert cells[-1] == ""
+
+
+def test_ablation_section_is_rendered_once_per_provider_that_has_full_and_an_ablation() -> None:
+    runs = [
+        _run("full", "s1", 0.80, 0.60, receipts_score=0.20, dims=1.0, provider="anthropic"),
+        _run("no-negation", "s1", 0.70, 0.60, receipts_score=0.10, dims=1.0, provider="anthropic"),
+        _run("full", "s1", 0.50, 0.40, receipts_score=0.10, dims=1.0, provider="ollama"),
+        _run("no-negation", "s1", 0.40, 0.40, receipts_score=0.00, dims=1.0, provider="ollama"),
+    ]
+    text = render(runs)
+    assert "## Ablation delta (anthropic)" in text
+    assert "## Ablation delta (ollama)" in text
+    assert text.index("## Ablation delta (anthropic)") < text.index("## Ablation delta (ollama)")
+    anthropic_section = text.split("## Ablation delta (anthropic)", 1)[1].split(
+        "## Ablation delta (ollama)", 1
+    )[0]
+    ollama_section = text.split("## Ablation delta (ollama)", 1)[1].split(
+        "## Process by config", 1
+    )[0]
+    # Each section's `no-negation` row is the mean over that provider's own runs
+    # only: 0.700 for anthropic, 0.400 for ollama, never mixed.
+    assert "| no-negation | 0.700 |" in anthropic_section
+    assert "| no-negation | 0.400 |" in ollama_section
+
+
+def test_ablation_section_skips_a_provider_with_only_full() -> None:
+    runs = [
+        _run("full", "s1", 0.80, 0.60, receipts_score=0.20, dims=1.0, provider="anthropic"),
+        _run("no-negation", "s1", 0.70, 0.60, receipts_score=0.10, dims=1.0, provider="anthropic"),
+        _run("full", "s1", 0.50, 0.40, receipts_score=0.10, dims=1.0, provider="ollama"),
+    ]
+    text = render(runs)
+    assert "## Ablation delta (anthropic)" in text
+    assert "## Ablation delta (ollama)" not in text
 
 
 # --------------------------------------------------------------------------

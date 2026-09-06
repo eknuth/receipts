@@ -10,6 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from agent.report import (
+    SCHEMA_REJECTION,
     Evidence,
     Hypothesis,
     PartialCheck,
@@ -436,3 +437,47 @@ def test_a_wrapper_whose_inner_dict_lacks_incident_present_still_fails() -> None
 def test_a_one_key_input_whose_value_is_not_a_dict_still_fails() -> None:
     with pytest.raises(ValidationError):
         ReportDraft.model_validate({"permalink": "not a dict at all"})
+
+
+# --------------------------------------------------------------------------
+# The schema stop reason, and the files written before it existed
+# --------------------------------------------------------------------------
+
+
+def _process(**overrides: object) -> dict[str, object]:
+    base: dict[str, object] = {
+        "run_id": "run-old",
+        "scenario_id": "control-quiet",
+        "provider": "test",
+        "model": "m",
+    }
+    base.update(overrides)
+    return base
+
+
+def test_an_old_schema_rejection_loads_as_a_schema_stop() -> None:
+    """Before the `schema` stop reason, a second schema rejection was recorded
+    as `report` with the rejection as the first message. It reads back as
+    what it was."""
+    r = Report.model_validate(
+        _process(
+            stop_reason="report",
+            validation_failed=True,
+            validation_messages=[SCHEMA_REJECTION + "\n1 validation error for ReportDraft"],
+        )
+    )
+    assert r.stop_reason == "schema"
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"stop_reason": "report", "validation_failed": True, "validation_messages": ["partial: x"]},
+        {"stop_reason": "report", "validation_failed": False, "validation_messages": []},
+        {"stop_reason": "report", "validation_failed": True, "validation_messages": []},
+        {"stop_reason": "wall_cap", "validation_failed": False, "validation_messages": []},
+    ],
+)
+def test_other_reports_keep_their_stop_reason(fields: dict[str, object]) -> None:
+    r = Report.model_validate(_process(**fields))
+    assert r.stop_reason == fields["stop_reason"]

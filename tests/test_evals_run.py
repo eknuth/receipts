@@ -31,6 +31,9 @@ from agent.report import Evidence, Hypothesis, Report, load_report
 from evals.grader import grade_file
 from evals.run import (
     CONFIGS,
+    DEFAULT_MAX_WALL_S,
+    OLLAMA_DEFAULT_MAX_WALL_S,
+    PROVIDERS,
     GradedRun,
     RunIndex,
     agent_config,
@@ -41,6 +44,7 @@ from evals.run import (
     next_repeat,
     regrade,
     resolve_run,
+    resolved_max_wall_s,
     run_dir,
     run_matrix,
     top_permalink,
@@ -531,6 +535,86 @@ def test_configs_map_to_agent_config_knobs_only() -> None:
 
 
 # --------------------------------------------------------------------------
+# The ollama provider (R15 / EDW-1337): choices, config, and the wall budget
+# --------------------------------------------------------------------------
+
+
+def test_ollama_is_an_accepted_provider_choice() -> None:
+    assert "ollama" in PROVIDERS
+
+
+def test_agent_config_wires_the_ollama_provider_through() -> None:
+    config = agent_config("full", provider="ollama", model="qwen3.8:27b")
+    assert config.provider == "ollama"
+    assert config.model == "qwen3.8:27b"
+
+
+def test_an_explicit_max_wall_s_always_wins() -> None:
+    assert resolved_max_wall_s("anthropic", 300.0) == 300.0
+    assert resolved_max_wall_s("ollama", 300.0) == 300.0
+
+
+def test_ollama_defaults_to_a_twenty_minute_wall_budget_when_unset() -> None:
+    assert resolved_max_wall_s("ollama", None) == OLLAMA_DEFAULT_MAX_WALL_S
+    assert OLLAMA_DEFAULT_MAX_WALL_S == 1200.0
+
+
+def test_every_other_provider_keeps_the_eight_minute_default_when_unset() -> None:
+    assert resolved_max_wall_s("anthropic", None) == DEFAULT_MAX_WALL_S
+    assert resolved_max_wall_s("bedrock", None) == DEFAULT_MAX_WALL_S
+
+
+def test_provider_ollama_is_accepted_by_argument_parsing() -> None:
+    """`--provider ollama` parses; `--provider nonsense` does not.
+
+    Argument parsing only: this never reaches Settings() or a real run, since
+    both would need a real .env and would spend the MCP rate limit or the
+    Anthropic API this test suite must not touch.
+    """
+    import evals.run as module
+
+    args = module._parse_args(["--scenarios", "control-quiet", "--provider", "ollama"])
+    assert args.provider == "ollama"
+    with pytest.raises(SystemExit):
+        module._parse_args(["--scenarios", "control-quiet", "--provider", "nonsense"])
+
+
+# --------------------------------------------------------------------------
+# The nvidia provider (R15 / EDW-1337): choices, config, and the wall budget
+# --------------------------------------------------------------------------
+
+
+def test_nvidia_is_an_accepted_provider_choice() -> None:
+    assert "nvidia" in PROVIDERS
+
+
+def test_agent_config_wires_the_nvidia_provider_through() -> None:
+    config = agent_config("full", provider="nvidia", model="nvidia/nemotron-3-super-120b-a12b")
+    assert config.provider == "nvidia"
+    assert config.model == "nvidia/nemotron-3-super-120b-a12b"
+
+
+def test_nvidia_keeps_the_eight_minute_default_when_unset() -> None:
+    """Only ollama gets a longer default; nvidia is a hosted endpoint, so it
+
+    gets the same eight minute budget every other provider gets.
+    """
+    assert resolved_max_wall_s("nvidia", None) == DEFAULT_MAX_WALL_S
+
+
+def test_an_explicit_max_wall_s_always_wins_for_nvidia_too() -> None:
+    assert resolved_max_wall_s("nvidia", 300.0) == 300.0
+
+
+def test_provider_nvidia_is_accepted_by_argument_parsing() -> None:
+    """`--provider nvidia` parses, same as `--provider ollama` above."""
+    import evals.run as module
+
+    args = module._parse_args(["--scenarios", "control-quiet", "--provider", "nvidia"])
+    assert args.provider == "nvidia"
+
+
+# --------------------------------------------------------------------------
 # Crashes and caps
 # --------------------------------------------------------------------------
 
@@ -702,10 +786,11 @@ async def test_the_call_cap_ends_a_run_that_is_graded_normally(
     assert graded.total == graded.grade.total
 
 
-async def test_a_cap_ended_run_on_a_control_grades_as_restraint_and_says_how_it_stopped(
+async def test_a_cap_ended_run_on_a_control_grades_as_no_answer_and_says_how_it_stopped(
     settings: Settings, results_dir: Path, runs_dir: Path
 ) -> None:
-    """A model that never files anything on a control scores 0.75 on the grader.
+    """A model that never files anything on a control scores 0 on the grader:
+    the default `incident_present` is not restraint the model showed.
 
     The runner does not change that: the grader is not touched here, and the
     `stop_reason` in the row is what tells the reader nothing was filed.
@@ -724,9 +809,9 @@ async def test_a_cap_ended_run_on_a_control_grades_as_restraint_and_says_how_it_
     assert graded.stop_reason == "call_cap"
     assert not graded.crashed
     assert graded.grade is not None
-    assert graded.total == pytest.approx(0.75)
-    assert graded.dims == 1.0
-    assert graded.top_right is True
+    assert graded.total == pytest.approx(0.0)
+    assert graded.dims == 0.0
+    assert graded.top_right is False
     assert graded.top_confidence is None
 
 

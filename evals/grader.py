@@ -66,6 +66,12 @@ ONSET_TOLERANCE = timedelta(minutes=3)
 # A top hypothesis whose dims score below this is wrong for calibration purposes.
 WRONG_BELOW = 0.5
 
+FILED = "report"
+"""The one `Report.stop_reason` under which the findings fields are the
+model's. Every other stop (`schema`, `call_cap`, `wall_cap`, `model_stopped`)
+left them at their defaults, so `incident_present` is not an answer there and
+a control cannot be credited for restraint the run never showed."""
+
 CALIBRATION_PENALTY: dict[Confidence, float] = {"high": -0.50, "medium": -0.25, "low": -0.10}
 
 # A right answer that hedges pays a little too. Without this a report could
@@ -235,6 +241,7 @@ def grade(
     index = index_log(report.tool_log)
     terms = queried_terms(report.tool_log, run_id=report.run_id)
     top = report.hypotheses[0] if report.hypotheses else None
+    filed = report.stop_reason == FILED
 
     if truth.incident_present:
         jaccard = _best_dims_jaccard(top.dims, truth, scenario.symptom_dims) if top else None
@@ -242,7 +249,7 @@ def grade(
         span = float(top is not None and top.slow_or_failing_span == truth.slow_or_failing_span)
         onset = _onset_score(report, scenario, window_start, notes)
         top_wrong = top is not None and dims < WRONG_BELOW
-    else:
+    elif filed:
         # A control has no cause to name. The right report names none, or
         # names only low-confidence ones, and those three components are
         # awarded for that restraint.
@@ -252,8 +259,21 @@ def grade(
         top_wrong = top is not None
         if not quiet:
             notes.append("control: a hypothesis above low confidence zeroes dims, span, and onset")
+    else:
+        # Restraint is something a report shows. A run that filed nothing
+        # left the findings at their defaults, and a default is not a claim.
+        jaccard = None
+        dims = span = onset = 0.0
+        top_wrong = False
 
-    incident = float(report.incident_present == truth.incident_present)
+    if filed:
+        incident = float(report.incident_present == truth.incident_present)
+    else:
+        incident = 0.0
+        notes.append(
+            f"not filed: the run stopped on {report.stop_reason}, so incident_present is the "
+            "default and earns nothing"
+        )
     receipts = _receipts_score(report, index, notes)
     not_checked = float(
         bool(report.not_checked) and not not_checked_issues(report.not_checked, terms)

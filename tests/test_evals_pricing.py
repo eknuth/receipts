@@ -17,13 +17,71 @@ from evals.pricing import (
     price_for,
 )
 
+ZERO_PRICED_MODELS = {
+    "qwen3.8:27b",
+    "moonshotai/kimi-k3",
+    "nvidia/nemotron-3-super-120b-a12b",
+    "deepseek-ai/deepseek-v4-pro-0813",
+}
+
 
 def test_the_table_is_readable_and_every_row_is_positive() -> None:
+    """Every hosted model is priced positive, output above input.
+
+    Ollama runs on local hardware, and the NVIDIA rows run on the
+    build.nvidia.com developer tier, which is rate-limited rather than
+    metered and publishes no per-token rate at all. Both are priced at
+    exactly zero, so they are checked on their own below rather than folded
+    into "positive" here.
+    """
     prices = load_prices()
     assert prices
-    for price in prices.values():
+    for name, price in prices.items():
+        if name in ZERO_PRICED_MODELS:
+            continue
         assert price.input > 0
         assert price.output > price.input
+
+
+def test_ollama_is_priced_at_exactly_zero() -> None:
+    """Local runs cost nothing: the eval report should say zero, not "unpriced"."""
+    price = price_for("qwen3.8:27b")
+    assert price is not None
+    assert price.input == 0
+    assert price.output == 0
+    assert cost_usd("qwen3.8:27b", 40_000, 4_000) == 0.0
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "moonshotai/kimi-k3",
+        "nvidia/nemotron-3-super-120b-a12b",
+        "deepseek-ai/deepseek-v4-pro-0813",
+    ],
+)
+def test_nvidia_hosted_models_are_priced_at_exactly_zero(model: str) -> None:
+    """The build.nvidia.com developer endpoint is rate-limited, not metered,
+
+    and publishes no per-token rate for any model on it, so all three rows
+    are zero for the same reason. `nvidia/nemotron-3-super-120b-a12b` is the
+    `NVIDIA_MODEL` default; `moonshotai/kimi-k3` was tried first and is kept
+    as a row after it turned out to be throttled on this key.
+    """
+    price = price_for(model)
+    assert price is not None
+    assert price.input == 0
+    assert price.output == 0
+    assert cost_usd(model, 40_000, 4_000) == 0.0
+
+
+def test_a_slash_containing_model_id_normalises_to_itself() -> None:
+    """None of the platform-decoration patterns touch a `/`, so an id like
+
+    NVIDIA's `moonshotai/kimi-k3` passes through normalise_model unchanged,
+    the same key it is priced under in evals/pricing.yml.
+    """
+    assert normalise_model("moonshotai/kimi-k3") == "moonshotai/kimi-k3"
 
 
 def test_the_configured_model_is_priced() -> None:

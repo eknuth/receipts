@@ -62,6 +62,17 @@ class Settings(BaseSettings):
     ollama_host: str = "http://localhost:11434"
     ollama_model: str = "qwen3.8:27b"
 
+    # NVIDIA hosted NIM, R15. Not required until --provider nvidia is used;
+    # agent/providers/nvidia.py raises a clear ValueError at construction
+    # when the key is unset. nvidia/nemotron-3-super-120b-a12b is the
+    # default: moonshotai/kimi-k3 was tried first and, on this key, returns
+    # 429 after the first request and stays throttled for over five
+    # minutes; nemotron answered eight back-to-back 22k-token requests with
+    # 200 in about a second each.
+    nvidia_api_key: SecretStr | None = Field(default=None, min_length=1)
+    nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
+    nvidia_model: str = "nvidia/nemotron-3-super-120b-a12b"
+
     # R9 self-telemetry. Off by default: prompts and completions are only
     # written to the gen_ai.input.messages / gen_ai.output.messages span
     # events on the agent's own chat spans when this is set, because those

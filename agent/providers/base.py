@@ -35,6 +35,15 @@ class ToolUse:
     id: str
     name: str
     args: dict[str, Any]
+    malformed: bool = False
+    """Set by a provider that received arguments it could not trust as this
+    call's real input, such as Ollama's native tool calling handing back
+    arguments that are not a JSON object at all (`agent/providers/ollama.py`).
+    `args` is `{}` whenever this is True. The loop counts these on
+    `Report.malformed_calls` and otherwise treats the call exactly like any
+    other: it goes out with empty args, which the tool's own schema then
+    rejects the ordinary way, through the same error path a well-formed but
+    invalid call would take."""
 
 
 @dataclass(frozen=True)
