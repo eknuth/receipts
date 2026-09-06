@@ -1,0 +1,64 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git diff:*)",
+      "Bash(git branch:*)",
+      "Bash(git show:*)",
+      "Bash(ls:*)",
+      "Bash(uv run pytest:*)",
+      "Bash(uv run ruff:*)",
+      "Bash(make test)",
+      "Bash(make lint)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr checks:*)",
+      "Bash(uv run python -m evals.report:*)",
+      "Bash(uv run python -m evals.compare:*)",
+      "Bash(uv run python -m evals.cell:*)",
+      "Bash(uv run python tools/usage_stats.py:*)",
+      "mcp__linear__get_issue",
+      "mcp__linear__list_issues",
+      "mcp__linear__list_comments",
+      "mcp__linear__get_project",
+      "mcp__linear__list_issue_statuses",
+      "mcp__linear__list_issue_labels"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/block_secrets.py\"",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "uv run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/block_double_emit.py\"",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "uv run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/block_parked_column.py\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/lint_after_commit.py\"",
+            "timeout": 90
+          }
+        ]
+      }
+    ]
+  }
+}
