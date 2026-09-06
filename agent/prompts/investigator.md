@@ -69,7 +69,31 @@ Follow the method Honeycomb publishes in the `honeycomb-investigator` agent and 
    A level that is already up in the first minute of the window may have started before the window
    opened. Say that instead of dating the onset to the start of the window.
    No candidate goes into `hypotheses` until this split has been run for it and cited.
-5. **Select the population.** `dims` is the set of dimensions that selects the affected rows,
+5. **Noise floor.** A rate or a share is a count over a population, and on a small population
+   it moves on its own before anything has changed. The reference for a rate candidate is the
+   rows outside it over the whole window: their rate is the level, and what they show bucket by
+   bucket is the spread. That is the baseline for a rate, not the first bucket. The split series
+   from step 4 already holds both readings when it carries the total COUNT and the count of the
+   rows carrying the event beside the breakdown: the other values' rows summed across buckets are
+   the outside rate, and their buckets are the spread. A new query is only for a candidate the
+   split did not break down on. When every value of the column moved together, so that there is
+   no outside on the same window, the reference is the candidate's own buckets on the early side
+   of the split.
+   A candidate rate is a change only when it sits outside that spread, and only when the
+   population under it is large enough that the difference comes to more than a few rows. Put
+   the expected count next to the observed one: at the reference rate, how many events would this
+   many rows carry by chance. A bucket that reads zero when the expected count is under about
+   five is not a baseline, it is an empty bucket. A bucket that reads zero by chance before the
+   change is not where the change starts either: the onset is the boundary step 4 sets, read
+   from the first bucket whose rate leaves the spread.
+   `baseline_evidence` for a rate claim cites the reference rate with its row count, so a reader
+   can see the population the level rests on. One bucket, or a few seconds, does not establish
+   it, and a period with no rows in it has no rate.
+   A candidate that fails this reading goes in `rejected_candidates` with the two rates and the
+   two row counts as the reason. It was examined, so it does not belong on the list of what you
+   never queried. A rate candidate does not go into `hypotheses` until this reading has been run
+   for it and cited.
+6. **Select the population.** `dims` is the set of dimensions that selects the affected rows,
    and nothing that does not narrow them. It is read from breakdowns, not from the filters you
    carried to scope a query, and each entry is one value the column takes in the rows, or one
    range on a numeric column. With no candidate confirmed there is nothing to select, so skip
@@ -106,10 +130,10 @@ Follow the method Honeycomb publishes in the `honeycomb-investigator` agent and 
    service or a span selects the affected rows, that is the selector and it goes in `dims`. Stop
    when no remaining leader narrows the set. That is one call per leader, plus one for the seed
    once the set has grown.
-6. **Traces.** Add the set in `dims` as filters, take a representative trace, and call
+7. **Traces.** Add the set in `dims` as filters, take a representative trace, and call
    `get_trace`. The waterfall tells you which span the time or the failure is in, which a
    dimension breakdown cannot.
-7. **Verify by negation.** Run the same measurement with the suspected cause excluded. If the
+8. **Verify by negation.** Run the same measurement with the suspected cause excluded. If the
    claim is that some population is slow or failing, then the traffic outside that population
    should look normal over the same window. A finding that survives that query is a finding. One
    that does not is a coincidence you nearly reported. The finding is the set in `dims`, so the
@@ -121,7 +145,7 @@ Follow the method Honeycomb publishes in the `honeycomb-investigator` agent and 
    its callers fail or slow because it does. Run the exclusion on the same window anyway, cite it,
    and say in the summary that the callers carry its failure. Do not swap in an earlier window:
    an exclusion over a different window is a baseline, not a negation.
-8. **Record.** Call `submit_report` with what you found.
+9. **Record.** Call `submit_report` with what you found.
 
 ## What counts as an incident
 
@@ -223,9 +247,11 @@ measured and `onset_estimate` with the end of the last part of the window that s
 If there was no incident, set `incident_present` to false and leave `hypotheses` empty.
 
 Either way, fill in `baseline_evidence` with at least one `run_query` establishing what the
-measurement was before whatever you are reporting. Saying something changed rests on the level it
+measurement was before, or outside, whatever you are reporting. Saying something changed rests on the level it
 was at beforehand, and saying nothing changed rests on the level holding steady, so both answers
-need it. A report with an empty `baseline_evidence` is rejected whichever way it went.
+need it. A report with an empty `baseline_evidence` is rejected whichever way it went. For a rate
+or a share, the level step 5 asks for is this paragraph's answer: the reference rate outside the
+candidate, with its row count, not a single bucket.
 
 If you looked at something that turned out not to be the incident, put it in
 `rejected_candidates` with the reason and the query that ruled it out. That is the place for a

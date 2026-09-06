@@ -269,6 +269,35 @@ def test_the_prompt_adds_a_population_selection_step() -> None:
         assert prompt.index("**Select the population.**") < prompt.index("**Traces.**")
 
 
+def test_the_prompt_adds_a_noise_floor_step() -> None:
+    """EDW-1366: three false incidents on control-noisy all read a short, sparse
+    bucket as the baseline and a rate under 1 percent on a few hundred rows as a
+    step up from it. The step is in the fixed part of the prompt, so neither
+    ablation should touch it, and it belongs after the time split and before
+    population selection: a candidate has to clear the noise floor before it is
+    something to select a population for. The pinned phrases are the readings
+    that carry the rule, so a rewrite that kept the title and dropped them fails.
+    """
+    steps = []
+    for config in (
+        AgentConfig(),
+        AgentConfig(require_negation=False),
+        AgentConfig(require_not_checked=False),
+    ):
+        prompt = render_prompt(RUN, config)
+        assert "**Noise floor.**" in prompt
+        assert "expected count" in prompt
+        assert "is not a baseline, it is an empty bucket" in prompt
+        assert "a period with no rows in it has no rate" in prompt
+        assert "not the first bucket" in prompt
+        begin = prompt.index("**Noise floor.**")
+        finish = prompt.index("**Select the population.**")
+        assert prompt.index("**Split the candidates in time.**") < begin < finish
+        steps.append(prompt[begin:finish])
+    # The step is the same text in every config: the ablations remove rules, not method.
+    assert steps[0] == steps[1] == steps[2]
+
+
 def test_the_ablations_remove_whole_rules_from_the_prompt() -> None:
     full = render_prompt(RUN, AgentConfig())
     assert "negation" in full.lower()
@@ -722,6 +751,25 @@ async def test_a_second_rejection_keeps_the_report_and_flags_it(settings: Settin
     assert report.stop_reason == "report"
     assert report.hypotheses  # kept, so the grader can see what it did
     assert any("unsupported" in message for message in report.validation_messages)
+
+
+async def test_the_loop_hands_the_run_window_to_the_validator(settings: Settings) -> None:
+    """EDW-1366: a baseline query that never touches the run window is rejected,
+    which only works if the loop passes the window through to `validate_draft`."""
+    before = baseline_use("d")
+    before.args["query_spec"]["from"] = "2026-09-03T02:27:20Z"
+    before.args["query_spec"]["to"] = RUN.window_start
+    provider = FakeProvider(
+        [
+            completion(query_use("b"), negation_use("c"), before),
+            completion(use(SUBMIT_REPORT, report_args(), ident="d")),
+            completion(use(SUBMIT_REPORT, report_args(), ident="e")),
+        ]
+    )
+    report = await run_loop(provider, settings=settings)
+
+    assert report.validation_failed is True
+    assert any("outside the run window" in message for message in report.validation_messages)
 
 
 async def test_a_not_checked_entry_that_was_queried_fails_validation(
