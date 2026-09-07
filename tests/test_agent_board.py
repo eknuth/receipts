@@ -192,6 +192,35 @@ def test_a_query_panels_name_comes_from_its_evidence_summary() -> None:
     assert query_panels[0]["description"] == "P99 went from 180ms to 980ms"
 
 
+def test_a_long_evidence_summary_is_cut_to_a_heading_but_kept_in_the_description() -> None:
+    """A live board built on 2026-09-07 titled every panel with a whole
+    paragraph of evidence and was unreadable. The name is a heading; the
+    full summary belongs in the description."""
+    from agent.board import MAX_PANEL_NAME, _panels
+
+    summary = (
+        "Cart sizes 8-12 show P99 jumping from ~200-280ms before 15:41 to ~1600-2000ms after, "
+        "while cart sizes 1-7 stayed flat. Split across time confirms 15:41:00Z as the onset."
+    )
+    report = make_report(
+        hypotheses=[
+            Hypothesis(
+                claim="large carts slowed",
+                confidence="high",
+                evidence=[Evidence(query_id="Q1", summary=summary)],
+            )
+        ]
+    )
+    panel = next(p for p in _panels(report) if p["type"] == "query")
+    assert len(panel["name"]) <= MAX_PANEL_NAME + 3
+    assert "\n" not in panel["name"]
+    assert panel["name"].startswith("Cart sizes 8-12 show P99")
+    # The second sentence is a heading's worth of noise, so it is cut.
+    assert "onset" not in panel["name"]
+    # Nothing is lost: the panel still carries the whole summary.
+    assert panel["description"] == summary
+
+
 def test_a_blank_evidence_summary_still_produces_a_nonempty_panel_name() -> None:
     """A blank summary must not take the whole board down with it (create_board
     rejects a nameless query panel outright); a numbered fallback stands in."""

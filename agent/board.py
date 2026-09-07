@@ -62,7 +62,11 @@ MAX_EVIDENCE_PANELS = 3
 # unlimited). The caps below guard the fields built from free-text report
 # content; the board name this module builds is always well under 255.
 MAX_PANEL_DESCRIPTION = 1023
-MAX_PANEL_NAME = 1023
+# A panel name is a heading on the board, not the finding itself. The server
+# accepts a long one, but a live board built on 2026-09-07 titled every panel
+# with a whole paragraph of evidence and was unreadable, so the name is cut to
+# a short label here and the full summary stays in `description`.
+MAX_PANEL_NAME = 70
 MAX_TEXT_PANEL_CONTENT = 10000
 
 # A tag value: a lowercase letter, then letters, digits, "/", or "-", up to
@@ -121,9 +125,19 @@ def _panel_name(summary: str, index: int) -> str:
     The live server rejects a query panel with no `name` (see the module
     docstring); a blank or whitespace-only summary must not take the whole
     board down with it, so a numbered fallback stands in when one is needed.
+
+    An evidence summary is a few sentences, and a panel name is a heading, so
+    this takes the first sentence and cuts it at `MAX_PANEL_NAME` on a word
+    boundary. The full summary is still on the panel, as its `description`.
     """
     text = summary.strip()
-    return (text or f"Evidence {index}")[:MAX_PANEL_NAME]
+    if not text:
+        return f"Evidence {index}"
+    sentence = text.split(". ", 1)[0].rstrip(".")
+    if len(sentence) <= MAX_PANEL_NAME:
+        return sentence
+    clipped = sentence[:MAX_PANEL_NAME].rsplit(" ", 1)[0]
+    return f"{clipped or sentence[:MAX_PANEL_NAME]}..."
 
 
 def _panels(report: Report) -> list[dict[str, Any]]:
