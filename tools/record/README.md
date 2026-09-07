@@ -13,7 +13,7 @@ voice-over against that cut and `--voice <file>` muxes it in.
 | emit | `emit.tape`, one `gen.emit` run | about 45 |
 | heatmap | `out/02-heatmap.png`, captured from a signed-in browser | 12 |
 | investigation | `agent.tape.in` with the run id filled in, one `python -m agent` run | about 58 after retiming |
-| Agent Timeline | `out/04-timeline.png`, the live run's conversation | 8 |
+| Agent Timeline | `docs/r23-agent-timeline-handoff.png`, the investigator and Canvas in one conversation | 8 |
 | a graded run | `out/05-timeline-score.png`, a root span with `gen_ai.evaluation.result` | 8 |
 | tables | `tables.tape`, `tables.py` over `evals/report.md` | about 16 |
 | end card | `build.py` | 6 |

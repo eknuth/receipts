@@ -33,9 +33,7 @@ hypothesis without a query id and a negation that ran is dropped by the validato
 before it can be reported, and anything on the not-checked list that the tool log
 shows was queried fails the report.
 
-**2:10 Agent Timeline, 8 s (20 words).** The agent traces its own loop with GenAI
-conventions into Honeycomb's Agent Timeline: one conversation, the model calls, tool
-calls.
+**2:10 Agent Timeline, 8 s (20 words).** The same run in Agent Timeline, and a second lane beside it: the investigator handing its report to Canvas, Honeycomb's own agent.
 
 **2:18 a graded run, 8 s (20 words).** The harness writes the grade onto the run's own
 root span, so a run and its score are one thing.

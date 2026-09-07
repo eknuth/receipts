@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -51,7 +52,10 @@ AGENT_HEAD_S, AGENT_TAIL_S, AGENT_MIDDLE_S = 12.0, 26.0, 20.0
 
 STILLS = {
     "02-heatmap.png": (12, "duration_ms heatmap scoped to the run id: the step at minute ten"),
-    "04-timeline.png": (8, "Agent Timeline: the agent's own loop, GenAI semantic conventions"),
+    "04-timeline.png": (
+        8,
+        "Agent Timeline: the investigator hands its report to Canvas, two agents, one conversation",
+    ),
     "05-timeline-score.png": (8, "A graded run: gen_ai.evaluation.result on the root span"),
 }
 CAPTIONS = {
@@ -363,6 +367,12 @@ def assemble() -> None:
             missing.append(name)
     if missing:
         raise SystemExit("missing in tools/record/out/: " + ", ".join(missing))
+
+    # R23's acceptance screenshot is the two-lane conversation; once it is in the
+    # tree it replaces the captured single-lane still without a browser step.
+    handoff_shot = ROOT / "docs" / "r23-agent-timeline-handoff.png"
+    if handoff_shot.exists():
+        shutil.copyfile(handoff_shot, OUT / "04-timeline.png")
 
     seg = OUT / "seg"
     seg.mkdir(exist_ok=True)
