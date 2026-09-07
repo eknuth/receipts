@@ -6,7 +6,7 @@
     "output": "docs/diagrams/investigation.html",
     "quality_profile": "showcase",
     "column_fit": "spread",
-    "viewBox": [1000, 1300]
+    "viewBox": [1000, 1400]
   },
   "participants": [
     { "id": "model", "type": "external", "label": "Model", "sublabel": "provider in use" },
@@ -16,46 +16,46 @@
     { "id": "validate", "type": "backend", "label": "agent/validate.py", "sublabel": "receipts + not-checked" }
   ],
   "segments": [
-    { "from": 160, "to": 320, "label": "Orient" },
-    { "from": 350, "to": 480, "label": "Characterize" },
-    { "from": 510, "to": 640, "label": "BubbleUp" },
-    { "from": 670, "to": 800, "label": "Trace" },
-    { "from": 830, "to": 960, "label": "Verify by negation" },
-    { "from": 990, "to": 1240, "label": "Record + validate" }
+    { "from": 200, "to": 380, "label": "Orient" },
+    { "from": 410, "to": 540, "label": "Characterize" },
+    { "from": 570, "to": 700, "label": "BubbleUp" },
+    { "from": 730, "to": 860, "label": "Trace" },
+    { "from": 890, "to": 1020, "label": "Verify by negation" },
+    { "from": 1050, "to": 1300, "label": "Record + validate" }
   ],
   "messages": [
-    { "id": "orient-ask", "from": "model", "to": "loop", "y": 175, "label": "tool_use: get_workspace_context, get_dataset_columns, find_queries", "variant": "emphasis" },
-    { "id": "orient-dispatch", "from": "loop", "to": "mcp_client", "y": 210, "label": "dispatch orient calls" },
-    { "id": "orient-call", "from": "mcp_client", "to": "hosted_mcp", "y": 245, "label": "get_workspace_context / get_dataset_columns / find_queries", "note": "paced: at most 40 calls per minute, 1.5s spacing, overage sleeps" },
-    { "id": "orient-result", "from": "hosted_mcp", "to": "mcp_client", "y": 280, "label": "columns, no prior queries for this run", "variant": "return" },
-    { "id": "orient-return", "from": "mcp_client", "to": "loop", "y": 315, "label": "compact tool result", "variant": "return" },
+    { "id": "orient-ask", "from": "model", "to": "loop", "y": 215, "label": "tool_use: get_workspace_context, get_dataset_columns, find_queries", "variant": "emphasis" },
+    { "id": "orient-dispatch", "from": "loop", "to": "mcp_client", "y": 250, "label": "dispatch orient calls" },
+    { "id": "orient-call", "from": "mcp_client", "to": "hosted_mcp", "y": 285, "label": "get_workspace_context / get_dataset_columns / find_queries", "note": "paced: at most 40 calls per minute, 1.5s spacing, overage sleeps" },
+    { "id": "orient-result", "from": "hosted_mcp", "to": "mcp_client", "y": 340, "label": "columns, no prior queries for this run", "variant": "return" },
+    { "id": "orient-return", "from": "mcp_client", "to": "loop", "y": 375, "label": "compact tool result", "variant": "return" },
 
-    { "id": "characterize-dispatch", "from": "loop", "to": "mcp_client", "y": 360, "label": "dispatch run_query: COUNT, P99(duration_ms), HEATMAP(duration_ms), granularity" },
-    { "id": "characterize-call", "from": "mcp_client", "to": "hosted_mcp", "y": 395, "label": "run_query, scoped to the run's scenario id and the window" },
-    { "id": "characterize-result", "from": "hosted_mcp", "to": "mcp_client", "y": 430, "label": "query_id, time series", "variant": "return" },
-    { "id": "characterize-return", "from": "mcp_client", "to": "loop", "y": 465, "label": "compact result: where the series steps", "variant": "return" },
+    { "id": "characterize-dispatch", "from": "loop", "to": "mcp_client", "y": 420, "label": "dispatch run_query: COUNT, P99(duration_ms), HEATMAP(duration_ms), granularity" },
+    { "id": "characterize-call", "from": "mcp_client", "to": "hosted_mcp", "y": 455, "label": "run_query, scoped to the run id and the window" },
+    { "id": "characterize-result", "from": "hosted_mcp", "to": "mcp_client", "y": 490, "label": "query_id, time series", "variant": "return" },
+    { "id": "characterize-return", "from": "mcp_client", "to": "loop", "y": 525, "label": "compact result: where the series steps", "variant": "return" },
 
-    { "id": "bubbleup-dispatch", "from": "loop", "to": "mcp_client", "y": 520, "label": "dispatch run_bubbleup on the anomalous selection" },
-    { "id": "bubbleup-call", "from": "mcp_client", "to": "hosted_mcp", "y": 555, "label": "run_bubbleup (query_pk, selection)" },
-    { "id": "bubbleup-result", "from": "hosted_mcp", "to": "mcp_client", "y": 590, "label": "columns ranked by shift", "variant": "return" },
-    { "id": "bubbleup-return", "from": "mcp_client", "to": "loop", "y": 625, "label": "compact result: candidate dimensions", "variant": "return" },
+    { "id": "bubbleup-dispatch", "from": "loop", "to": "mcp_client", "y": 580, "label": "dispatch run_bubbleup on the anomalous selection" },
+    { "id": "bubbleup-call", "from": "mcp_client", "to": "hosted_mcp", "y": 615, "label": "run_bubbleup (query_pk, selection)" },
+    { "id": "bubbleup-result", "from": "hosted_mcp", "to": "mcp_client", "y": 650, "label": "columns ranked by shift", "variant": "return" },
+    { "id": "bubbleup-return", "from": "mcp_client", "to": "loop", "y": 685, "label": "compact result: candidate dimensions", "variant": "return" },
 
-    { "id": "trace-dispatch", "from": "loop", "to": "mcp_client", "y": 680, "label": "dispatch get_trace on a representative span" },
-    { "id": "trace-call", "from": "mcp_client", "to": "hosted_mcp", "y": 715, "label": "get_trace (trace_id)" },
-    { "id": "trace-result", "from": "hosted_mcp", "to": "mcp_client", "y": 750, "label": "waterfall", "variant": "return" },
-    { "id": "trace-return", "from": "mcp_client", "to": "loop", "y": 785, "label": "compact result: span carrying the time", "variant": "return" },
+    { "id": "trace-dispatch", "from": "loop", "to": "mcp_client", "y": 740, "label": "dispatch get_trace on a representative span" },
+    { "id": "trace-call", "from": "mcp_client", "to": "hosted_mcp", "y": 775, "label": "get_trace (trace_id)" },
+    { "id": "trace-result", "from": "hosted_mcp", "to": "mcp_client", "y": 810, "label": "waterfall", "variant": "return" },
+    { "id": "trace-return", "from": "mcp_client", "to": "loop", "y": 845, "label": "compact result: span carrying the time", "variant": "return" },
 
-    { "id": "negation-dispatch", "from": "loop", "to": "mcp_client", "y": 840, "label": "dispatch run_query excluding the finding (!= or not-in on dims)" },
-    { "id": "negation-call", "from": "mcp_client", "to": "hosted_mcp", "y": 875, "label": "run_query, WHERE NOT the reported dims" },
-    { "id": "negation-result", "from": "hosted_mcp", "to": "mcp_client", "y": 910, "label": "outside traffic reads normal", "variant": "return" },
-    { "id": "negation-return", "from": "mcp_client", "to": "loop", "y": 945, "label": "compact result: negation holds", "variant": "return" },
+    { "id": "negation-dispatch", "from": "loop", "to": "mcp_client", "y": 900, "label": "dispatch run_query excluding the finding (!= or not-in on dims)" },
+    { "id": "negation-call", "from": "mcp_client", "to": "hosted_mcp", "y": 935, "label": "run_query, WHERE NOT the reported dims" },
+    { "id": "negation-result", "from": "hosted_mcp", "to": "mcp_client", "y": 970, "label": "outside traffic reads normal", "variant": "return" },
+    { "id": "negation-return", "from": "mcp_client", "to": "loop", "y": 1005, "label": "compact result: negation holds", "variant": "return" },
 
-    { "id": "submit", "from": "model", "to": "loop", "y": 1000, "label": "tool_use: submit_report", "variant": "emphasis" },
-    { "id": "validate-check", "from": "loop", "to": "validate", "y": 1035, "label": "check receipts rule and not_checked against the tool log" },
-    { "id": "validate-reject", "from": "validate", "to": "loop", "y": 1070, "label": "rejected: a query_id is not in the tool log", "variant": "dashed" },
-    { "id": "loop-reject", "from": "loop", "to": "model", "y": 1105, "label": "hold until the flagged claims are cleared", "variant": "dashed" },
-    { "id": "resubmit", "from": "model", "to": "loop", "y": 1140, "label": "tool_use: submit_report (revised)", "variant": "emphasis" },
-    { "id": "validate-recheck", "from": "loop", "to": "validate", "y": 1175, "label": "recheck against the tool log" },
-    { "id": "validate-pass", "from": "validate", "to": "loop", "y": 1210, "label": "receipts rule and not_checked pass", "variant": "return" }
+    { "id": "submit", "from": "model", "to": "loop", "y": 1060, "label": "tool_use: submit_report", "variant": "emphasis" },
+    { "id": "validate-check", "from": "loop", "to": "validate", "y": 1095, "label": "check receipts rule and not_checked against the tool log" },
+    { "id": "validate-reject", "from": "validate", "to": "loop", "y": 1130, "label": "rejected: a query_id is not in the tool log", "variant": "dashed" },
+    { "id": "loop-reject", "from": "loop", "to": "model", "y": 1165, "label": "hold until the flagged claims are cleared", "variant": "dashed" },
+    { "id": "resubmit", "from": "model", "to": "loop", "y": 1200, "label": "tool_use: submit_report (revised)", "variant": "emphasis" },
+    { "id": "validate-recheck", "from": "loop", "to": "validate", "y": 1235, "label": "recheck against the tool log" },
+    { "id": "validate-pass", "from": "validate", "to": "loop", "y": 1270, "label": "receipts rule and not_checked pass", "variant": "return" }
   ]
 }
