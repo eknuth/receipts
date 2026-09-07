@@ -76,8 +76,18 @@ The column before it is parked at `evals/results/r18-pass/full/`, and the mean t
 ahead of three commits on `main` (2ba4100, 4a2b286, 883b23e) that went at the same class of
 failure, and `total` carries the validator's 0.25 penalty. All three changed the validator, and
 two of them also changed the `not_checked` and `partially_checked` rules in the prompt, which
-leaves the investigation steps alone. Result directories are gitignored except for `runs.json`,
-so a clone has the code and the scenarios and not these cells.
+leaves the investigation steps alone.
+
+The steps, though, are not the whole of what the model reads. One of those commits, 4a2b286,
+changed a line it reads on every query. The `Queried so far` footer under each query result
+lists, from that commit on, the values a breakdown returned as well as the terms the query asked
+for, so the after column's model read a longer footer: 25 terms against 11 on the first
+`payments-stripe-v251-uswest` cell, and a median of 16.5 more per cell across the column. The
+footer is there for the `not_checked` list, and it also sits in the context the next query is
+chosen from, so it could have moved a query. This pass did not measure whether it did.
+
+Result directories are gitignored except for `runs.json`, so a clone has the code and the
+scenarios and not these cells.
 
 What isolates the method change is `outcome`. One grader commit landed between the two columns,
 0ca70f8, and it changes only how a run that filed nothing scores; every run in both columns
