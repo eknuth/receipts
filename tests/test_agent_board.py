@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
 from agent.board import (
     BoardResult,
     _find_existing,
@@ -24,6 +26,7 @@ from agent.board import (
     run_tag,
 )
 from agent.report import Evidence, Hypothesis, Report
+from agent.telemetry import Telemetry, disabled_run_trace
 
 FIXTURES = Path(__file__).parent / "fixtures" / "mcp"
 
@@ -321,14 +324,26 @@ async def test_find_existing_parses_both_rows_of_the_real_list_boards_fixture() 
 
     tagged = OneCallMCP()
     result = await _find_existing(
-        tagged, environment_slug="receipts-demo", name="receipts probe tagged", tag=None
+        tagged,
+        environment_slug="receipts-demo",
+        name="receipts probe tagged",
+        tag=None,
+        run_id="run-fake",
+        scenario_id="fake-scenario",
+        trace=disabled_run_trace(),
     )
     assert result == ("FAKEbrd0002x", None)
     assert tagged.calls == 1  # total_pages: 1 in the fixture, so no second page is fetched
 
     untagged = OneCallMCP()
     result2 = await _find_existing(
-        untagged, environment_slug="receipts-demo", name="receipts probe text only", tag=None
+        untagged,
+        environment_slug="receipts-demo",
+        name="receipts probe text only",
+        tag=None,
+        run_id="run-fake",
+        scenario_id="fake-scenario",
+        trace=disabled_run_trace(),
     )
     assert result2 == ("FAKEbrd0001x", None)
 
@@ -342,7 +357,13 @@ async def test_find_existing_with_the_real_empty_list_boards_fixture_finds_nothi
             return _Result(text=text)
 
     result = await _find_existing(
-        EmptyMCP(), environment_slug="receipts-demo", name="anything at all", tag=None
+        EmptyMCP(),
+        environment_slug="receipts-demo",
+        name="anything at all",
+        tag=None,
+        run_id="run-fake",
+        scenario_id="fake-scenario",
+        trace=disabled_run_trace(),
     )
     assert result is None
 
@@ -536,3 +557,87 @@ async def test_a_raising_call_is_recorded_and_never_raises() -> None:
 def test_board_result_is_a_dataclass_with_the_documented_fields() -> None:
     result = BoardResult(board_id="brd-1", board_url="https://x", created=True)
     assert result.error is None
+
+
+# --------------------------------------------------------------------------
+# Telemetry (R23, EDW-1370): create_board and list_boards as execute_tool
+# spans, with the scenario id kept off both
+# --------------------------------------------------------------------------
+
+
+async def test_create_board_and_list_boards_get_execute_tool_spans() -> None:
+    """A first `ensure_board` call for a run with no board yet: one
+    `list_boards` (nothing found) and one `create_board`, each traced."""
+    exporter = InMemorySpanExporter()
+    telemetry = Telemetry(exporter=exporter)
+    run_trace = telemetry.start_handoff("run-abcdef123456", conversation_id="conv-1")
+    mcp = FakeBoardMCP()
+
+    result = await ensure_board(
+        make_report(), mcp, environment_slug="receipts-demo", trace=run_trace
+    )
+    telemetry.flush()
+
+    assert result.created is True
+    spans = exporter.get_finished_spans()
+    list_spans = [s for s in spans if s.name == "execute_tool list_boards"]
+    create_spans = [s for s in spans if s.name == "execute_tool create_board"]
+    assert len(list_spans) == 1
+    assert len(create_spans) == 1
+    for span in list_spans + create_spans:
+        assert span.attributes["gen_ai.conversation.id"] == "conv-1"
+    assert list_spans[0].attributes["gen_ai.tool.name"] == "list_boards"
+    assert create_spans[0].attributes["gen_ai.tool.name"] == "create_board"
+
+
+async def test_create_board_span_never_carries_the_scenario_id() -> None:
+    """`board_name` puts `report.scenario_id` in `create_board`'s real
+    `name` argument by design (R12); the span must not carry it anywhere,
+    in the arguments or in the result, even though the real call to
+    Honeycomb still does (that call is unaffected by this test)."""
+    exporter = InMemorySpanExporter()
+    telemetry = Telemetry(exporter=exporter)
+    run_trace = telemetry.start_handoff("run-abcdef123456", conversation_id="conv-1")
+    mcp = FakeBoardMCP()
+    report = make_report(scenario_id="payments-stripe-v251-uswest")
+
+    result = await ensure_board(report, mcp, environment_slug="receipts-demo", trace=run_trace)
+    telemetry.flush()
+
+    # The real call still carries it: this test is about the span, not the wire.
+    _, create_args = next(call for call in mcp.calls if call[0] == "create_board")
+    assert "payments-stripe-v251-uswest" in create_args["name"]
+    assert result.created is True
+
+    spans = exporter.get_finished_spans()
+    create_span = next(s for s in spans if s.name == "execute_tool create_board")
+    for value in create_span.attributes.values():
+        assert "payments-stripe-v251-uswest" not in str(value)
+
+
+async def test_list_boards_span_never_carries_the_scenario_id_from_a_matching_row() -> None:
+    """A rerun where the board already exists: `list_boards`' real result
+    text has a row named after this run's board (which carries the scenario
+    id), and the span must not repeat it either."""
+    exporter = InMemorySpanExporter()
+    telemetry = Telemetry(exporter=exporter)
+    run_trace = telemetry.start_handoff("run-abcdef123456", conversation_id="conv-1")
+    report = make_report(scenario_id="payments-stripe-v251-uswest")
+    mcp = FakeBoardMCP(boards=[{"id": "brd-1", "name": board_name(report)}])
+
+    result = await ensure_board(report, mcp, environment_slug="receipts-demo", trace=run_trace)
+    telemetry.flush()
+
+    assert result.created is False
+    assert result.board_id == "brd-1"
+
+    spans = exporter.get_finished_spans()
+    list_span = next(s for s in spans if s.name == "execute_tool list_boards")
+    for value in list_span.attributes.values():
+        assert "payments-stripe-v251-uswest" not in str(value)
+
+
+async def test_ensure_board_with_no_trace_still_completes() -> None:
+    mcp = FakeBoardMCP()
+    result = await ensure_board(make_report(), mcp, environment_slug="receipts-demo")
+    assert result.created is True

@@ -98,7 +98,7 @@ from rich.markup import escape
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 from agent.auth import OAuthNotAuthorized, require_oauth_provider
-from agent.board import ensure_board
+from agent.board import BoardResult, ensure_board
 from agent.handoff import Handoff, hand_off
 from agent.loop import DEFAULT_MAX_CALLS, DEFAULT_MAX_WALL_S, AgentConfig, ScenarioRun, investigate
 from agent.mcp_client import HoneycombMCP, TokenBucket
@@ -665,7 +665,11 @@ async def run_one(
     Canvas. Every failure in that sequence, including the write session
     itself failing to open or close, is caught here and never reaches the
     caller: a handoff is a bolt-on record next to an already-graded run,
-    never a reason to change or fail it.
+    never a reason to change or fail it. `_hand_off_cell` (R23, EDW-1370)
+    gets this same `telemetry` and `conversation_id`, so the handoff's own
+    trace lands in the same Agent Timeline conversation as the
+    investigation that produced the report, as a second root span opened
+    after this one has already ended (see `Telemetry.start_handoff`).
     """
     telemetry = telemetry or Telemetry()
     conversation_id = f"{run.run_id}.{config_name}.{repeat}"
@@ -744,7 +748,15 @@ async def run_one(
         )
     write_run(directory, graded, report)
     if handoff and report is not None and not graded.crashed:
-        await _hand_off_cell(directory, report, settings, open_write_mcp, write_bucket)
+        await _hand_off_cell(
+            directory,
+            report,
+            settings,
+            open_write_mcp,
+            write_bucket,
+            telemetry=telemetry,
+            conversation_id=conversation_id,
+        )
     return graded
 
 
@@ -754,6 +766,9 @@ async def _hand_off_cell(
     settings: Settings,
     open_write_mcp: OpenMCP | None,
     write_bucket: TokenBucket | None = None,
+    *,
+    telemetry: Telemetry | None = None,
+    conversation_id: str | None = None,
 ) -> None:
     """Create or reuse the run's board and hand the report to Canvas.
 
@@ -774,18 +789,37 @@ async def _hand_off_cell(
     second copy of what that method does: an earlier version duplicated its
     body verbatim here, which left two places that had to agree on how a
     write session is built and no way to stop them drifting apart.
+
+    `telemetry` and `conversation_id` (R23, EDW-1370) open a second root
+    span, `invoke_agent canvas` (`Telemetry.start_handoff`), sharing
+    `conversation_id` with the investigation's own root so both land in the
+    same Agent Timeline conversation; see `agent/telemetry.py`'s
+    `start_handoff` for why this is a second root rather than a child of
+    that span, which has already ended by the time a handoff runs. With
+    neither given (a caller invoking this directly, as one test does), a
+    disabled `Telemetry()` and `report.run_id` stand in, the same fallback
+    `run_one` uses for `trace` and `conversation_id` elsewhere.
     """
+    telemetry = telemetry or Telemetry()
+    handoff_trace = telemetry.start_handoff(
+        report.run_id, conversation_id=conversation_id or report.run_id
+    )
     write_open = open_write_mcp or _SharedSessions(write_bucket).write
+    board: BoardResult | None = None
     try:
         async with write_open(settings) as write_session:
             board = await ensure_board(
-                report, write_session, environment_slug=settings.honeycomb_env
+                report,
+                write_session,
+                environment_slug=settings.honeycomb_env,
+                trace=handoff_trace,
             )
             result = await hand_off(
                 report,
                 write_session,
                 board_id=board.board_id,
                 board_url=board.board_url,
+                trace=handoff_trace,
             )
     except Exception as exc:
         logger.warning("handoff failed for %s: %s", report.run_id, exc)
@@ -794,8 +828,19 @@ async def _hand_off_cell(
             prompt="",
             status="error",
             classification="no_response",
+            board_id=board.board_id if board else None,
+            board_url=board.board_url if board else None,
             error=f"{type(exc).__name__}: {exc}",
         )
+    handoff_trace.end_with_handoff(
+        status=result.status,
+        classification=result.classification,
+        reply=result.raw_text,
+        board_id=result.board_id,
+        board_url=result.board_url,
+        error=result.error,
+        board_error=board.error if board else None,
+    )
     write_handoff(directory, result)
 
 

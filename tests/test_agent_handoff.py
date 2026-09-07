@@ -12,9 +12,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import StatusCode
 
 from agent.handoff import DEFAULT_DEADLINE_S, Handoff, classify, hand_off, render_message
 from agent.report import Evidence, Hypothesis, Report
+from agent.telemetry import Telemetry
 
 FIXTURES = Path(__file__).parent / "fixtures" / "mcp"
 
@@ -542,3 +545,119 @@ def test_handoff_is_a_pydantic_model_with_the_required_fields() -> None:
         "error",
     ):
         assert name in fields
+
+
+# --------------------------------------------------------------------------
+# Telemetry (R23, EDW-1370): the Canvas exchange as execute_tool spans
+# --------------------------------------------------------------------------
+
+
+def _handoff_trace(exporter: InMemorySpanExporter) -> Any:
+    telemetry = Telemetry(exporter=exporter)
+    return telemetry, telemetry.start_handoff("run-abcdef123456", conversation_id="conv-1")
+
+
+async def test_hand_off_wraps_both_canvas_calls_in_execute_tool_spans() -> None:
+    """`canvas_agent_invoke` and each `canvas_agent_poll_response` (one poll,
+    here) get their own `execute_tool` span, the same shape `agent/loop.py`'s
+    own calls get, carrying `gen_ai.tool.name` and the call's arguments."""
+    exporter = InMemorySpanExporter()
+    telemetry, run_trace = _handoff_trace(exporter)
+    mcp = FakeCanvasMCP()
+    mcp.queue("canvas_agent_invoke", INVOKE_RUNNING)
+    mcp.queue(
+        "canvas_agent_poll_response",
+        _Result(raw={"status": "completed", "chat": "I agree."}),
+    )
+
+    result = await hand_off(make_report(), mcp, trace=run_trace, clock=clock_sequence(0.0, 0.0))
+    run_trace.end_with_handoff(
+        status=result.status,
+        classification=result.classification,
+        reply=result.raw_text,
+        board_id=None,
+        board_url=None,
+    )
+    telemetry.flush()
+
+    spans = exporter.get_finished_spans()
+    invoke_spans = [s for s in spans if s.name == "execute_tool canvas_agent_invoke"]
+    poll_spans = [s for s in spans if s.name == "execute_tool canvas_agent_poll_response"]
+    assert len(invoke_spans) == 1
+    assert len(poll_spans) == 1
+    for span in invoke_spans + poll_spans:
+        assert span.attributes["gen_ai.operation.name"] == "execute_tool"
+        assert span.attributes["gen_ai.conversation.id"] == "conv-1"
+        assert span.attributes["gen_ai.tool.call.arguments"]
+    assert invoke_spans[0].attributes["gen_ai.tool.name"] == "canvas_agent_invoke"
+    assert poll_spans[0].attributes["gen_ai.tool.name"] == "canvas_agent_poll_response"
+    assert "receipts oauth smoke" not in invoke_spans[0].attributes["gen_ai.tool.call.arguments"]
+
+
+async def test_hand_off_with_multiple_polls_gets_one_span_per_poll() -> None:
+    exporter = InMemorySpanExporter()
+    telemetry, run_trace = _handoff_trace(exporter)
+    mcp = FakeCanvasMCP()
+    mcp.queue("canvas_agent_invoke", INVOKE_RUNNING)
+    mcp.queue(
+        "canvas_agent_poll_response",
+        _Result(raw={"status": "running"}),
+        _Result(raw={"status": "completed", "chat": "ok"}),
+    )
+
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    await hand_off(
+        make_report(),
+        mcp,
+        trace=run_trace,
+        clock=clock_sequence(0.0, 0.0, 0.0, 40.0),
+        sleep=no_sleep,
+    )
+    telemetry.flush()
+
+    spans = exporter.get_finished_spans()
+    poll_spans = [s for s in spans if s.name == "execute_tool canvas_agent_poll_response"]
+    assert len(poll_spans) == 2
+
+
+async def test_hand_off_with_no_trace_still_completes() -> None:
+    """The default (`trace=None`) is a disabled trace, the same fallback
+    `agent/loop.py`'s `investigate` uses; every other test in this file
+    calls `hand_off` this way, so this just names the contract."""
+    mcp = FakeCanvasMCP()
+    mcp.queue("canvas_agent_invoke", INVOKE_RUNNING)
+    mcp.queue("canvas_agent_poll_response", _Result(raw={"status": "completed", "chat": "ok"}))
+
+    result = await hand_off(make_report(), mcp, clock=clock_sequence(0.0, 0.0))
+
+    assert result.status == "completed"
+
+
+async def test_a_canvas_error_marks_the_poll_span_but_never_raises() -> None:
+    exporter = InMemorySpanExporter()
+    telemetry, run_trace = _handoff_trace(exporter)
+    mcp = FakeCanvasMCP()
+    mcp.queue("canvas_agent_invoke", INVOKE_RUNNING)
+    mcp.queue("canvas_agent_poll_response", RuntimeError("canvas is down"))
+
+    result = await hand_off(make_report(), mcp, trace=run_trace, clock=clock_sequence(0.0, 0.0))
+    run_trace.end_with_handoff(
+        status=result.status,
+        classification=result.classification,
+        reply=result.raw_text,
+        board_id=None,
+        board_url=None,
+        error=result.error,
+    )
+    telemetry.flush()
+
+    assert result.status == "error"
+    assert result.classification == "no_response"
+    spans = exporter.get_finished_spans()
+    poll_span = next(s for s in spans if s.name == "execute_tool canvas_agent_poll_response")
+    assert poll_span.status.status_code == StatusCode.ERROR
+    root = next(s for s in spans if s.name == "invoke_agent canvas")
+    assert root.status.status_code == StatusCode.ERROR
+    assert root.attributes["receipts.handoff.status"] == "error"

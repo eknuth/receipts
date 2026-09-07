@@ -51,6 +51,14 @@ the elapsed time around the call (against the same injectable `clock`) and
 sleeps (through an injectable `sleep`, defaulting to `asyncio.sleep`) only
 what is left of `wait_seconds`, so the repoll rate stays capped regardless
 of whether the server actually held the connection.
+
+R23 (EDW-1370) gives `hand_off` an optional `trace` (a `RunTrace` from
+`Telemetry.start_handoff`): both MCP calls this function makes go through
+`traced_call`, which wraps them in `RunTrace.tool_span`, the same
+`execute_tool` span shape `agent/loop.py`'s own calls get, so the exchange
+with Canvas shows up in Agent Timeline. `evals/run.py`'s `_hand_off_cell`
+still writes the classification, the reply, and the board's id and url onto
+the trace itself once this function returns; see `RunTrace.end_with_handoff`.
 """
 
 from __future__ import annotations
@@ -66,6 +74,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.report import Report
+from agent.telemetry import RunTrace, disabled_run_trace, traced_call
 
 logger = logging.getLogger(__name__)
 
@@ -372,6 +381,7 @@ async def hand_off(
     deadline_s: float = DEFAULT_DEADLINE_S,
     clock: ClockFn = time.monotonic,
     sleep: SleepFn = asyncio.sleep,
+    trace: RunTrace | None = None,
 ) -> Handoff:
     """Send `report`'s findings to Canvas and poll for its reply.
 
@@ -381,25 +391,34 @@ async def hand_off(
     `board_url` are carried straight onto the returned `Handoff`; this
     function does not create the board (`agent/board.py` does). `sleep` is
     injectable so a test can drive the whole deadline without a real wait,
-    the same reason `clock` is.
+    the same reason `clock` is. `trace` is the handoff's own `RunTrace`
+    (from `Telemetry.start_handoff`, R23); a disabled one when the caller
+    does not open telemetry, the same default `agent/loop.py`'s
+    `investigate` uses for the investigation's own trace.
 
     Never raises. Every failure mode this function can hit on its own
     (a call that raises, a status the docs do not name, the deadline
     expiring) becomes a `Handoff` with `classification == "no_response"`
     and, where there is one, a message in `error`.
     """
+    trace = trace or disabled_run_trace()
     prompt = render_message(report)
     deadline = clock() + deadline_s
 
     try:
-        invoke = await mcp.call(
+        invoke = await traced_call(
+            trace,
+            mcp,
             "canvas_agent_invoke",
             # `title` never carries `report.scenario_id`: CLAUDE.md keeps
             # `scenario.id` off the wire because its values read as
             # answers, and Canvas is the one agent whose reply gets scored
             # as a verdict on this investigation, so it is the last place
-            # that answer should leak.
+            # that answer should leak. The same reasoning is why nothing
+            # here, or in `RunTrace.end_with_handoff`, ever sets it as a
+            # span attribute either.
             {"prompt": prompt, "title": title or f"receipts {report.run_id}"},
+            f"{report.run_id}-canvas-invoke",
         )
     except Exception as exc:
         logger.warning("canvas_agent_invoke failed for %s: %s", report.run_id, exc)
@@ -456,6 +475,7 @@ async def hand_off(
             error=f"unexpected canvas_agent_invoke status {status!r}",
         )
 
+    poll_count = 0
     while True:
         poll_started = clock()
         remaining = deadline - poll_started
@@ -472,14 +492,18 @@ async def hand_off(
                 board_url=board_url,
             )
         wait_seconds = max(1, min(int(MAX_POLL_WAIT_S), int(remaining)))
+        poll_count += 1
         try:
-            poll = await mcp.call(
+            poll = await traced_call(
+                trace,
+                mcp,
                 "canvas_agent_poll_response",
                 {
                     "investigation_id": investigation_id,
                     "session_id": session_id,
                     "wait_seconds": wait_seconds,
                 },
+                f"{report.run_id}-canvas-poll-{poll_count}",
             )
         except Exception as exc:
             logger.warning("canvas_agent_poll_response failed for %s: %s", report.run_id, exc)
