@@ -93,6 +93,7 @@ def test_render_covers_every_section(tmp_path: Path) -> None:
             )
         ],
         validation_messages=["baseline_window: a note"],
+        rejections=["negation: excludes []"],
     )
     place(results, "full", r, 1)
     text = read_cell(results, "full", r.scenario_id, 1)
@@ -112,11 +113,20 @@ def test_render_covers_every_section(tmp_path: Path) -> None:
     assert "evidence [Q1] P99 180ms to 1100ms" in text
     assert "negation [Q2] P99 flat outside" in text
     assert "- validation: baseline_window: a note" in text
+    assert "- rejection 1: negation: excludes []" in text
     assert "eu-west-1 db.query is slow" in text
     assert "cart.size (over_time)" in text
     assert "customer.id, http.route" in text
     assert "[-] get_workspace_context {}" in text
     assert text.count("run_query CALC") == 3
+
+
+def test_render_shows_rejections_not_recorded_pre_edw_1369(tmp_path: Path) -> None:
+    results = tmp_path / "results"
+    r = report(rejections=None)
+    place(results, "full", r, 1)
+    text = read_cell(results, "full", r.scenario_id, 1)
+    assert "- rejections: not recorded (run predates EDW-1369)" in text
 
 
 def test_render_a_control_without_hypotheses(tmp_path: Path) -> None:

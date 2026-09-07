@@ -182,7 +182,7 @@ from the transcripts, and a test regenerates the tables and compares them byte f
 ## Status
 
 Built: the generator with ten scenarios, the investigator on three providers, the grader, the eval
-runner, self-telemetry into Agent Timeline, and the generated report. Next is EDW-1369: write the
-noise floor step's outside query as a `!=` or a `not-in` so it is the query the receipts rule
-already accepts, and persist every validator rejection in `report.json` instead of only the
-second one.
+runner, self-telemetry into Agent Timeline, the generated report, and EDW-1369, which writes the
+noise floor step's outside query as the `!=` or `not-in` spelling the receipts rule already
+accepts and persists every validator rejection in `report.json`, not only the last one. What is
+left by the build order is R11 Bedrock and R12 Canvas, both droppable.

@@ -135,6 +135,11 @@ def render(grade: GradedRun, report: Report | None) -> str:
     )
     for message in report.validation_messages:
         out.append(f"- validation: {message}")
+    if report.rejections is None:
+        out.append("- rejections: not recorded (run predates EDW-1369)")
+    else:
+        for i, message in enumerate(report.rejections, 1):
+            out.append(f"- rejection {i}: {message}")
     out.append("")
     out.append("## Hypotheses")
     out.append("")

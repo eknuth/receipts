@@ -17,13 +17,14 @@ every before-and-after pass since EDW-1364. Every number is read from a
 from __future__ import annotations
 
 import argparse
+import re
 import statistics
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from agent.report import Report, load_report
+from agent.report import SCHEMA_REJECTION, Report, load_report
 from evals.report import RESULTS_DIR
 from evals.run import GradedRun
 
@@ -101,14 +102,40 @@ def moved_cells(
     return sorted(out, key=lambda item: -abs(item[2] - item[1]))
 
 
-def validation_classes(cells: dict[CellKey, Cell]) -> dict[str, int]:
-    """Validation messages in a column by their code, the text before the first colon."""
+_ISSUE_CODE = re.compile(r"^ {0,2}([a-z][a-z0-9_]*): ", re.MULTILINE)
+"""`agent.validate.Issue.__str__` renders one issue as `code: message` on its
+own line, indented two spaces inside `rejection_message`'s wrapping prose; a
+message with no such line (or a schema rejection, which has none) has no code
+to count under."""
+
+
+def _codes_in_message(message: str) -> list[str]:
+    """The rule codes named in one rejection message, one per issue line."""
+    if message.startswith(SCHEMA_REJECTION):
+        return ["schema"]
+    return _ISSUE_CODE.findall(message)
+
+
+def validation_classes(
+    cells: dict[CellKey, Cell], *, field: str = "validation_messages"
+) -> dict[str, int]:
+    """Rule codes named in a column's `field` (`validation_messages` or `rejections`).
+
+    `validation_messages` only ever holds a run's *last* rejection, the one
+    that was kept and flagged; `rejections` holds every attempt, fixed or
+    not (`None` on a run recorded before EDW-1369, skipped rather than
+    counted as zero).
+    """
     counts: dict[str, int] = defaultdict(int)
     for cell in cells.values():
         if cell.report is None:
             continue
-        for message in cell.report.validation_messages:
-            counts[message.split(":", 1)[0].strip()] += 1
+        messages = getattr(cell.report, field)
+        if messages is None:
+            continue
+        for message in messages:
+            for code in _codes_in_message(message):
+                counts[code] += 1
     return dict(sorted(counts.items()))
 
 
@@ -199,6 +226,19 @@ def render(
         )
     else:
         out.append("none in either column")
+    out.append("")
+    out.append("## Every rejection by code (fixed or not, EDW-1369)")
+    out.append("")
+    rb = validation_classes(before, field="rejections")
+    ra = validation_classes(after, field="rejections")
+    rcodes = sorted(set(rb) | set(ra))
+    if rcodes:
+        out += _table(
+            ["code", "before", "after"],
+            [[c, str(rb.get(c, 0)), str(ra.get(c, 0))] for c in rcodes],
+        )
+    else:
+        out.append("none recorded in either column")
     return "\n".join(out) + "\n"
 
 

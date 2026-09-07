@@ -105,6 +105,41 @@ def test_validation_classes_and_controls(tree: Path) -> None:
     assert rows == [[f"{CONTROL.id}/1", "True", "1", "medium", rows[0][4], "report"]]
 
 
+def test_validation_classes_reads_every_code_out_of_the_wrapped_prose(tmp_path: Path) -> None:
+    """EDW-1369: `rejection_message` wraps every rejected attempt's issues in
+    intro and outro prose, one `code: message` line per issue. Splitting the
+    whole message on its first colon (the old approach) reads the intro
+    sentence as the code; this reads the indented per-issue lines instead, and
+    does it for `rejections` (every attempt) as well as `validation_messages`
+    (the last one)."""
+    results = tmp_path / "results"
+    wrapped = (
+        "The report was rejected. Every claim in it is checked against the log of the tool "
+        "calls you made in this session, and these did not hold up:\n\n"
+        "  partially_checked_contradicted: partially_checked entry for 'cloud.region' claims "
+        "reading per_value, but a query broke down on it.\n"
+        "  not_checked_false: not_checked entry 'exception.type' names a column your own "
+        "queries used.\n\n"
+        "Fix the report and call submit_report again.\n\n"
+        "Columns and values your queries used: cloud.region, exception.type"
+    )
+    place(results, "full", report(rejections=[wrapped, "negation: excludes []"]), 1)
+    after = load_column(results, "full")
+    assert validation_classes(after, field="rejections") == {
+        "negation": 1,
+        "not_checked_false": 1,
+        "partially_checked_contradicted": 1,
+    }
+    assert validation_classes(after) == {}
+
+
+def test_render_includes_the_rejections_table(tree: Path) -> None:
+    before, after = load_column(tree, "before/full"), load_column(tree, "full")
+    text = render("before/full", "full", before, after)
+    assert "## Every rejection by code (fixed or not, EDW-1369)" in text
+    assert "none recorded in either column" in text
+
+
 def test_render_is_a_pure_function_of_the_tree(tree: Path) -> None:
     before, after = load_column(tree, "before/full"), load_column(tree, "full")
     text = render("before/full", "full", before, after)
