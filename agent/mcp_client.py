@@ -99,11 +99,19 @@ READ_TOOLS: frozenset[str] = frozenset(
 )
 
 # Write tools, R12 (boards and Canvas). Need the `mcp:write` key scope on
-# the server side and `allow_write=True` here.
+# the server side and `allow_write=True` here. This is deliberately exactly
+# the two tools R12 uses to write, not everything the key can now reach: the
+# management key was widened to `mcp:write` on 2026-09-07 and the hosted
+# server started serving `update_board`, `create_trigger`, `create_slo`,
+# `create_recipient`, and `create_marker` alongside it. None of those five
+# are here, and none are in READ_TOOLS either, so `_allowed` refuses every
+# one of them regardless of `allow_write`: R12's scope is a board and a
+# Canvas message, not triggers, SLOs, recipients, or markers, and a wider
+# key must not silently widen what this client will call. `list_boards` and
+# `canvas_agent_poll_response` are reads and live in READ_TOOLS instead.
 WRITE_TOOLS: frozenset[str] = frozenset(
     {
         "create_board",
-        "update_board",
         "canvas_agent_invoke",
     }
 )

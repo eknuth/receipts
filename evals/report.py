@@ -23,17 +23,35 @@ first render.
 A `grade.json` the current schema cannot read is listed at the end of the
 report by path instead of stopping the render, since repeats append across
 schema changes and an old file next to a new one is the expected shape.
+
+R12 (EDW-1334) adds one more section, read from `handoff.json` rather than
+`grade.json`: a `--handoff` run hands its report to Canvas after grading and
+records the reply next to the grade, and this renders the agree, disagree,
+extend, and no-response counts per scenario and config, plus a link to the
+board. `render` takes the handoffs as a plain sequence, the same as it takes
+`runs`, so the section is exercised without touching disk; `write_report` is
+the only thing that reads `evals/results/` for it. No cell in the results
+directory has ever carried a `handoff.json` before this, so an empty list
+here (the normal case for every column so far) renders no section at all,
+and every existing table is untouched by its presence.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+from collections import Counter
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from statistics import fmean
 
+from agent.handoff import Handoff
 from evals.run import CONFIGS, RESULTS_DIR, GradedRun, load_run
+
+# (config, scenario_id, Handoff): the two path components `read_handoffs`
+# reads off `<config>/<scenario>/<n>/handoff.json`'s location, since `Handoff`
+# itself carries only `run_id`, not which cell of the matrix it came from.
+HandoffEntry = tuple[str, str, Handoff]
 
 REPORT_PATH = Path(__file__).resolve().parent / "report.md"
 
@@ -85,6 +103,30 @@ def load_results(results_dir: Path = RESULTS_DIR) -> list[GradedRun]:
     return read_results(results_dir)[0]
 
 
+def read_handoffs(results_dir: Path = RESULTS_DIR) -> list[HandoffEntry]:
+    """Every `handoff.json` under `<config>/<scenario>/<n>/`, sorted by path.
+
+    Read separately from `read_results`: a `handoff.json` sits next to a
+    `grade.json` written by the same `--handoff` run, but the two files
+    are independent (see `evals/run.py`'s `_hand_off_cell`), so one missing
+    or unreadable never stops the other from rendering. An entry the current
+    schema cannot read is skipped rather than raising, the same as an
+    unreadable `grade.json` is skipped by `read_results`, just without a
+    line in the report: a Canvas transcript is a courtesy, not a number the
+    reader is owed an accounting of.
+    """
+    entries: list[HandoffEntry] = []
+    for path in sorted(results_dir.glob("*/*/*/handoff.json")):
+        config = path.parent.parent.parent.name
+        scenario_id = path.parent.parent.name
+        try:
+            handoff = Handoff.model_validate_json(path.read_text())
+        except (ValueError, OSError):
+            continue
+        entries.append((config, scenario_id, handoff))
+    return entries
+
+
 def config_order(name: str) -> tuple[int, str]:
     """Known configs in `CONFIGS` order, `full` first; anything else after, alphabetically."""
     known = list(CONFIGS)
@@ -125,7 +167,11 @@ def _column_cell(runs: Sequence[GradedRun], config: str, provider: str | None) -
     ]
 
 
-def render(runs: Sequence[GradedRun], unreadable: Sequence[str] = ()) -> str:
+def render(
+    runs: Sequence[GradedRun],
+    unreadable: Sequence[str] = (),
+    handoffs: Sequence[HandoffEntry] = (),
+) -> str:
     """The whole report as Markdown."""
     lines: list[str] = [
         "# Eval report",
@@ -151,6 +197,7 @@ def render(runs: Sequence[GradedRun], unreadable: Sequence[str] = ()) -> str:
     ]
     if not runs:
         lines += ["No runs found.", ""]
+        lines += _handoff_section(handoffs)
         lines += _unreadable_section(unreadable)
         return "\n".join(lines)
 
@@ -318,8 +365,58 @@ def render(runs: Sequence[GradedRun], unreadable: Sequence[str] = ()) -> str:
         ]
         lines.append(_row(row))
     lines.append("")
+    lines += _handoff_section(handoffs)
     lines += _unreadable_section(unreadable)
     return "\n".join(lines)
+
+
+def _handoff_section(handoffs: Sequence[HandoffEntry]) -> list[str]:
+    """The `--handoff` (R12) summary: one row per (scenario, config) that ran
+    with it, empty (and so invisible in the rendered file) when nothing did.
+
+    A scenario's repeats, and every config, investigate the same run id (one
+    emit serves the whole matrix), so `ensure_board` gives them all the same
+    board; the `board` column shows the first one found in the group rather
+    than repeating an identical link once per repeat.
+    """
+    if not handoffs:
+        return []
+    lines = [
+        "## Canvas handoffs",
+        "",
+        "One row per scenario and config that ran with `--handoff`: how many of its runs' "
+        "Canvas replies classified as each of `agree`, `disagree`, and `extend`, and how many "
+        "got no reply at all (`no response`: a timeout, an error, or a busy server; see "
+        "`agent/handoff.py`'s `classify`). `board` links the board created for the run id "
+        "this row's cells share; every repeat and every config investigates the same run id, "
+        "so it is the same board across a scenario's whole row group.",
+        "",
+    ]
+    header = ["scenario", "config", "agree", "disagree", "extend", "no response", "board"]
+    lines.append(_row(header))
+    lines.append(_row(["---"] * len(header)))
+    groups: dict[tuple[str, str], list[Handoff]] = {}
+    for config, scenario_id, handoff in handoffs:
+        groups.setdefault((scenario_id, config), []).append(handoff)
+    for scenario_id, config in sorted(groups, key=lambda pair: (pair[0], config_order(pair[1]))):
+        group = groups[(scenario_id, config)]
+        counts = Counter(item.classification for item in group)
+        board_url = next((item.board_url for item in group if item.board_url), None)
+        lines.append(
+            _row(
+                [
+                    scenario_id,
+                    config,
+                    str(counts["agree"]),
+                    str(counts["disagree"]),
+                    str(counts["extend"]),
+                    str(counts["no_response"]),
+                    f"[board]({board_url})" if board_url else "",
+                ]
+            )
+        )
+    lines.append("")
+    return lines
 
 
 def _unreadable_section(unreadable: Sequence[str]) -> list[str]:
@@ -598,7 +695,8 @@ def _escape(text: str) -> str:
 
 def write_report(results_dir: Path = RESULTS_DIR, path: Path = REPORT_PATH) -> Path:
     runs, unreadable = read_results(results_dir)
-    path.write_text(render(runs, unreadable))
+    handoffs = read_handoffs(results_dir)
+    path.write_text(render(runs, unreadable, handoffs))
     return path
 
 

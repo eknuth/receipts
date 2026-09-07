@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import subprocess
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -1218,3 +1219,188 @@ def test_regrade_via_the_cli_says_so_when_nothing_changed(
         == 0
     )
     assert "no grades changed" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------
+# --handoff (R12, EDW-1334)
+# --------------------------------------------------------------------------
+
+
+@dataclass
+class _WriteResult:
+    raw: Any
+    text: str = ""
+    is_error: bool = False
+
+
+@dataclass
+class FakeWriteMCP:
+    """Enough of a write-capable HoneycombMCP for `agent/board.py` and
+    `agent/handoff.py`: `list_boards`, `create_board`, `canvas_agent_invoke`,
+    and `canvas_agent_poll_response`, answered from fixed, successful
+    responses. `boards` starts empty so the first `ensure_board` call always
+    creates one."""
+
+    boards: list[dict[str, Any]] = field(default_factory=list)
+    reply: str = "I agree with this."
+    calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    created_count: int = 0
+
+    async def call(self, name: str, args: dict[str, Any] | None = None, **kwargs: Any) -> Any:
+        self.calls.append((name, dict(args or {})))
+        if name == "list_boards":
+            return _WriteResult(raw={"boards": list(self.boards)})
+        if name == "create_board":
+            self.created_count += 1
+            board = {
+                "id": f"brd-{self.created_count}",
+                "url": f"https://ui.honeycomb.io/team/boards/brd-{self.created_count}",
+                "name": (args or {})["name"],
+            }
+            self.boards.append(board)
+            return _WriteResult(raw=board)
+        if name == "canvas_agent_invoke":
+            return _WriteResult(
+                raw={
+                    "status": "running",
+                    "session_id": "sess-1",
+                    "investigation_id": "hcciv_1",
+                    "investigation_url": "https://ui.honeycomb.io/team/canvas/1",
+                }
+            )
+        if name == "canvas_agent_poll_response":
+            return _WriteResult(raw={"status": "completed", "response": self.reply})
+        raise AssertionError(f"unexpected call to {name!r}")
+
+
+class FakeWriteSession:
+    """`async with open_write_mcp(settings) as session`, yielding a FakeWriteMCP."""
+
+    def __init__(self, mcp: FakeWriteMCP | None = None) -> None:
+        self.mcp = mcp or FakeWriteMCP()
+
+    async def __aenter__(self) -> FakeWriteMCP:
+        return self.mcp
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+
+async def test_handoff_writes_a_handoff_json_next_to_grade_json(
+    settings: Settings, results_dir: Path, runs_dir: Path
+) -> None:
+    write_session = FakeWriteSession()
+    results = await run(
+        [PAYMENTS],
+        ["full"],
+        1,
+        settings=settings,
+        results_dir=results_dir,
+        runs_dir=runs_dir,
+        provider_factory=factory([lambda: FakeProvider(good_script())]),
+        handoff=True,
+        open_write_mcp=lambda settings: write_session,
+    )
+    assert results[0].total == results[0].total  # the grade itself is untouched by handoff
+
+    handoff_path = run_dir(results_dir, "full", PAYMENTS, 1) / "handoff.json"
+    assert handoff_path.exists()
+    data = json.loads(handoff_path.read_text())
+    assert data["classification"] == "agree"
+    assert data["raw_text"] == "I agree with this."
+    assert data["status"] == "completed"
+    assert data["board_id"] == "brd-1"
+    assert data["board_url"] == "https://ui.honeycomb.io/team/boards/brd-1"
+    assert data["prompt"]  # the message that was sent is kept too
+
+
+async def test_without_the_handoff_flag_no_handoff_json_is_written(
+    settings: Settings, results_dir: Path, runs_dir: Path
+) -> None:
+    await run(
+        [PAYMENTS],
+        ["full"],
+        1,
+        settings=settings,
+        results_dir=results_dir,
+        runs_dir=runs_dir,
+        provider_factory=factory([lambda: FakeProvider(good_script())]),
+    )
+    assert not (run_dir(results_dir, "full", PAYMENTS, 1) / "handoff.json").exists()
+
+
+async def test_handoff_does_not_create_a_second_board_for_a_second_repeat_of_the_same_run(
+    settings: Settings, results_dir: Path, runs_dir: Path
+) -> None:
+    """Repeats of one scenario share a run id (one emit serves every repeat),
+    so the board they hand off to should be the one board, not one per repeat."""
+    write_session = FakeWriteSession()
+    await run(
+        [PAYMENTS],
+        ["full"],
+        2,
+        settings=settings,
+        results_dir=results_dir,
+        runs_dir=runs_dir,
+        provider_factory=factory([lambda: FakeProvider(good_script())] * 2),
+        handoff=True,
+        open_write_mcp=lambda settings: write_session,
+    )
+    assert write_session.mcp.created_count == 1
+    first = json.loads((run_dir(results_dir, "full", PAYMENTS, 1) / "handoff.json").read_text())
+    second = json.loads((run_dir(results_dir, "full", PAYMENTS, 2) / "handoff.json").read_text())
+    assert first["board_id"] == second["board_id"] == "brd-1"
+
+
+async def test_a_crashed_run_gets_no_handoff_json(
+    settings: Settings, results_dir: Path, runs_dir: Path
+) -> None:
+    write_session = FakeWriteSession()
+    await run(
+        [PAYMENTS],
+        ["full"],
+        1,
+        settings=settings,
+        results_dir=results_dir,
+        runs_dir=runs_dir,
+        provider_factory=factory([RaisingProvider]),
+        handoff=True,
+        open_write_mcp=lambda settings: write_session,
+    )
+    assert not (run_dir(results_dir, "full", PAYMENTS, 1) / "handoff.json").exists()
+    assert write_session.mcp.calls == []  # never even opened for a crash
+
+
+async def test_a_failing_write_session_still_records_a_handoff_and_never_raises(
+    settings: Settings, results_dir: Path, runs_dir: Path
+) -> None:
+    class RaisingWriteSession:
+        async def __aenter__(self) -> Any:
+            raise RuntimeError("write session could not open")
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    results = await run(
+        [PAYMENTS],
+        ["full"],
+        1,
+        settings=settings,
+        results_dir=results_dir,
+        runs_dir=runs_dir,
+        provider_factory=factory([lambda: FakeProvider(good_script())]),
+        handoff=True,
+        open_write_mcp=lambda settings: RaisingWriteSession(),
+    )
+    assert results[0].error is None  # the run itself is unaffected
+    data = json.loads((run_dir(results_dir, "full", PAYMENTS, 1) / "handoff.json").read_text())
+    assert data["status"] == "error"
+    assert data["classification"] == "no_response"
+    assert "write session could not open" in data["error"]
+
+
+def test_handoff_flag_is_off_by_default_in_the_cli() -> None:
+    from evals.run import _parse_args
+
+    args = _parse_args(["--scenarios", "all"])
+    assert args.handoff is False

@@ -97,6 +97,8 @@ from rich.console import Console
 from rich.markup import escape
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
+from agent.board import ensure_board
+from agent.handoff import Handoff, hand_off
 from agent.loop import DEFAULT_MAX_CALLS, DEFAULT_MAX_WALL_S, AgentConfig, ScenarioRun, investigate
 from agent.mcp_client import HoneycombMCP, TokenBucket
 from agent.providers.base import Provider
@@ -444,6 +446,14 @@ def write_run(directory: Path, graded: GradedRun, report: Report | None) -> Path
     return path
 
 
+def write_handoff(directory: Path, handoff: Handoff) -> Path:
+    """Write `handoff.json` next to `grade.json`. Only called with `--handoff`."""
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "handoff.json"
+    path.write_text(handoff.model_dump_json(indent=2) + "\n")
+    return path
+
+
 def grade_stored(
     directory: Path, config: str, repeat: int, *, runs_dir: Path = RUNS_DIR
 ) -> GradedRun:
@@ -586,6 +596,17 @@ class _SharedSessions:
     def __call__(self, settings: Settings) -> HoneycombMCP:
         return HoneycombMCP(settings=settings, bucket=self.bucket)
 
+    def write(self, settings: Settings) -> HoneycombMCP:
+        """A write-capable session sharing this matrix's token bucket.
+
+        Opened only for `--handoff` (R12) cells, and only for the board and
+        Canvas calls that come after an investigation's own read-only
+        session has already closed: the model itself is never offered a
+        write tool (see `agent/loop.py`'s `INVESTIGATION_TOOLS`), so this is
+        the one place in the matrix `allow_write=True` appears.
+        """
+        return HoneycombMCP(settings=settings, allow_write=True, bucket=self.bucket)
+
 
 async def run_one(
     *,
@@ -602,6 +623,8 @@ async def run_one(
     clock: Callable[[], float] = time.monotonic,
     on_call: Callable[[int], None] | None = None,
     telemetry: Telemetry | None = None,
+    handoff: bool = False,
+    open_write_mcp: OpenMCP | None = None,
 ) -> GradedRun:
     """One investigation, graded and written. Never raises for the run's own failure.
 
@@ -618,6 +641,16 @@ async def run_one(
     investigation and this is what names the investigation. A dot, not a
     slash: a live check found a `/` in the id broke the Agent Timeline's
     Traces panel.
+
+    `handoff` (R12, EDW-1334) runs strictly after grading, and only for a
+    cell that produced a graded (not crashed) report: a crash has nothing
+    worth handing to Canvas. It opens its own `open_write_mcp` session,
+    separate from the read-only `open_mcp` session the investigation used,
+    creates or reuses the run's board, and sends the top hypothesis to
+    Canvas. Every failure in that sequence, including the write session
+    itself failing to open or close, is caught here and never reaches the
+    caller: a handoff is a bolt-on record next to an already-graded run,
+    never a reason to change or fail it.
     """
     telemetry = telemetry or Telemetry()
     conversation_id = f"{run.run_id}.{config_name}.{repeat}"
@@ -695,7 +728,47 @@ async def run_one(
             file=sys.stderr,
         )
     write_run(directory, graded, report)
+    if handoff and report is not None and not graded.crashed:
+        await _hand_off_cell(directory, report, settings, open_write_mcp)
     return graded
+
+
+async def _hand_off_cell(
+    directory: Path,
+    report: Report,
+    settings: Settings,
+    open_write_mcp: OpenMCP | None,
+) -> None:
+    """Create or reuse the run's board and hand the report to Canvas.
+
+    Wrapped in its own `try` so a failure here (opening the write session,
+    `ensure_board`, `hand_off`, or writing the file) never turns a graded
+    run into a crash; `ensure_board` and `hand_off` already carry their own
+    failures on the value they return, so the only exceptions this needs to
+    catch are the write session's own `__aenter__`/`__aexit__`.
+    """
+    write_open = open_write_mcp or (lambda s: HoneycombMCP(settings=s, allow_write=True))
+    try:
+        async with write_open(settings) as write_session:
+            board = await ensure_board(
+                report, write_session, environment_slug=settings.honeycomb_env
+            )
+            result = await hand_off(
+                report,
+                write_session,
+                board_id=board.board_id,
+                board_url=board.board_url,
+            )
+    except Exception as exc:
+        logger.warning("handoff failed for %s: %s", report.run_id, exc)
+        result = Handoff(
+            run_id=report.run_id,
+            prompt="",
+            status="error",
+            classification="no_response",
+            error=f"{type(exc).__name__}: {exc}",
+        )
+    write_handoff(directory, result)
 
 
 def _error_type(error: str | None) -> str:
@@ -735,6 +808,8 @@ async def run_matrix(
     console: Console | None = None,
     telemetry: Telemetry | None = None,
     resume: bool = False,
+    handoff: bool = False,
+    open_write_mcp: OpenMCP | None = None,
 ) -> list[GradedRun]:
     """Run every cell in order and return the graded runs, one per cell.
 
@@ -758,10 +833,22 @@ async def run_matrix(
     for and never graded, so it is graded from the stored report and not
     run again. Skipped cells are not re-run, not re-graded, and not in the
     returned list, since the report reads them from disk anyway.
+
+    `handoff` (R12) hands each cell's graded report to Canvas after it is
+    written; off by default, so the matrix behaves exactly as it did before
+    R12 unless a caller asks for it. `open_write_mcp` is the session
+    `agent/board.py` and `agent/handoff.py` write through; left unset, and
+    `open_mcp` is the default `_SharedSessions`, it shares that instance's
+    token bucket the same way the read-only sessions do, so a matrix run
+    with `--handoff` still stays under the one team-wide rate limit.
     """
     index_path = index_path or results_dir / "runs.json"
     console = console or Console()
     open_mcp = open_mcp or _SharedSessions()
+    if handoff and open_write_mcp is None:
+        open_write_mcp = (
+            open_mcp.write if isinstance(open_mcp, _SharedSessions) else _SharedSessions().write
+        )
     telemetry = telemetry or Telemetry()
     index = RunIndex.load(index_path)
 
@@ -832,6 +919,8 @@ async def run_matrix(
             clock=clock,
             on_call=on_call,
             telemetry=telemetry,
+            handoff=handoff,
+            open_write_mcp=open_write_mcp,
         )
         progress.remove_task(task)
         results.append(graded)
@@ -983,6 +1072,15 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "no scenarios or configs, no investigation runs, nothing spent"
         ),
     )
+    parser.add_argument(
+        "--handoff",
+        action="store_true",
+        help=(
+            "after grading, hand each cell's report to Canvas and create or reuse its board "
+            "(R12); writes handoff.json next to grade.json. Off by default. Not applied to a "
+            "cell --resume skips or grades from a stored report.json"
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -1066,6 +1164,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 console=console,
                 telemetry=telemetry,
                 resume=args.resume,
+                handoff=args.handoff,
             )
         )
     except (FileNotFoundError, ValueError) as exc:
