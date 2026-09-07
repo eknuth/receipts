@@ -769,14 +769,13 @@ async def _hand_off_cell(
     an earlier version did. `run_matrix` always resolves `open_write_mcp`
     before a `--handoff` cell reaches here, so this fallback is normally
     exercised only by a caller that invokes `run_one` directly.
+
+    The fallback is `_SharedSessions(write_bucket).write` itself, not a
+    second copy of what that method does: an earlier version duplicated its
+    body verbatim here, which left two places that had to agree on how a
+    write session is built and no way to stop them drifting apart.
     """
-    write_open = open_write_mcp or (
-        lambda s: HoneycombMCP(
-            settings=s.model_copy(update={"honeycomb_auth": "oauth"}),
-            allow_write=True,
-            bucket=write_bucket,
-        )
-    )
+    write_open = open_write_mcp or _SharedSessions(write_bucket).write
     try:
         async with write_open(settings) as write_session:
             board = await ensure_board(

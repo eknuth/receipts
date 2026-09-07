@@ -8,6 +8,7 @@ with `os.stat`, not by trusting `FileTokenStorage`'s own claim.
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 import time
@@ -128,6 +129,45 @@ def test_read_status_with_nothing_stored_has_no_tokens() -> None:
     assert status.tokens is None
     assert status.expires_at is None
     assert status.client is None
+
+
+def test_a_malformed_tokens_block_reads_as_no_token_on_file(tmp_path: Path) -> None:
+    """A hand-edited or corrupted token file whose `tokens` block fails
+    pydantic validation (an `access_token` that is a number, a `token_type`
+    that is a list) used to raise `ValidationError` straight out of
+    `read_status`, and from there out of `require_oauth_provider` and
+    `evals.run.main`: exit 1, a stack trace, no login command named. It must
+    read the same as no token on file at all."""
+    path = tmp_path / "honeycomb_oauth.json"
+    path.write_text(json.dumps({"tokens": {"access_token": 5, "token_type": []}}))
+
+    status = FileTokenStorage(path).read_status()
+
+    assert status.tokens is None
+
+
+async def test_get_tokens_on_a_malformed_tokens_block_returns_none_not_an_exception(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "honeycomb_oauth.json"
+    path.write_text(json.dumps({"tokens": {"access_token": 5, "token_type": []}}))
+
+    assert await FileTokenStorage(path).get_tokens() is None
+
+
+async def test_require_oauth_provider_names_login_on_a_malformed_tokens_block(
+    tmp_path: Path,
+) -> None:
+    """The same clear, actionable message a missing token file gets, not a
+    `pydantic.ValidationError` escaping to the caller."""
+    settings = make_settings(tmp_path)
+    settings.honeycomb_oauth_token_path.write_text(
+        json.dumps({"tokens": {"access_token": 5, "token_type": []}})
+    )
+
+    with pytest.raises(OAuthNotAuthorized) as excinfo:
+        await require_oauth_provider(settings)
+    assert "agent.auth login" in str(excinfo.value)
 
 
 # --------------------------------------------------------------------------

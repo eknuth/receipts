@@ -478,6 +478,51 @@ async def test_a_list_boards_error_never_falls_through_to_create_board() -> None
     assert second.error == "rate limited"
 
 
+async def test_an_unparseable_but_nonempty_listing_never_falls_through_to_create_board() -> None:
+    """`is_error=False` and `total_items > 0` are not proof the listing was
+    readable: a `# Boards` table with unexpected headers (`Id | Title`
+    instead of the documented `ID`/`Name`) parses to zero usable rows, and
+    an earlier version of `_find_existing` read that the same as a genuinely
+    empty listing, returning "not found" and letting `ensure_board` mint a
+    duplicate. `total_items` says the server thinks there is a board here;
+    with no row this function could check `name` against, it must report a
+    failed lookup instead of a miss."""
+    text = (
+        "# Boards\n\n"
+        "| Id | Title |\n"
+        "| --- | --- |\n"
+        "| brd-x | receipts payments-stripe-v251-uswest run-abcdef123456 |\n\n"
+        "---\nMetadata:\n"
+        "  environment: receipts-demo\n"
+        "  items_per_page: 25\n"
+        "  page: 1\n"
+        "  total_items: 1\n"
+        "  total_pages: 1\n"
+    )
+
+    @dataclass
+    class UnparseableListMCP:
+        list_calls: int = 0
+        create_calls: int = 0
+
+        async def call(self, name: str, args: dict[str, Any] | None = None, **kwargs: Any) -> Any:
+            if name == "list_boards":
+                self.list_calls += 1
+                return _Result(text=text)
+            if name == "create_board":
+                self.create_calls += 1
+                return _Result(text="should never be called")
+            raise AssertionError(f"unexpected call to {name!r}")
+
+    mcp = UnparseableListMCP()
+    result = await ensure_board(make_report(), mcp, environment_slug="receipts-demo")
+
+    assert mcp.create_calls == 0
+    assert result.created is False
+    assert result.board_id is None
+    assert result.error is not None
+
+
 async def test_a_raising_call_is_recorded_and_never_raises() -> None:
     class RaisingMCP:
         async def call(self, name: str, args: dict[str, Any] | None = None, **kwargs: Any) -> Any:

@@ -1554,6 +1554,32 @@ def test_handoff_with_no_oauth_token_fails_fast_and_names_the_login_command(
     assert not (tmp_path / "results").exists()  # the matrix never started
 
 
+def test_handoff_with_a_malformed_token_file_fails_the_same_clear_way_as_missing(
+    tmp_path: Path,
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A token file whose `tokens` block fails pydantic validation (an
+    `access_token` that is a number, say) used to raise `ValidationError`
+    out of `main`: exit 1, a stack trace, no login command named. It must
+    fail the same way a missing token file does: exit 2, no matrix run, the
+    login command named."""
+    token_path = tmp_path / "malformed-token.json"
+    token_path.write_text(json.dumps({"tokens": {"access_token": 5, "token_type": []}}))
+    monkeypatch.setenv("HONEYCOMB_MCP_KEY", "fake-key-id:fake-secret")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-anthropic-key")
+    monkeypatch.setenv("ANTHROPIC_WORKSPACE_ID", "fake-workspace-id")
+    monkeypatch.setenv("HONEYCOMB_OAUTH_TOKEN_PATH", str(token_path))
+    safe = ["--results-dir", str(tmp_path / "results"), "--runs-dir", str(tmp_path / "runs")]
+
+    assert main(["--scenarios", CONTROL, "--handoff", *safe]) == 2
+
+    err = capsys.readouterr().err
+    assert "agent.auth login" in err
+    assert not (tmp_path / "results").exists()  # the matrix never started
+
+
 async def test_handoff_with_the_default_key_setting_still_reads_off_the_key(
     settings: Settings, results_dir: Path, runs_dir: Path
 ) -> None:

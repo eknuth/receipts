@@ -56,6 +56,7 @@ from mcp import ClientSession
 from mcp.client.auth import AuthorizationCodeResult, OAuthClientProvider, TokenStorage
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
+from pydantic import BaseModel, ValidationError
 
 from receipts.settings import Settings
 
@@ -65,6 +66,25 @@ SCOPE = "mcp:read mcp:write"
 
 # How long `login` waits for the browser round trip before giving up.
 LOGIN_TIMEOUT_S = 300.0
+
+
+def _validate_or_none[Model: BaseModel](model: type[Model], raw: Any) -> Model | None:
+    """`model.model_validate(raw)`, or `None` for a falsy `raw` or one that
+    fails validation.
+
+    A hand-edited or corrupted token file (a `tokens` block whose
+    `access_token` is a number, say) must read the same as no token on
+    file at all: the caller already has a clear, actionable message for
+    "nothing stored" (`OAuthNotAuthorized`, naming `login`), and a
+    `pydantic.ValidationError` escaping from here instead would reach
+    `evals.run.main` as a bare stack trace with no such message.
+    """
+    if not raw:
+        return None
+    try:
+        return model.model_validate(raw)
+    except ValidationError:
+        return None
 
 
 class OAuthNotAuthorized(RuntimeError):
@@ -115,10 +135,10 @@ class FileTokenStorage(TokenStorage):
         sat world-readable for however long it took the `chmod` right after
         to run. `os.open` with an explicit mode closes that window: a mode
         of 0600 has no group or other bits for umask to fail to mask off,
-        so the file is never anything but owner-only, even at the instant
-        it is created. The `chmod` still runs afterward, for a file that
-        already existed (from before this fix, or from a version that ever
-        loosens it) at some other mode.
+        so the file is owner-only from the instant it is created. The
+        `chmod` still runs afterward, for a file that already existed (from
+        before this fix, or from a version that ever loosens it) at some
+        other mode.
         """
         self._path.parent.mkdir(parents=True, exist_ok=True)
         text = json.dumps(data, indent=2)
@@ -130,8 +150,7 @@ class FileTokenStorage(TokenStorage):
         os.chmod(self._path, stat.S_IRUSR | stat.S_IWUSR)
 
     async def get_tokens(self) -> OAuthToken | None:
-        raw = self._read().get("tokens")
-        return OAuthToken.model_validate(raw) if raw else None
+        return _validate_or_none(OAuthToken, self._read().get("tokens"))
 
     async def set_tokens(self, tokens: OAuthToken) -> None:
         data = self._read()
@@ -142,8 +161,7 @@ class FileTokenStorage(TokenStorage):
         self._write(data)
 
     async def get_client_info(self) -> OAuthClientInformationFull | None:
-        raw = self._read().get("client")
-        return OAuthClientInformationFull.model_validate(raw) if raw else None
+        return _validate_or_none(OAuthClientInformationFull, self._read().get("client"))
 
     async def set_client_info(self, info: OAuthClientInformationFull) -> None:
         data = self._read()
@@ -153,10 +171,8 @@ class FileTokenStorage(TokenStorage):
     def read_status(self) -> StoredStatus:
         """The stored token, its absolute expiry, and the client info, read-only."""
         raw = self._read()
-        tokens = OAuthToken.model_validate(raw["tokens"]) if raw.get("tokens") else None
-        client = (
-            OAuthClientInformationFull.model_validate(raw["client"]) if raw.get("client") else None
-        )
+        tokens = _validate_or_none(OAuthToken, raw.get("tokens"))
+        client = _validate_or_none(OAuthClientInformationFull, raw.get("client"))
         return StoredStatus(tokens=tokens, expires_at=raw.get("expires_at"), client=client)
 
 

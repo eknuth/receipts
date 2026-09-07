@@ -219,9 +219,23 @@ async def _find_existing(
     created board where `create_board` hands one back directly. `ensure_board`
     returns `board_url=None` in that case rather than reconstructing one from
     parts this module was not given.
+
+    A listing that is not an error but whose table this function cannot
+    read (unexpected headers, say, instead of the documented `ID`/`Name`)
+    is different from a listing that is genuinely empty: the first page's
+    own `Metadata:` `total_items` says how many boards the server thinks
+    there are, and if that is greater than zero while not one row anywhere
+    in the pages read could actually be checked against `name`, this
+    function has no way to tell whether the board being looked for is one
+    of them. Reading that as "not found", as an earlier version did, is
+    indistinguishable from a real miss and lets `ensure_board` fall through
+    to `create_board`, minting a duplicate; it is read as a `_LookupFailed`
+    instead, the same as a `list_boards` error.
     """
     page = 1
     total_pages = 1
+    total_items = 0
+    rows_parsed = 0
     while page <= min(total_pages, _MAX_LIST_PAGES_SAFETY):
         args: dict[str, Any] = {"environment_slug": environment_slug, "page": page}
         if tag:
@@ -236,16 +250,26 @@ async def _find_existing(
                 total_pages = max(1, int(metadata.get("total_pages", "1")))
             except ValueError:
                 total_pages = 1
+            try:
+                total_items = int(metadata.get("total_items", "0"))
+            except ValueError:
+                total_items = 0
         table = fmt.parse_results_table(text, heading="# Boards")
         if table is not None:
             headers, rows = table
             if "ID" in headers and "Name" in headers:
                 id_idx = headers.index("ID")
                 name_idx = headers.index("Name")
+                rows_parsed += len(rows)
                 for row in rows:
                     if len(row) > max(id_idx, name_idx) and row[name_idx] == name:
                         return row[id_idx], None
         page += 1
+    if total_items > 0 and rows_parsed == 0:
+        return _LookupFailed(
+            f"list_boards reported total_items={total_items} but no row could be read "
+            "against the documented ID/Name headers"
+        )
     return None
 
 

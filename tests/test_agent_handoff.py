@@ -110,6 +110,27 @@ def test_message_with_no_hypothesis_says_so_instead_of_being_silent() -> None:
         ("That does not check out", "disagree"),
         ("I can't confirm this", "disagree"),
         ("doesn't make sense to me", "disagree"),
+        # The second review (finding 1 of the re-review on 20b09e4): a
+        # negation word that does not sit immediately next to the agreement
+        # word used to defeat the old adjacency pattern entirely and read
+        # as `agree`, one direction only, inflating the "Canvas agreed with
+        # N of M" count. None of these have the negation word touching the
+        # agreement word.
+        ("I wouldn't agree", "disagree"),
+        ("I'm not sure I agree", "disagree"),
+        ("I don't think that checks out", "disagree"),
+        ("I don't fully agree", "disagree"),
+        ("I would not say this is correct", "disagree"),
+        ("This is not entirely correct", "disagree"),
+        ("hardly correct", "disagree"),
+        ("isn't correct", "disagree"),
+        ("Partially correct", "disagree"),
+        # A disagreement word negated is a double negative, not a clean
+        # agreement: a keyword rule cannot honestly resolve it, so it reads
+        # as `extend` rather than guessing the literal double-negative
+        # meaning (which would be `agree`).
+        ("not incorrect", "extend"),
+        ("I do not disagree", "extend"),
     ],
 )
 def test_classify_matches_the_documented_keywords(text: str, expected: str) -> None:
@@ -280,7 +301,15 @@ async def test_running_then_completed_polls_again_with_the_same_ids() -> None:
         _Result(raw={"status": "completed", "response": "Also check the eu-west-1 window."}),
     )
 
-    result = await hand_off(make_report(), mcp, clock=clock_sequence(0.0, 0.0, 40.0))
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    result = await hand_off(
+        make_report(),
+        mcp,
+        clock=clock_sequence(0.0, 0.0, 0.0, 40.0),
+        sleep=no_sleep,
+    )
 
     assert result.status == "completed"
     assert result.classification == "extend"
@@ -322,6 +351,77 @@ async def test_an_unrecognized_poll_status_sleeps_between_polls_instead_of_spinn
     poll_calls = [name for name, _ in mcp.calls if name == "canvas_agent_poll_response"]
     assert len(poll_calls) == 6  # not 200
     assert sleep_calls == [50.0] * 6
+
+
+async def test_a_running_status_answered_instantly_still_sleeps_instead_of_spinning() -> None:
+    """The documented status, not just an unnamed one, has the same bug: a
+    server that answers "running" without holding the connection for
+    `wait_seconds` (a fake, or a real one under load) used to skip the sleep
+    entirely, since the old code only slept when the status was something
+    other than "running". Reproduced live at 199 polls and 0 sleeps in one
+    300s budget. Measuring the elapsed time around the call, instead of
+    trusting the server to have spent it, means an instant "running" reply
+    still costs a sleep, the same as an unnamed status does."""
+    mcp = FakeCanvasMCP()
+    mcp.queue("canvas_agent_invoke", INVOKE_RUNNING)
+    mcp.queue(
+        "canvas_agent_poll_response",
+        *[_Result(raw={"status": "running"}) for _ in range(6)],
+    )
+
+    state = {"t": 0.0}
+
+    def clock() -> float:
+        return state["t"]
+
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+        state["t"] += seconds
+
+    result = await hand_off(make_report(), mcp, deadline_s=300.0, clock=clock, sleep=fake_sleep)
+
+    assert result.status == "timeout"
+    poll_calls = [name for name, _ in mcp.calls if name == "canvas_agent_poll_response"]
+    assert len(poll_calls) == 6  # not 199
+    assert sleep_calls == [50.0] * 6
+
+
+async def test_a_slow_running_reply_sleeps_only_what_is_left_of_the_wait() -> None:
+    """When the server does hold the connection for part of `wait_seconds`
+    before answering "running", the sleep should make up only the
+    difference, not the full `wait_seconds` again on top of it."""
+    mcp = FakeCanvasMCP()
+    mcp.queue("canvas_agent_invoke", INVOKE_RUNNING)
+    mcp.queue(
+        "canvas_agent_poll_response",
+        _Result(raw={"status": "running"}),
+        _Result(raw={"status": "completed", "chat": "ok"}),
+    )
+
+    state = {"t": 0.0}
+
+    def clock() -> float:
+        return state["t"]
+
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+        state["t"] += seconds
+
+    async def call(name: str, args: dict[str, Any] | None = None, **kwargs: Any) -> Any:
+        if name == "canvas_agent_poll_response":
+            state["t"] += 35.0  # the server actually held the connection for 35s
+        return await FakeCanvasMCP.call(mcp, name, args, **kwargs)
+
+    mcp.call = call  # type: ignore[method-assign]
+
+    result = await hand_off(make_report(), mcp, deadline_s=300.0, clock=clock, sleep=fake_sleep)
+
+    assert result.status == "completed"
+    assert sleep_calls == [15.0]  # 50s wait_seconds minus the 35s the server already spent
 
 
 async def test_the_deadline_expiring_stops_polling_and_records_a_timeout() -> None:

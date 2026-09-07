@@ -374,18 +374,26 @@ def _handoff_section(handoffs: Sequence[HandoffEntry]) -> list[str]:
     """The `--handoff` (R12) summary: one row per (scenario, config) that ran
     with it, empty (and so invisible in the rendered file) when nothing did.
 
-    A scenario's repeats, and every config, investigate the same run id (one
-    emit serves the whole matrix), so `ensure_board` gives them all the same
-    board; the `board` column shows that one link on every row of a
-    scenario's group, not just the config whose cell happened to be the one
-    that created it. `agent/board.py`'s `_find_existing` only ever hands
-    back a url for the config that ran first (a rediscovered board carries
-    `board_url=None`, since `list_boards`' table has no URL column), so the
-    url has to be picked up from wherever in the scenario it landed, across
-    every config, before any row for that scenario is built; picking it per
-    `(scenario, config)` group instead, as an earlier version did, left
-    every config but the first with a blank link although the prose here
-    always said it was the same board.
+    Most scenarios investigate one run id for their whole row group (one
+    emit serves every config and repeat), so every row in the group shares
+    one board and the `board` column should show that one link on all of
+    them. The trigger scenario breaks that assumption: it is emitted once
+    per cell (see `.claude/skills/pass-run/SKILL.md`), so its configs carry
+    different run ids and therefore different boards. Keying the url by
+    `scenario_id` alone, as an earlier version did, rendered the first
+    config's board link on every other config's row too, which is wrong
+    whenever the row's own handoff points at a different board.
+
+    The url is instead keyed by `board_id`, collected across every handoff
+    regardless of scenario or config, and each row looks up its link by the
+    `board_id` its own group's handoffs carry. `agent/board.py`'s
+    `_find_existing` only ever hands back a url for the config that ran
+    first (a rediscovered board carries `board_url=None`, since
+    `list_boards`' table has no URL column), so a row's own handoff can have
+    the right `board_id` and no url of its own; the url still comes from
+    wherever in the whole handoff list that `board_id` picked one up. A row
+    whose `board_id` never picked up a url anywhere renders no link, rather
+    than borrowing a different board's.
     """
     if not handoffs:
         return []
@@ -404,15 +412,16 @@ def _handoff_section(handoffs: Sequence[HandoffEntry]) -> list[str]:
     lines.append(_row(header))
     lines.append(_row(["---"] * len(header)))
     groups: dict[tuple[str, str], list[Handoff]] = {}
-    board_url_by_scenario: dict[str, str] = {}
+    board_url_by_board_id: dict[str, str] = {}
     for config, scenario_id, handoff in handoffs:
         groups.setdefault((scenario_id, config), []).append(handoff)
-        if handoff.board_url and scenario_id not in board_url_by_scenario:
-            board_url_by_scenario[scenario_id] = handoff.board_url
+        if handoff.board_id and handoff.board_url and handoff.board_id not in board_url_by_board_id:
+            board_url_by_board_id[handoff.board_id] = handoff.board_url
     for scenario_id, config in sorted(groups, key=lambda pair: (pair[0], config_order(pair[1]))):
         group = groups[(scenario_id, config)]
         counts = Counter(item.classification for item in group)
-        board_url = board_url_by_scenario.get(scenario_id)
+        board_id = next((item.board_id for item in group if item.board_id), None)
+        board_url = board_url_by_board_id.get(board_id) if board_id else None
         lines.append(
             _row(
                 [

@@ -41,14 +41,16 @@ the loop asks for `min(50, time left)` each time and stops the moment the
 deadline (measured against an injectable `clock`, so a test can drive the
 whole budget without a real wait) is passed. `canvas_agent_poll_response`'s
 four statuses (`completed`, `error`, `busy`, `running`) and the deadline
-expiring are each their own outcome on `Handoff.status`; `running` is the
-only one the loop repolls without waiting further, since the server's own
-long poll already spent up to `wait_seconds` getting to that answer. A
-status the docs do not name is different: nothing says the server honored
-`wait_seconds` for it, and a live run against one answered back instantly,
-so the loop slept (through an injectable `sleep`, defaulting to
-`asyncio.sleep`) between repolls rather than hammering the server at
-whatever pace the caller's own MCP client would allow.
+expiring are each their own outcome on `Handoff.status`. `running` and any
+status the docs do not name are both repolled the same way: the server's
+long poll is documented to spend up to `wait_seconds` getting to a
+`running` answer, but nothing here trusts that claim, because a live run
+against a server that answered `running` instantly burned through a whole
+team-wide rate-limit window doing exactly that. The loop instead measures
+the elapsed time around the call (against the same injectable `clock`) and
+sleeps (through an injectable `sleep`, defaulting to `asyncio.sleep`) only
+what is left of `wait_seconds`, so the repoll rate stays capped regardless
+of whether the server actually held the connection.
 """
 
 from __future__ import annotations
@@ -190,53 +192,101 @@ def render_message(report: Report) -> str:
 # --------------------------------------------------------------------------
 
 # Small and literal on purpose: a reader should be able to see the whole
-# rule by reading these three patterns, not by tracing a scoring function.
-# Word-bounded and case-insensitive so "Agreed" and "disagreement" both hit.
-_DISAGREE = re.compile(
-    r"\b(disagree|disagrees|disagreed|incorrect|mistaken|not\s+right|doesn't\s+hold|"
-    r"does\s+not\s+hold|wrong)\b",
+# rule by reading these four patterns and the loop in `classify` below, not
+# by tracing a scoring function.
+#
+# A first version of this classifier matched `_AGREE`/`_DISAGREE` directly
+# against the whole reply, with one extra pattern for an agreement word
+# sitting immediately next to a negation word ("I do not agree"). That
+# pattern only fired when the two words were adjacent: "I wouldn't agree",
+# "I'm not sure I agree", "I don't fully agree", "not entirely correct", and
+# "hardly correct" all still read as `agree`, because nothing sat between
+# the negation and the agreement word close enough for a fixed adjacency
+# pattern to catch, and the mistake only runs one direction (toward
+# inflating "agree"), which is exactly the number this work reports.
+#
+# The fix drops adjacency entirely: each clause is checked for an agreement
+# word, a disagreement word, and a negation token independently, and the
+# three are combined by `classify`, not by a fourth regex.
+_CLAUSE_BOUNDARY = re.compile(r"[.;,]|\b(?:but|however|although|though)\b", re.IGNORECASE)
+
+_AGREE_WORD = re.compile(
+    r"\b(?:agrees?|agreed|agreement|correct|confirmed|confirm|checks?\s+out|"
+    r"sounds?\s+right|makes?\s+sense|holds?)\b",
     re.IGNORECASE,
 )
-# A negated form of an agreement word ("I do not agree", "can't confirm
-# this", "doesn't check out") is a disagreement, but `_AGREE` below has no
-# way to tell "agree" apart from "not agree" inside its own match: it just
-# finds "agree". This pattern catches the negation first, so it has to be
-# checked before `_AGREE`, the same as `_DISAGREE` is.
-_NEGATED_AGREE = re.compile(
-    r"\b(?:don't|do\s+not|doesn't|does\s+not|can't|cannot|not)\s+"
-    r"(?:agree|correct|confirm(?:ed)?|check(?:s)?\s+out|make(?:s)?\s+sense|hold|right)\b",
+_DISAGREE_WORD = re.compile(
+    r"\b(?:disagrees?|disagreed|disagreement|incorrect|mistaken|wrong)\b",
     re.IGNORECASE,
 )
-_AGREE = re.compile(
-    r"\b(agree|agrees|agreed|correct|confirmed|checks\s+out|sounds\s+right|makes\s+sense)\b",
+# The negation tokens the spec calls for, plus `n't` matched without a
+# leading `\b`: the apostrophe already sits between two word characters in
+# a contraction ("doesn't", "isn't", "wouldn't"), so there is no word
+# boundary immediately before the `n` for `\b` to anchor on.
+_NEGATION = re.compile(
+    r"\b(?:not|never|hardly|barely|scarcely|unable|partially|unsure|unconvinced)\b"
+    r"|n't\b|\bfar\s+from\b",
     re.IGNORECASE,
 )
+
+
+def _clauses(text: str) -> list[str]:
+    """`text` split on sentence and clause boundaries, empty pieces dropped."""
+    return [clause for clause in _CLAUSE_BOUNDARY.split(text) if clause.strip()]
 
 
 def classify(text: str) -> Classification:
-    """Agree or disagree, by the first of `_DISAGREE`/`_NEGATED_AGREE` and
-    `_AGREE` to match anywhere in `text`; `extend` for anything else
-    non-empty; `no_response` for empty or whitespace-only text.
+    """`disagree` if any clause is a clean disagreement, else `agree` if any
+    clause is a clean agreement, else `extend` for anything else non-empty,
+    else `no_response` for empty or whitespace-only text.
 
-    Disagree is checked first: a reply that hedges an agreement with a
-    disagreement ("I agree the span is right, but I disagree on the region")
-    is read as a disagreement, since missing one is the worse mistake for
-    what this classifier is for. `_NEGATED_AGREE` is checked alongside
-    `_DISAGREE`, not folded into `_AGREE`: a bare `_AGREE` search over "I do
-    not agree with this" still finds "agree" and would read it as
-    agreement, missing the "not" in front of it entirely. There is no
-    separate keyword pattern for `extend`: the question always asks what to
-    check next, so any reply that takes neither side but still has content,
-    whether it names something to check or not (a live Canvas reply can be
-    pure commentary with no concrete next step named at all), counts as
-    Canvas engaging rather than as no answer. An earlier version of this
-    function kept an unused `_EXTEND` pattern that its own docstring claimed
-    was consulted; matching on it here would have missed real replies like
-    that.
+    A clause is read independently of every other clause in `text`, and
+    each clause is checked for three things: an `_AGREE_WORD`, a
+    `_DISAGREE_WORD`, and a `_NEGATION` token, all three searched for
+    anywhere in the clause rather than next to each other. A clause counts
+    as a clean disagreement when it has a disagreement word and no negation
+    ("this is wrong"), or an agreement word with a negation ("I wouldn't
+    agree", "hardly correct", "not entirely correct": the negation and the
+    agreement word do not have to be adjacent, which is the fix over the
+    version that missed all of those). A clause counts as a clean agreement
+    only when it has an agreement word and no negation at all.
+
+    A clause with both a disagreement word and a negation ("not incorrect",
+    "I do not disagree") is neither: it is a double negative, and a keyword
+    rule has no way to tell whether the negation cancels the disagreement
+    word, weakens it, or was aimed at something else in the clause entirely.
+    Reading it as `agree` (the literal double-negative meaning) would put a
+    guess into a number this work reports as observed fact; reading it as
+    `extend` costs nothing but a slightly lower agree/disagree count, so
+    that is the deliberate choice here, not an oversight.
+
+    `disagree` beats `agree` across the whole reply, not just within one
+    clause: a reply that hedges an agreement with a disagreement ("I agree
+    the span is right, but I disagree on the region") is read as a
+    disagreement, since missing one is the worse mistake for what this
+    classifier is for. There is no separate keyword pattern for `extend`:
+    the question always asks what to check next, so any reply that takes
+    neither side but still has content, whether it names something to check
+    or not (a live Canvas reply can be pure commentary with no concrete next
+    step named at all), counts as Canvas engaging rather than as no answer.
     """
-    if _DISAGREE.search(text) or _NEGATED_AGREE.search(text):
+    clean_disagree = False
+    clean_agree = False
+    for clause in _clauses(text):
+        has_agree = bool(_AGREE_WORD.search(clause))
+        has_disagree = bool(_DISAGREE_WORD.search(clause))
+        has_negation = bool(_NEGATION.search(clause))
+        if has_disagree and not has_negation:
+            clean_disagree = True
+        elif has_agree and has_negation:
+            clean_disagree = True
+        elif has_agree and not has_negation:
+            clean_agree = True
+        # `has_disagree and has_negation`: the double negative above, which
+        # contributes to neither count on purpose.
+    if clean_disagree:
         return "disagree"
-    if _AGREE.search(text):
+    if clean_agree:
         return "agree"
     if text.strip():
         return "extend"
@@ -407,7 +457,8 @@ async def hand_off(
         )
 
     while True:
-        remaining = deadline - clock()
+        poll_started = clock()
+        remaining = deadline - poll_started
         if remaining <= 0:
             return _no_response(
                 report.run_id,
@@ -496,18 +547,19 @@ async def hand_off(
                 board_id=board_id,
                 board_url=board_url,
             )
-        if poll_status != "running":
-            # A status the docs do not name. The server's own long poll is
-            # documented for "running" only, so nothing here says this one
-            # waited `wait_seconds` before answering; a live one came back
-            # instantly. Sleeping the same `wait_seconds` this poll asked
-            # for keeps the repoll rate the caller would have gotten from a
-            # real "running" wait, instead of repolling as fast as this
-            # loop and the MCP client's own pacing allow: a fake server
-            # that always answers an unnamed status burned through a
-            # whole team-wide rate-limit window this way before this sleep
-            # was added (200 polls in one 300s budget).
-            await sleep(wait_seconds)
-        # "running": the deadline check at the top of the loop is what
-        # stops this from polling forever, not a client-side sleep, since
-        # the server's own wait already spent the time.
+        # Neither terminal ("completed", "error", "busy") nor a fast enough
+        # answer to skip sleeping: "running" and any status the docs do not
+        # name are handled the same way. The server's own long poll is
+        # documented to hold the connection for `wait_seconds` on a
+        # "running" reply, but nothing here measures that, and a fake (or a
+        # real server under load) can answer "running" immediately; treating
+        # "running" as already having spent the wait, as an earlier version
+        # did, repolls as fast as this loop and the MCP client's own pacing
+        # allow, which burned through a whole team-wide rate-limit window
+        # this way (199 polls, 0 sleeps, in one 300s budget). Measuring the
+        # elapsed time around the call and sleeping the rest of `wait_seconds`
+        # keeps the repoll rate capped regardless of what the server actually
+        # honored. The deadline check at the top of the loop is still what
+        # stops this from polling forever; this sleep only paces it.
+        elapsed = clock() - poll_started
+        await sleep(max(0.0, wait_seconds - elapsed))
