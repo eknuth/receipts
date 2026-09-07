@@ -14,9 +14,9 @@ than a hedged one.
 
 A three-minute recording is at the
 [v0.1 release](https://github.com/eknuth/receipts/releases/download/v0.1/receipts-demo-2026-09.mp4).
-It shows a scripted incident going in, the Honeycomb heatmap picking it up, one investigation
-ending on the filed report, that run in Agent Timeline with its score on the root span, and the
-eval tables below.
+It shows a scripted incident emitted, the Honeycomb heatmap that finds it, one investigation
+ending on the filed report, a graded run in Agent Timeline with its score on the root span, and
+the eval tables below.
 
 ## The argument
 
@@ -150,23 +150,22 @@ scored at least 0.5 on dims.
 | full (nvidia) | 30 | 0 | 33.9 | 1,501,110 | 26,815 | 0.00 | 0.00 | 352 |  | 25 of 30 | 480 |  |
 
 Thirty of thirty Sonnet runs named the right cause or, on a control, said there was no incident,
-and the two scenarios where the herring outweighs the cause scored 0.92 and 1.00. This is one
-config, so the table says what the method does, not what each rule is worth. What it did not fix
-is the report's account of itself: nine of the thirty runs paid the 0.25 validation penalty
+and the two scenarios where the herring outweighs the cause scored 0.92 and 1.00. One config, so
+the table says what the method does, not what each rule is worth. What it did not fix is the
+report's account of itself: nine of the thirty runs paid the 0.25 validation penalty
 with the right answer filed, seven for a not-checked list that named an instrumentation column or
 contradicted the run's own queries, and two for a negation query that excluded nothing, which also
 cost those two the receipts weight and left them at 0.60. The nemotron column is the case for
 grading the outcome: 25 of its 30 runs pass Honeycomb's process evaluator and score under 0.50
 here, its mean total is -0.01 against Sonnet's 0.91, it takes 352 seconds a run against 181, and
 eighteen of its thirty runs never filed a report. That column ran seven hours before the noise
-floor step landed, under the earlier prompt and validator. The run-by-run reading is in
+floor step landed, so it met the earlier prompt and validator. The run-by-run reading is in
 [`docs/results.md`](docs/results.md).
 
 ## Run it
 
 You need a Honeycomb ingest key, a management v2 key with `mcp:read` for the environment, an
-Anthropic API key, Python 3.12, and `uv`. Copy `.env.example` to `.env` and fill in the names
-listed. The fourth command emits a fresh run per scenario and grades three repeats each, which
+Anthropic API key, Python 3.12, and `uv`. Copy `.env.example` to `.env` and fill it in. The fourth command emits a fresh run per scenario and grades three repeats each, which
 cost $16.25 on Sonnet.
 
 ```
@@ -182,8 +181,8 @@ uv run python -m evals.report
 - No memory across investigations: every run starts cold.
 - No spatial awareness of Canvas: the agent can put a board and a question there and cannot see
   what is already laid out.
-- Synthetic traffic only: the incidents are scripted, so nothing here says how the agent does on
-  production traffic.
+- Synthetic traffic only: the incidents are scripted, so nothing here says how the agent does in
+  production.
 - One team's data model: everything assumes the shape of `receipts-shop`, one dataset with a known
   set of columns.
 - Single agent: one loop, one investigation, no work claims, no awareness of other agents working
