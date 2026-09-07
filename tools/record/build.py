@@ -29,6 +29,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+LIGHT_MEDIA_QUERY = "@media (prefers-color-scheme: light)"
+
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 OUT = HERE / "out"
@@ -38,6 +40,9 @@ BAND = 70  # px under the content for the caption, so it never covers a line
 BACKGROUND = "0x1e1e2e"
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 FINAL = OUT / "receipts-demo-2026-09.mp4"
+
+ARCHITECTURE_SVG = ROOT / "docs" / "diagrams" / "architecture.svg"
+ARCHITECTURE_CAPTION = "How it fits together: generator, hosted MCP, agent, grader"
 
 # The agent clip keeps its head and tail at real speed and compresses the quiet
 # middle, where the loop runs and the terminal shows nothing, to this length.
@@ -128,6 +133,59 @@ def card_png(lines: list[tuple[str, str]], out: Path) -> None:
 
 def caption_png(text: str, out: Path) -> None:
     render_png(f"<div class='caption'>{text}</div>", out, transparent=True)
+
+
+def _dark_svg(svg_path: Path, out_svg: Path) -> None:
+    """A copy of `svg_path` with its `prefers-color-scheme: light` override removed.
+
+    The SVG's base `:root` rule is already dark (`--bg: #020617`), matching
+    this recording's BACKGROUND, but archify also ships a
+    `@media (prefers-color-scheme: light) { ... }` block that repaints it
+    light, and headless Chrome's default preference is light with no flag
+    to force otherwise for an externally loaded SVG document. Stripping that
+    one block, brace-balanced so nothing else in the stylesheet is touched,
+    is simpler than fighting the media query, and it only affects this
+    scratch copy, not the delivered diagram.
+    """
+    text = svg_path.read_text()
+    start = text.find(LIGHT_MEDIA_QUERY)
+    if start == -1:
+        out_svg.write_text(text)
+        return
+    brace = text.index("{", start)
+    depth = 1
+    i = brace + 1
+    while depth and i < len(text):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+        i += 1
+    out_svg.write_text(text[:start] + text[i:])
+
+
+def architecture_png(out: Path) -> None:
+    """The architecture diagram, rasterized fresh from its SVG at frame size.
+
+    docs/diagrams/architecture.png is 1184px wide, narrower than this frame;
+    upscaling that raster would blur it. The SVG has no such ceiling, so this
+    renders it directly with headless Chrome, the same way every card and
+    caption in this module is rendered, scaled to fit rather than stretched.
+    `_dark_svg` keeps the render on the SVG's own dark defaults rather than
+    the light `prefers-color-scheme` override headless Chrome would
+    otherwise pick, so the still matches BACKGROUND and the rest of the
+    recording instead of showing up as a pale card in an all-dark video.
+    """
+    dark_svg = out.with_suffix(".dark.svg")
+    _dark_svg(ARCHITECTURE_SVG, dark_svg)
+    render_png(
+        "<div style='width:100%;height:100%;display:flex;align-items:center;"
+        "justify-content:center'>"
+        f"<img src='file://{dark_svg}' style='max-width:100%;max-height:100%'>"
+        "</div>",
+        out,
+        transparent=False,
+    )
 
 
 def normalize_filter(band: bool = False) -> str:
@@ -282,6 +340,10 @@ def assemble() -> None:
         seg / "00-title.mp4",
     )
     parts.append(seg / "00-title.mp4")
+
+    architecture_png(seg / "00b-architecture-src.png")
+    still(seg / "00b-architecture-src.png", 10, ARCHITECTURE_CAPTION, seg / "00b-architecture.mp4")
+    parts.append(seg / "00b-architecture.mp4")
 
     clip(OUT / "01-emit.mp4", CAPTIONS["01-emit.mp4"], seg / "01-emit.mp4")
     parts.append(seg / "01-emit.mp4")

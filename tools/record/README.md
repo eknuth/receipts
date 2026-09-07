@@ -2,13 +2,14 @@
 
 `make video` builds the three-minute recording the README links, the same way the
 report is built: from files, with nothing hand-typed. `build.py` runs three vhs
-tapes, joins them with two Honeycomb screens and two cards, and writes
-`out/receipts-demo-2026-09.mp4`, silent. Ed records the voice-over against that cut
-and `--voice <file>` muxes it in.
+tapes, joins them with two Honeycomb screens, the architecture diagram, and two
+cards, and writes `out/receipts-demo-2026-09.mp4`, silent. Ed records the
+voice-over against that cut and `--voice <file>` muxes it in.
 
 | segment | source | seconds |
 |---|---|---|
 | title card | `build.py` | 5 |
+| architecture | `docs/diagrams/architecture.svg`, rasterized fresh by `build.py` | 10 |
 | emit | `emit.tape`, one `gen.emit` run | about 45 |
 | heatmap | `out/02-heatmap.png`, captured from a signed-in browser | 12 |
 | investigation | `agent.tape.in` with the run id filled in, one `python -m agent` run | about 58 after retiming |
@@ -31,4 +32,6 @@ per build, about $0.60; never run it while another emit or eval run is going.
 The three stills are the one step a person or the browser harness does, from a
 signed-in Honeycomb session: the query URL for the heatmap is built from the run
 manifest's window, and the two Agent Timeline pages are
-`agent-timeline/<conversation id>` with the root span selected.
+`agent-timeline/<conversation id>` with the root span selected. The architecture
+still needs no capture step: `build.py` renders `docs/diagrams/architecture.svg`
+itself with headless Chrome, at frame size, so nothing has to be upscaled.

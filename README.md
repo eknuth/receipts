@@ -48,24 +48,7 @@ confident-right, pinned by a unit test.
 
 ## How it works
 
-```
-gen/scenarios/*.yml          gen/emit.py            Honeycomb receipts-demo
-  fault + ground truth  ---->  OTLP/HTTP  ---------->  dataset receipts-shop
-        |                                                    ^        |
-        |                                    read tools only |        | hosted MCP
-        |                                                    |        v
-        |                                              agent/loop.py
-        |                             orient -> characterize -> bubbleup -> trace
-        |                             -> verify by negation -> report
-        |                                                             |
-        |                                              agent/telemetry.py
-        |                                              gen_ai.* spans back to
-        |                                              the same environment
-        v                                                             |
-  evals/grader.py  <--------------- agent/report.py Report <----------+
-        |
-        +----> evals/results/<config>/<scenario>/<n>/  ----> evals/report.md
-```
+![architecture](docs/diagrams/architecture.svg)
 
 The generator is synthetic and deterministic, four services from gateway to inventory-db, and its
 ground truth is a YAML file. Root spans carry high-cardinality attributes for BubbleUp to find,
@@ -78,6 +61,8 @@ calculations into one query, plus the receipts rule and the not-checked list abo
 report is filed and graded, `evals/run.py --handoff` hands it to Honeycomb's Canvas over a user
 OAuth session, building a board of the evidence queries and asking what Canvas Agent makes of the
 window.
+
+![investigation](docs/diagrams/investigation.svg)
 
 The grader scores a filed report against ground truth with no model in the loop, so the same report
 always grades to the same number.
