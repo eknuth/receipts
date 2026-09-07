@@ -15,7 +15,7 @@
     },
     "viewBox": [
       1000,
-      2365
+      2605
     ]
   },
   "participants": [
@@ -57,43 +57,43 @@
       "label": "Orient"
     },
     {
-      "from": 395,
-      "to": 615,
+      "from": 425,
+      "to": 645,
       "label": "Characterize"
     },
     {
-      "from": 630,
-      "to": 850,
+      "from": 690,
+      "to": 910,
       "label": "BubbleUp"
     },
     {
-      "from": 865,
-      "to": 1085,
+      "from": 955,
+      "to": 1175,
       "label": "Split the candidates in time"
     },
     {
-      "from": 1100,
-      "to": 1320,
+      "from": 1220,
+      "to": 1440,
       "label": "Noise floor"
     },
     {
-      "from": 1335,
-      "to": 1555,
+      "from": 1485,
+      "to": 1705,
       "label": "Select the population"
     },
     {
-      "from": 1570,
-      "to": 1790,
+      "from": 1750,
+      "to": 1970,
       "label": "Trace"
     },
     {
-      "from": 1805,
-      "to": 2025,
+      "from": 2015,
+      "to": 2235,
       "label": "Verify by negation"
     },
     {
-      "from": 2040,
-      "to": 2305,
+      "from": 2280,
+      "to": 2545,
       "label": "Record + validate"
     }
   ],
@@ -141,7 +141,7 @@
       "id": "characterize-ask",
       "from": "model",
       "to": "loop",
-      "y": 410,
+      "y": 440,
       "label": "tool_use: run_query COUNT, P99(duration_ms), HEATMAP(duration_ms), granularity",
       "variant": "emphasis"
     },
@@ -149,21 +149,21 @@
       "id": "characterize-dispatch",
       "from": "loop",
       "to": "mcp_client",
-      "y": 450,
+      "y": 480,
       "label": "dispatch run_query: COUNT, P99(duration_ms), HEATMAP(duration_ms), granularity"
     },
     {
       "id": "characterize-call",
       "from": "mcp_client",
       "to": "hosted_mcp",
-      "y": 490,
+      "y": 520,
       "label": "run_query, scoped to the run id and the window"
     },
     {
       "id": "characterize-result",
       "from": "hosted_mcp",
       "to": "mcp_client",
-      "y": 530,
+      "y": 560,
       "label": "query_id, time series",
       "variant": "return"
     },
@@ -171,7 +171,7 @@
       "id": "characterize-return",
       "from": "mcp_client",
       "to": "loop",
-      "y": 570,
+      "y": 600,
       "label": "compact result: where the series steps",
       "variant": "return"
     },
@@ -179,7 +179,7 @@
       "id": "bubbleup-ask",
       "from": "model",
       "to": "loop",
-      "y": 645,
+      "y": 705,
       "label": "tool_use: run_bubbleup (query_pk, selection)",
       "variant": "emphasis"
     },
@@ -187,21 +187,21 @@
       "id": "bubbleup-dispatch",
       "from": "loop",
       "to": "mcp_client",
-      "y": 685,
+      "y": 745,
       "label": "dispatch run_bubbleup on the anomalous selection"
     },
     {
       "id": "bubbleup-call",
       "from": "mcp_client",
       "to": "hosted_mcp",
-      "y": 725,
+      "y": 785,
       "label": "run_bubbleup (query_pk, selection)"
     },
     {
       "id": "bubbleup-result",
       "from": "hosted_mcp",
       "to": "mcp_client",
-      "y": 765,
+      "y": 825,
       "label": "columns ranked by shift",
       "variant": "return"
     },
@@ -209,7 +209,7 @@
       "id": "bubbleup-return",
       "from": "mcp_client",
       "to": "loop",
-      "y": 805,
+      "y": 865,
       "label": "compact result: candidate dimensions",
       "variant": "return"
     },
@@ -217,7 +217,7 @@
       "id": "split-ask",
       "from": "model",
       "to": "loop",
-      "y": 880,
+      "y": 970,
       "label": "tool_use: run_query, granularity + candidate breakdown across the change point",
       "variant": "emphasis"
     },
@@ -225,21 +225,21 @@
       "id": "split-dispatch",
       "from": "loop",
       "to": "mcp_client",
-      "y": 920,
+      "y": 1010,
       "label": "dispatch run_query: split each candidate's measurement on either side of the change"
     },
     {
       "id": "split-call",
       "from": "mcp_client",
       "to": "hosted_mcp",
-      "y": 960,
+      "y": 1050,
       "label": "run_query, WHERE dims, BREAKDOWN candidate, granularity"
     },
     {
       "id": "split-result",
       "from": "hosted_mcp",
       "to": "mcp_client",
-      "y": 1000,
+      "y": 1090,
       "label": "series: same both sides, absent early, or present then larger",
       "variant": "return"
     },
@@ -247,7 +247,7 @@
       "id": "split-return",
       "from": "mcp_client",
       "to": "loop",
-      "y": 1040,
+      "y": 1130,
       "label": "compact result: which candidates date the onset",
       "variant": "return"
     },
@@ -255,7 +255,7 @@
       "id": "noise-ask",
       "from": "model",
       "to": "loop",
-      "y": 1115,
+      "y": 1235,
       "label": "tool_use: run_query, candidate column != or not-in, whole window",
       "variant": "emphasis"
     },
@@ -263,21 +263,21 @@
       "id": "noise-dispatch",
       "from": "loop",
       "to": "mcp_client",
-      "y": 1155,
+      "y": 1275,
       "label": "dispatch run_query: reference rate outside the candidate, row counts"
     },
     {
       "id": "noise-call",
       "from": "mcp_client",
       "to": "hosted_mcp",
-      "y": 1195,
+      "y": 1315,
       "label": "run_query, candidate column excluded, whole window"
     },
     {
       "id": "noise-result",
       "from": "hosted_mcp",
       "to": "mcp_client",
-      "y": 1235,
+      "y": 1355,
       "label": "reference rate + row count, bucket by bucket",
       "variant": "return"
     },
@@ -285,7 +285,7 @@
       "id": "noise-return",
       "from": "mcp_client",
       "to": "loop",
-      "y": 1275,
+      "y": 1395,
       "label": "compact result: candidate rate outside the spread, or inside it",
       "variant": "return"
     },
@@ -293,29 +293,29 @@
       "id": "population-ask",
       "from": "model",
       "to": "loop",
-      "y": 1350,
-      "label": "tool_use: run_bubbleup filtered to dims so far, or run_query breakdown across the onset",
+      "y": 1500,
+      "label": "tool_use: run_bubbleup on the dims so far, or run_query breakdown",
       "variant": "emphasis"
     },
     {
       "id": "population-dispatch",
       "from": "loop",
       "to": "mcp_client",
-      "y": 1390,
+      "y": 1540,
       "label": "dispatch run_bubbleup / run_query, narrowing dims"
     },
     {
       "id": "population-call",
       "from": "mcp_client",
       "to": "hosted_mcp",
-      "y": 1430,
+      "y": 1580,
       "label": "run_bubbleup (query_pk, dims filter) / run_query breakdown"
     },
     {
       "id": "population-result",
       "from": "hosted_mcp",
       "to": "mcp_client",
-      "y": 1470,
+      "y": 1620,
       "label": "one value carries the change, or every value reads flat",
       "variant": "return"
     },
@@ -323,7 +323,7 @@
       "id": "population-return",
       "from": "mcp_client",
       "to": "loop",
-      "y": 1510,
+      "y": 1660,
       "label": "compact result: dims grown, or the leader ruled out",
       "variant": "return"
     },
@@ -331,7 +331,7 @@
       "id": "trace-ask",
       "from": "model",
       "to": "loop",
-      "y": 1585,
+      "y": 1765,
       "label": "tool_use: get_trace (trace_id)",
       "variant": "emphasis"
     },
@@ -339,21 +339,21 @@
       "id": "trace-dispatch",
       "from": "loop",
       "to": "mcp_client",
-      "y": 1625,
+      "y": 1805,
       "label": "dispatch get_trace on a representative span"
     },
     {
       "id": "trace-call",
       "from": "mcp_client",
       "to": "hosted_mcp",
-      "y": 1665,
+      "y": 1845,
       "label": "get_trace (trace_id)"
     },
     {
       "id": "trace-result",
       "from": "hosted_mcp",
       "to": "mcp_client",
-      "y": 1705,
+      "y": 1885,
       "label": "waterfall",
       "variant": "return"
     },
@@ -361,7 +361,7 @@
       "id": "trace-return",
       "from": "mcp_client",
       "to": "loop",
-      "y": 1745,
+      "y": 1925,
       "label": "compact result: span carrying the time",
       "variant": "return"
     },
@@ -369,7 +369,7 @@
       "id": "negation-ask",
       "from": "model",
       "to": "loop",
-      "y": 1820,
+      "y": 2030,
       "label": "tool_use: run_query, WHERE NOT the reported dims",
       "variant": "emphasis"
     },
@@ -377,21 +377,21 @@
       "id": "negation-dispatch",
       "from": "loop",
       "to": "mcp_client",
-      "y": 1860,
+      "y": 2070,
       "label": "dispatch run_query excluding the finding (!= or not-in on dims)"
     },
     {
       "id": "negation-call",
       "from": "mcp_client",
       "to": "hosted_mcp",
-      "y": 1900,
+      "y": 2110,
       "label": "run_query, WHERE NOT the reported dims"
     },
     {
       "id": "negation-result",
       "from": "hosted_mcp",
       "to": "mcp_client",
-      "y": 1940,
+      "y": 2150,
       "label": "outside traffic reads normal",
       "variant": "return"
     },
@@ -399,7 +399,7 @@
       "id": "negation-return",
       "from": "mcp_client",
       "to": "loop",
-      "y": 1980,
+      "y": 2190,
       "label": "compact result: negation holds",
       "variant": "return"
     },
@@ -407,7 +407,7 @@
       "id": "submit",
       "from": "model",
       "to": "loop",
-      "y": 2055,
+      "y": 2295,
       "label": "tool_use: submit_report",
       "variant": "emphasis"
     },
@@ -415,14 +415,14 @@
       "id": "validate-check",
       "from": "loop",
       "to": "validate",
-      "y": 2090,
+      "y": 2330,
       "label": "check receipts rule and not_checked against the tool log"
     },
     {
       "id": "validate-reject",
       "from": "validate",
       "to": "loop",
-      "y": 2125,
+      "y": 2365,
       "label": "rejected: a query_id is not in the tool log",
       "variant": "dashed"
     },
@@ -430,15 +430,15 @@
       "id": "loop-reject",
       "from": "loop",
       "to": "model",
-      "y": 2160,
-      "label": "rejected once; a second rejection files the report flagged and the grader charges 0.25",
+      "y": 2400,
+      "label": "rejected once; a second rejection files it flagged, 0.25 off",
       "variant": "dashed"
     },
     {
       "id": "resubmit",
       "from": "model",
       "to": "loop",
-      "y": 2195,
+      "y": 2435,
       "label": "tool_use: submit_report (revised)",
       "variant": "emphasis"
     },
@@ -446,14 +446,14 @@
       "id": "validate-recheck",
       "from": "loop",
       "to": "validate",
-      "y": 2230,
+      "y": 2470,
       "label": "recheck against the tool log"
     },
     {
       "id": "validate-pass",
       "from": "validate",
       "to": "loop",
-      "y": 2265,
+      "y": 2505,
       "label": "receipts rule and not_checked pass",
       "variant": "return"
     }
