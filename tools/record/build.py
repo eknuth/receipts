@@ -34,6 +34,7 @@ HERE = Path(__file__).resolve().parent
 OUT = HERE / "out"
 SCENARIO = "payments-stripe-v251-uswest"
 WIDTH, HEIGHT, FPS = 1600, 900, 30
+BAND = 70  # px under the content for the caption, so it never covers a line
 BACKGROUND = "0x1e1e2e"
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 FINAL = OUT / "receipts-demo-2026-09.mp4"
@@ -99,8 +100,9 @@ def render_png(html: str, out: Path, *, transparent: bool) -> None:
         ".card{display:flex;flex-direction:column;justify-content:center;align-items:center;"
         "height:100%;text-align:center;gap:22px;padding:0 120px;box-sizing:border-box}"
         ".title{font-size:96px;font-weight:700}.line{font-size:40px}.small{font-size:30px;"
-        "color:#cdd6f4}.caption{position:absolute;left:40px;bottom:40px;font-size:28px;"
-        "background:rgba(0,0,0,.55);padding:12px 18px;border-radius:4px}"
+        "color:#cdd6f4}"
+        f".caption{{position:absolute;left:40px;bottom:0;height:{BAND}px;line-height:{BAND}px;"
+        "font-size:26px;color:#cdd6f4}"
         "</style>" + html
     )
     sh(
@@ -128,10 +130,12 @@ def caption_png(text: str, out: Path) -> None:
     render_png(f"<div class='caption'>{text}</div>", out, transparent=True)
 
 
-def normalize_filter() -> str:
+def normalize_filter(band: bool = False) -> str:
+    """Scale and pad to the frame; with `band`, leave BAND px free at the bottom."""
+    height = HEIGHT - BAND if band else HEIGHT
     return (
-        f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease,"
-        f"pad={WIDTH}:{HEIGHT}:(ow-iw)/2:(oh-ih)/2:color={BACKGROUND},"
+        f"scale={WIDTH}:{height}:force_original_aspect_ratio=decrease,"
+        f"pad={WIDTH}:{HEIGHT}:(ow-iw)/2:0:color={BACKGROUND},"
         f"fps={FPS},format=yuv420p"
     )
 
@@ -177,7 +181,7 @@ def still(png: Path, seconds: int, caption: str, out: Path) -> None:
     caption_png(caption, cap)
     encode(
         ["-loop", "1", "-t", str(seconds), "-i", str(png), "-i", str(cap)],
-        f"[0:v]{normalize_filter()},fade=t=in:st=0:d=0.5[base];"
+        f"[0:v]{normalize_filter(band=True)},fade=t=in:st=0:d=0.5[base];"
         f"[base][1:v]overlay=0:0:format=auto,format=yuv420p[v]",
         out,
     )
@@ -188,7 +192,7 @@ def clip(mp4: Path, caption: str, out: Path) -> None:
     caption_png(caption, cap)
     encode(
         ["-i", str(mp4), "-i", str(cap)],
-        f"[0:v]{normalize_filter()}[base];[base][1:v]overlay=0:0:format=auto,format=yuv420p[v]",
+        f"[0:v]{normalize_filter(band=True)}[base];[base][1:v]overlay=0:0:format=auto,format=yuv420p[v]",
         out,
     )
 
@@ -207,7 +211,7 @@ def retimed_clip(mp4: Path, caption: str, out: Path) -> None:
         f"[0:v]trim=0:{AGENT_HEAD_S},setpts=PTS-STARTPTS[a];"
         f"[0:v]trim={AGENT_HEAD_S}:{total - AGENT_TAIL_S},setpts=(PTS-STARTPTS)/{factor:.4f}[b];"
         f"[0:v]trim={total - AGENT_TAIL_S},setpts=PTS-STARTPTS[c];"
-        f"[a][b][c]concat=n=3:v=1:a=0,{normalize_filter()}[base];"
+        f"[a][b][c]concat=n=3:v=1:a=0,{normalize_filter(band=True)}[base];"
         f"[base][1:v]overlay=0:0:format=auto,format=yuv420p[v]"
     )
     encode(["-i", str(mp4), "-i", str(cap)], graph, out)
