@@ -18,15 +18,22 @@ the report being handed off.
 
 Both `canvas_agent_invoke` and `canvas_agent_poll_response` are new as of the
 management key gaining `mcp:write` on 2026-09-07 (see CLAUDE.md's Honeycomb
-facts and the R12 issue notes), and neither tool's exact JSON response shape
-was captured against the live server before this was written, only the
-statuses and fields Honeycomb's own docs describe. `_payload` and `_field`
-below read that JSON defensively, trying a short list of plausible key names
-per field rather than assuming one; if the live shape uses a name outside
-that list, a field comes back `None` instead of raising, and the caller
-still gets a `Handoff` with whatever it found. Confirming the real key names
-against a live call is the orchestrator's job, not this module's, per
-CLAUDE.md's ban on live MCP calls from an implementer.
+facts and the R12 issue notes). Canvas itself needs an OAuth session, not the
+management key: `canvas_agent_invoke` under the key fails with
+`actor_user_hcid is required`, since a management key has no user actor
+(verified live 2026-09-07; `agent/auth.py` and `agent/mcp_client.py`'s
+`_open_streams` are what select OAuth). Both tools return JSON text, and both
+were captured live: `canvas_agent_invoke`'s success payload carries `status`,
+`investigation_id`, `investigation_url`, `session_id`, and
+`investigation_created` (a bool, new information over what Honeycomb's own
+docs describe); `canvas_agent_poll_response`'s completed payload carries
+`status` and the reply under `chat`, not `response` (an earlier draft of this
+module guessed `response` first and never saw `chat` at all, which would
+have read every real reply as empty). `_payload` and `_field` below still
+read that JSON a little defensively, in case a future server version adds a
+field under a different name, but `chat` is tried first for the reply and
+the rest of the candidate list is now a fallback rather than a guess.
+Sanitized fixtures of both live captures are in `tests/fixtures/mcp/`.
 
 The 120 second budget is spent as up to three polls: `wait_seconds` is
 capped at 50 by the server, so the loop asks for `min(50, time left)` each
@@ -82,6 +89,12 @@ class Handoff(BaseModel):
     `agent/board.py`'s `BoardResult`, not looked up here: creating the board
     and talking to Canvas are two different write calls, and a board failure
     should not stop this one from recording what Canvas said, or vice versa.
+
+    `investigation_created` is `canvas_agent_invoke`'s own bool, carried
+    through unchanged: `True` when this call started a new Canvas
+    investigation, `False` when it continued an existing one, `None` when
+    the field never arrived (every no-response path before an `invoke` reply
+    was parsed at all, or a server version that omits it).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -95,6 +108,7 @@ class Handoff(BaseModel):
 
     investigation_id: str | None = None
     investigation_url: str | None = None
+    investigation_created: bool | None = None
     session_id: str | None = None
 
     board_id: str | None = None
@@ -160,7 +174,7 @@ def render_message(report: Report) -> str:
 # --------------------------------------------------------------------------
 
 # Small and literal on purpose: a reader should be able to see the whole
-# rule by reading these three patterns, not by tracing a scoring function.
+# rule by reading these two patterns, not by tracing a scoring function.
 # Word-bounded and case-insensitive so "Agreed" and "disagreement" both hit.
 _DISAGREE = re.compile(
     r"\b(disagree|disagrees|disagreed|incorrect|mistaken|not\s+right|doesn't\s+hold|"
@@ -171,25 +185,24 @@ _AGREE = re.compile(
     r"\b(agree|agrees|agreed|correct|confirmed|checks\s+out|sounds\s+right|makes\s+sense)\b",
     re.IGNORECASE,
 )
-_EXTEND = re.compile(
-    r"\b(also\s+check|i'?d\s+check|i\s+would\s+check|next\s+i'?d|consider\s+checking|"
-    r"worth\s+checking|you\s+should\s+also)\b",
-    re.IGNORECASE,
-)
 
 
 def classify(text: str) -> Classification:
-    """Agree, disagree, or extend, by the first of `_DISAGREE`, `_AGREE`, and
-    `_EXTEND` (in that order) to match anywhere in `text`.
+    """Agree or disagree, by the first of `_DISAGREE` and `_AGREE` to match
+    anywhere in `text`; `extend` for anything else non-empty; `no_response`
+    for empty or whitespace-only text.
 
     Disagree is checked first: a reply that hedges an agreement with a
     disagreement ("I agree the span is right, but I disagree on the region")
     is read as a disagreement, since missing one is the worse mistake for
-    what this classifier is for. A reply that matches neither agree nor
-    disagree, but has some text, is `extend`: the question always asks what
-    to check next, so a reply that answers only that part, without taking a
-    side, still counts as Canvas engaging rather than as no answer. Empty or
-    whitespace-only text is `no_response`, the same as no reply at all.
+    what this classifier is for. There is no separate keyword pattern for
+    `extend`: the question always asks what to check next, so any reply that
+    takes neither side but still has content, whether it names something to
+    check or not (a live Canvas reply can be pure commentary with no
+    concrete next step named at all), counts as Canvas engaging rather than
+    as no answer. An earlier version of this function kept an unused
+    `_EXTEND` pattern that its own docstring claimed was consulted; matching
+    on it here would have missed real replies like that.
     """
     if _DISAGREE.search(text):
         return "disagree"
@@ -235,6 +248,12 @@ def _field(payload: dict[str, Any], *names: str) -> str | None:
     return None
 
 
+def _bool_field(payload: dict[str, Any], name: str) -> bool | None:
+    """`payload[name]` if it is a JSON bool, else None (missing, or some other type)."""
+    value = payload.get(name)
+    return value if isinstance(value, bool) else None
+
+
 def _no_response(
     run_id: str,
     prompt: str,
@@ -242,6 +261,7 @@ def _no_response(
     *,
     investigation_id: str | None = None,
     investigation_url: str | None = None,
+    investigation_created: bool | None = None,
     session_id: str | None = None,
     board_id: str | None = None,
     board_url: str | None = None,
@@ -254,6 +274,7 @@ def _no_response(
         classification="no_response",
         investigation_id=investigation_id,
         investigation_url=investigation_url,
+        investigation_created=investigation_created,
         session_id=session_id,
         board_id=board_id,
         board_url=board_url,
@@ -306,6 +327,7 @@ async def hand_off(
     payload = _payload(invoke)
     investigation_id = _field(payload, "investigation_id")
     investigation_url = _field(payload, "investigation_url")
+    investigation_created = _bool_field(payload, "investigation_created")
     session_id = _field(payload, "session_id")
     status = _field(payload, "status")
 
@@ -316,6 +338,7 @@ async def hand_off(
             "error",
             investigation_id=investigation_id,
             investigation_url=investigation_url,
+            investigation_created=investigation_created,
             board_id=board_id,
             board_url=board_url,
             error=_field(payload, "message") or getattr(invoke, "text", None),
@@ -327,6 +350,7 @@ async def hand_off(
             "busy",
             investigation_id=investigation_id,
             investigation_url=investigation_url,
+            investigation_created=investigation_created,
             board_id=board_id,
             board_url=board_url,
             error=_field(payload, "message"),
@@ -338,6 +362,7 @@ async def hand_off(
             "error",
             investigation_id=investigation_id,
             investigation_url=investigation_url,
+            investigation_created=investigation_created,
             board_id=board_id,
             board_url=board_url,
             error=f"unexpected canvas_agent_invoke status {status!r}",
@@ -352,6 +377,7 @@ async def hand_off(
                 "timeout",
                 investigation_id=investigation_id,
                 investigation_url=investigation_url,
+                investigation_created=investigation_created,
                 session_id=session_id,
                 board_id=board_id,
                 board_url=board_url,
@@ -374,6 +400,7 @@ async def hand_off(
                 "error",
                 investigation_id=investigation_id,
                 investigation_url=investigation_url,
+                investigation_created=investigation_created,
                 session_id=session_id,
                 board_id=board_id,
                 board_url=board_url,
@@ -390,6 +417,7 @@ async def hand_off(
                 "error",
                 investigation_id=investigation_id,
                 investigation_url=investigation_url,
+                investigation_created=investigation_created,
                 session_id=session_id,
                 board_id=board_id,
                 board_url=board_url,
@@ -402,13 +430,21 @@ async def hand_off(
                 "busy",
                 investigation_id=investigation_id,
                 investigation_url=investigation_url,
+                investigation_created=investigation_created,
                 session_id=session_id,
                 board_id=board_id,
                 board_url=board_url,
                 error=_field(poll_payload, "message"),
             )
         if poll_status == "completed":
-            raw_text = _field(poll_payload, "response", "reply", "message", "text", "content") or ""
+            # `chat` is the live server's real field name (verified
+            # 2026-09-07; see the module docstring). The rest of the list is
+            # a fallback for a server version that names it differently, not
+            # a guess about the current one.
+            raw_text = (
+                _field(poll_payload, "chat", "response", "reply", "message", "text", "content")
+                or ""
+            )
             return Handoff(
                 run_id=report.run_id,
                 prompt=prompt,
@@ -417,6 +453,7 @@ async def hand_off(
                 raw_text=raw_text,
                 investigation_id=investigation_id,
                 investigation_url=investigation_url,
+                investigation_created=investigation_created,
                 session_id=session_id,
                 board_id=board_id,
                 board_url=board_url,

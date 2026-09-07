@@ -14,6 +14,7 @@ does not carry them. Call .get_secret_value() at the point of use.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -46,6 +47,20 @@ class Settings(BaseSettings):
     honeycomb_otlp_endpoint: str = "https://api.honeycomb.io"
     honeycomb_dataset: str = "receipts-shop"
     honeycomb_env: str = "receipts-demo"
+
+    # R12 (EDW-1334): canvas_agent_invoke needs a user actor. A management
+    # key has none and fails with "actor_user_hcid is required" (verified
+    # live 2026-09-07), so Canvas needs an OAuth session; every read tool and
+    # the whole eval matrix keep working under the key, which is why key
+    # stays the default and oauth is opt-in rather than a replacement.
+    # agent/mcp_client.py's _open_streams reads this to pick which auth
+    # agent/auth.py builds. honeycomb_oauth_token_path is where that
+    # module's login command stores the access token, refresh token, and
+    # registered client info; it must never be under the repo (the same
+    # reasoning as honeycomb_mcp_key living only in .env), so the default is
+    # outside it and the file is created 0600.
+    honeycomb_auth: Literal["key", "oauth"] = "key"
+    honeycomb_oauth_token_path: Path = Path.home() / ".receipts" / "honeycomb_oauth.json"
 
     # Anthropic. The key is identity-linked, so anthropic_workspace_id must be
     # sent as the anthropic-workspace-id header on every request.

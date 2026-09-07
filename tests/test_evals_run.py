@@ -1233,13 +1233,60 @@ class _WriteResult:
     is_error: bool = False
 
 
+def _fake_boards_markdown(boards: list[dict[str, Any]]) -> str:
+    """A `list_boards`-shaped page: real header, one row per board, a
+    `Metadata:` block with `total_pages: 1` (every board fits on one page in
+    these tests). Matches the live shape in `tests/fixtures/mcp/list_boards.json`."""
+    lines = ["# Boards", ""]
+    if boards:
+        lines.append(
+            "| ID | Name | Description | Private | QueryCount | SLOCount | TextCount "
+            "| UpdatedAt | Tags |"
+        )
+        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+        for b in boards:
+            lines.append(
+                f"| {b['id']} | {b['name']} |  | false | 0 | 0 | 1 | 2026-09-07T00:00:00Z |  |"
+            )
+    lines += [
+        "",
+        "---",
+        "Metadata:",
+        "  environment: receipts-demo",
+        "  page: 1",
+        f"  total_items: {len(boards)}",
+        "  total_pages: 1",
+    ]
+    return "\n".join(lines)
+
+
+def _fake_created_board_markdown(board_id: str, board_url: str, name: str) -> str:
+    """A `create_board`-shaped success reply, matching the live shape in
+    `tests/fixtures/mcp/create_board.json`."""
+    return (
+        "Board created successfully.\n\n---\nMetadata:\n"
+        f"  board_id: {board_id}\n"
+        f"  board_name: {name}\n"
+        f'  board_url: "{board_url}"\n'
+        "  environment: receipts-demo\n"
+        "  text_count: 1\n"
+    )
+
+
 @dataclass
 class FakeWriteMCP:
     """Enough of a write-capable HoneycombMCP for `agent/board.py` and
     `agent/handoff.py`: `list_boards`, `create_board`, `canvas_agent_invoke`,
     and `canvas_agent_poll_response`, answered from fixed, successful
     responses. `boards` starts empty so the first `ensure_board` call always
-    creates one."""
+    creates one.
+
+    `list_boards` and `create_board` answer with real-shaped Markdown text
+    (see `agent/board.py`'s module docstring: both are Markdown, not JSON,
+    confirmed live 2026-09-07); `canvas_agent_invoke` and
+    `canvas_agent_poll_response` still answer with a JSON `raw` dict, since
+    those two are JSON on the wire.
+    """
 
     boards: list[dict[str, Any]] = field(default_factory=list)
     reply: str = "I agree with this."
@@ -1249,16 +1296,16 @@ class FakeWriteMCP:
     async def call(self, name: str, args: dict[str, Any] | None = None, **kwargs: Any) -> Any:
         self.calls.append((name, dict(args or {})))
         if name == "list_boards":
-            return _WriteResult(raw={"boards": list(self.boards)})
+            return _WriteResult(raw=None, text=_fake_boards_markdown(self.boards))
         if name == "create_board":
             self.created_count += 1
-            board = {
-                "id": f"brd-{self.created_count}",
-                "url": f"https://ui.honeycomb.io/team/boards/brd-{self.created_count}",
-                "name": (args or {})["name"],
-            }
-            self.boards.append(board)
-            return _WriteResult(raw=board)
+            board_id = f"brd-{self.created_count}"
+            board_url = f"https://ui.honeycomb.io/team/boards/{board_id}"
+            name_arg = (args or {})["name"]
+            self.boards.append({"id": board_id, "name": name_arg})
+            return _WriteResult(
+                raw=None, text=_fake_created_board_markdown(board_id, board_url, name_arg)
+            )
         if name == "canvas_agent_invoke":
             return _WriteResult(
                 raw={
@@ -1266,10 +1313,11 @@ class FakeWriteMCP:
                     "session_id": "sess-1",
                     "investigation_id": "hcciv_1",
                     "investigation_url": "https://ui.honeycomb.io/team/canvas/1",
+                    "investigation_created": True,
                 }
             )
         if name == "canvas_agent_poll_response":
-            return _WriteResult(raw={"status": "completed", "response": self.reply})
+            return _WriteResult(raw={"status": "completed", "chat": self.reply})
         raise AssertionError(f"unexpected call to {name!r}")
 
 
@@ -1404,3 +1452,26 @@ def test_handoff_flag_is_off_by_default_in_the_cli() -> None:
 
     args = _parse_args(["--scenarios", "all"])
     assert args.handoff is False
+
+
+def test_handoff_with_key_auth_fails_fast_and_names_the_login_command(
+    tmp_path: Path,
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`--handoff` needs Canvas, which needs OAuth (a management key has no
+    user actor); with the default `honeycomb_auth="key"`, the CLI must say so
+    and exit before opening any session, not run the whole matrix first and
+    record a Canvas error on every cell."""
+    monkeypatch.setenv("HONEYCOMB_MCP_KEY", "fake-key-id:fake-secret")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-anthropic-key")
+    monkeypatch.setenv("ANTHROPIC_WORKSPACE_ID", "fake-workspace-id")
+    safe = ["--results-dir", str(tmp_path / "results"), "--runs-dir", str(tmp_path / "runs")]
+
+    assert main(["--scenarios", CONTROL, "--handoff", *safe]) == 2
+
+    err = capsys.readouterr().err
+    assert "agent.auth login" in err
+    assert "HONEYCOMB_AUTH=oauth" in err
+    assert not (tmp_path / "results").exists()  # nothing ran

@@ -1145,6 +1145,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"error: missing or invalid in .env: {missing}", file=sys.stderr)
         return 2
 
+    if args.handoff and settings.honeycomb_auth != "oauth":
+        print(
+            "error: --handoff talks to Canvas (canvas_agent_invoke), which needs a Honeycomb "
+            "OAuth session; a management key has no user actor and fails with "
+            "'actor_user_hcid is required'. Run `uv run python -m agent.auth login`, set "
+            "HONEYCOMB_AUTH=oauth in .env, and try again.",
+            file=sys.stderr,
+        )
+        return 2
+
     console = Console()
     telemetry = Telemetry(settings)
     try:

@@ -1,0 +1,13 @@
+{
+  "tool": "canvas_agent_poll_response",
+  "args": {
+    "investigation_id": "hcaiv_00fake0000000000000000000",
+    "session_id": "00000000-0000-4000-8000-000000000000",
+    "wait_seconds": 30
+  },
+  "structured_content": null,
+  "content_texts": [
+    "{\"status\":\"completed\",\"chat\":\"This is a smoke test from an external agent \\u2014 no investigation needed... standing by for a real observability question whenever you are.\"}"
+  ],
+  "is_error": false
+}

@@ -1,16 +1,39 @@
-"""Tests for agent/board.py: panel selection and the duplicate-board check.
+"""Tests for agent/board.py: panel selection, the duplicate-board check, and
+the Markdown parsing of `create_board` and `list_boards`.
 
-No test here makes a network call; `FakeBoardMCP` stands in for a
-`HoneycombMCP` opened with `allow_write=True`.
+Both tools' real shape is Markdown text, not JSON (see the module docstring
+in `agent/board.py`); `tests/fixtures/mcp/create_board*.json` and
+`list_boards*.json` are sanitized captures from a live call on 2026-09-07,
+and the tests that parse them drive the assertions from that real text
+rather than a hand-built dict. No test here makes a network call.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
-from agent.board import BoardResult, board_name, ensure_board, run_tag
+from agent.board import (
+    BoardResult,
+    _find_existing,
+    _parse_created_board,
+    board_name,
+    ensure_board,
+    run_tag,
+)
 from agent.report import Evidence, Hypothesis, Report
+
+FIXTURES = Path(__file__).parent / "fixtures" / "mcp"
+
+
+def load(name: str) -> dict:
+    return json.loads((FIXTURES / f"{name}.json").read_text())
+
+
+def text_of(fixture: dict) -> str:
+    return "\n".join(fixture["content_texts"])
 
 
 def make_report(**overrides: Any) -> Report:
@@ -42,38 +65,84 @@ def make_report(**overrides: Any) -> Report:
 
 @dataclass
 class _Result:
-    raw: Any
+    """Stands in for `HoneycombMCP.call`'s return: only `.text` and
+    `.is_error` matter to `agent/board.py`, which reads the Markdown off
+    `.text` the same way a real `ToolResult` carries it."""
+
     text: str = ""
     is_error: bool = False
 
 
+def _boards_markdown(boards: list[dict[str, str]], *, page: int, total_pages: int) -> str:
+    """A `list_boards`-shaped page: the real table header and a `Metadata:`
+    block naming `page` and `total_pages`, matching `tests/fixtures/mcp/list_boards.json`."""
+    lines = ["# Boards", ""]
+    if boards:
+        lines.append(
+            "| ID | Name | Description | Private | QueryCount | SLOCount | TextCount "
+            "| UpdatedAt | Tags |"
+        )
+        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+        for b in boards:
+            lines.append(
+                f"| {b['id']} | {b['name']} |  | false | 0 | 0 | 1 | 2026-09-07T00:00:00Z |  |"
+            )
+    lines += [
+        "",
+        "---",
+        "Metadata:",
+        "  environment: receipts-demo",
+        "  items_per_page: 25",
+        f"  page: {page}",
+        f"  total_items: {len(boards)}",
+        f"  total_pages: {total_pages}",
+    ]
+    return "\n".join(lines)
+
+
+def _created_board_markdown(board_id: str, board_url: str, name: str) -> str:
+    """A `create_board`-shaped success reply, matching
+    `tests/fixtures/mcp/create_board.json`'s real shape."""
+    return (
+        "Board created successfully.\n\n---\nMetadata:\n"
+        f"  board_id: {board_id}\n"
+        f"  board_name: {name}\n"
+        f'  board_url: "{board_url}"\n'
+        "  environment: receipts-demo\n"
+        "  text_count: 1\n"
+        '  updated_at: "2026-09-07T00:00:00Z"\n'
+    )
+
+
 @dataclass
 class FakeBoardMCP:
-    """Records every call and answers from a queue keyed by tool name.
+    """Records every call and answers with real-shaped Markdown.
 
-    `boards` is the list `list_boards` returns from its first page, mutated
-    directly by a test to simulate a board that already exists.
+    `boards` is a single page's worth (every test here fits on one page
+    except the dedicated pagination test below, which uses its own fake).
     """
 
-    boards: list[dict[str, Any]] = field(default_factory=list)
-    create_result: Any = None
+    boards: list[dict[str, str]] = field(default_factory=list)
+    create_error_text: str | None = None
     calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
     created_count: int = 0
 
     async def call(self, name: str, args: dict[str, Any] | None = None, **kwargs: Any) -> Any:
         self.calls.append((name, dict(args or {})))
         if name == "list_boards":
-            return _Result(raw={"boards": list(self.boards)})
+            page = (args or {}).get("page", 1)
+            return _Result(text=_boards_markdown(self.boards, page=page, total_pages=1))
         if name == "create_board":
+            if self.create_error_text is not None:
+                return _Result(text=self.create_error_text, is_error=True)
             self.created_count += 1
-            board = {
-                "id": f"brd-{self.created_count}",
-                "url": f"https://ui.honeycomb.io/team/boards/brd-{self.created_count}",
-            }
-            self.boards.append({**board, "name": (args or {})["name"]})
-            if self.create_result is not None:
-                return self.create_result
-            return _Result(raw=board)
+            board_id = f"brd-{self.created_count}"
+            board_url = (
+                f"https://ui.honeycomb.io/acme-team/environments/receipts-demo/board/{board_id}"
+            )
+            entry_name = (args or {})["name"]
+            self.boards.append({"id": board_id, "name": entry_name})
+            return _Result(text=_created_board_markdown(board_id, board_url, entry_name))
         raise AssertionError(f"unexpected call to {name!r}")
 
 
@@ -88,7 +157,7 @@ def test_board_name_is_receipts_scenario_and_the_first_eight_of_run_id() -> None
     assert board_name(report) == "receipts payments-stripe-v251-uswest run-abcd"
 
 
-async def test_the_top_three_evidence_queries_become_query_panels_plus_one_text_panel() -> None:
+def test_the_top_three_evidence_queries_become_query_panels_plus_one_text_panel() -> None:
     from agent.board import _panels
 
     panels = _panels(make_report())
@@ -99,6 +168,47 @@ async def test_the_top_three_evidence_queries_become_query_panels_plus_one_text_
     assert len(text_panels) == 1
     assert "id" not in text_panels[0]
     assert panels[-1]["type"] == "text"  # text panel last
+
+
+def test_every_query_panel_carries_a_nonempty_name() -> None:
+    """The live server rejects a query panel with no `name` even though the
+    documented schema calls it optional (verified 2026-09-07); every panel
+    `_panels` builds must carry one."""
+    from agent.board import _panels
+
+    panels = _panels(make_report())
+    query_panels = [p for p in panels if p["type"] == "query"]
+    assert len(query_panels) == 3
+    for panel in query_panels:
+        assert panel["name"].strip()
+
+
+def test_a_query_panels_name_comes_from_its_evidence_summary() -> None:
+    from agent.board import _panels
+
+    panels = _panels(make_report())
+    query_panels = [p for p in panels if p["type"] == "query"]
+    assert query_panels[0]["name"] == "P99 went from 180ms to 980ms"
+    assert query_panels[0]["description"] == "P99 went from 180ms to 980ms"
+
+
+def test_a_blank_evidence_summary_still_produces_a_nonempty_panel_name() -> None:
+    """A blank summary must not take the whole board down with it (create_board
+    rejects a nameless query panel outright); a numbered fallback stands in."""
+    from agent.board import _panels
+
+    report = make_report(
+        hypotheses=[
+            Hypothesis(
+                claim="one query, blank summary",
+                confidence="low",
+                evidence=[Evidence(query_id="Q1", summary="   ")],
+            )
+        ]
+    )
+    panels = _panels(report)
+    query_panel = next(p for p in panels if p["type"] == "query")
+    assert query_panel["name"] == "Evidence 1"
 
 
 def test_fewer_than_three_evidence_items_degrades_to_fewer_query_panels() -> None:
@@ -136,6 +246,7 @@ def test_the_text_panel_carries_the_report_summary() -> None:
     assert "stripe calls in payments gained about 800ms" in text_panel["content"]
     assert "inventory-db timeouts" in text_panel["content"]
     assert "id" not in text_panel
+    assert "name" not in text_panel
 
 
 # --------------------------------------------------------------------------
@@ -150,6 +261,92 @@ def test_run_tag_accepts_the_real_run_id_shape() -> None:
 def test_run_tag_rejects_a_value_that_would_not_satisfy_the_tag_rule() -> None:
     assert run_tag("4155490e2a44") is None  # does not start with a letter
     assert run_tag("RUN-4155490e2a44") is None  # uppercase first character
+
+
+# --------------------------------------------------------------------------
+# Parsing the real (sanitized) Markdown fixtures
+# --------------------------------------------------------------------------
+
+
+def test_create_board_success_parsed_from_the_real_fixture() -> None:
+    fixture = load("create_board")
+    board_id, board_url = _parse_created_board(_Result(text=text_of(fixture)))
+    assert board_id == "FAKEbrd0001x"
+    assert board_url == (
+        "https://ui.honeycomb.io/acme-team/environments/receipts-demo/board/FAKEbrd0001x"
+    )
+
+
+async def test_find_existing_parses_both_rows_of_the_real_list_boards_fixture() -> None:
+    fixture = load("list_boards")
+    text = text_of(fixture)
+
+    class OneCallMCP:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def call(self, name: str, args: dict[str, Any] | None = None, **kwargs: Any) -> Any:
+            assert name == "list_boards"
+            self.calls += 1
+            return _Result(text=text)
+
+    tagged = OneCallMCP()
+    result = await _find_existing(
+        tagged, environment_slug="receipts-demo", name="receipts probe tagged", tag=None
+    )
+    assert result == ("FAKEbrd0002x", None)
+    assert tagged.calls == 1  # total_pages: 1 in the fixture, so no second page is fetched
+
+    untagged = OneCallMCP()
+    result2 = await _find_existing(
+        untagged, environment_slug="receipts-demo", name="receipts probe text only", tag=None
+    )
+    assert result2 == ("FAKEbrd0001x", None)
+
+
+async def test_find_existing_with_the_real_empty_list_boards_fixture_finds_nothing() -> None:
+    fixture = load("list_boards_empty")
+    text = text_of(fixture)
+
+    class EmptyMCP:
+        async def call(self, name: str, args: dict[str, Any] | None = None, **kwargs: Any) -> Any:
+            return _Result(text=text)
+
+    result = await _find_existing(
+        EmptyMCP(), environment_slug="receipts-demo", name="anything at all", tag=None
+    )
+    assert result is None
+
+
+async def test_find_existing_reads_pages_up_to_the_metadata_total_pages() -> None:
+    """`total_pages` from the server's own Metadata block drives pagination,
+    not a fixed guess: the match here sits on page 2 of 2."""
+    pages = {
+        1: _boards_markdown(
+            [{"id": "brd-x", "name": "receipts other-scenario run-0000"}], page=1, total_pages=2
+        ),
+        2: _boards_markdown(
+            [{"id": "brd-y", "name": "receipts payments-stripe-v251-uswest run-abcd"}],
+            page=2,
+            total_pages=2,
+        ),
+    }
+
+    class PagedMCP:
+        def __init__(self) -> None:
+            self.calls: list[int] = []
+
+        async def call(self, name: str, args: dict[str, Any] | None = None, **kwargs: Any) -> Any:
+            assert name == "list_boards"
+            page = (args or {})["page"]
+            self.calls.append(page)
+            return _Result(text=pages[page])
+
+    mcp = PagedMCP()
+    result = await ensure_board(make_report(), mcp, environment_slug="receipts-demo")
+    assert result.created is False
+    assert result.board_id == "brd-y"
+    assert mcp.calls == [1, 2]
 
 
 # --------------------------------------------------------------------------
@@ -168,7 +365,11 @@ async def test_two_calls_for_the_same_run_id_create_exactly_one_board() -> None:
     assert first.created is True
     assert second.created is False
     assert first.board_id == second.board_id
-    assert first.board_url == second.board_url
+    # The freshly created board gets a url straight from create_board; the
+    # rediscovered one does not, since list_boards' table has no url column
+    # (confirmed live 2026-09-07) and this module does not reconstruct one.
+    assert first.board_url is not None
+    assert second.board_url is None
 
 
 async def test_list_boards_runs_before_create_board() -> None:
@@ -177,7 +378,7 @@ async def test_list_boards_runs_before_create_board() -> None:
     assert [name for name, _ in mcp.calls] == ["list_boards", "create_board"]
 
 
-async def test_create_board_is_named_and_scoped_to_the_right_environment() -> None:
+async def test_create_board_is_named_scoped_and_carries_named_query_panels() -> None:
     mcp = FakeBoardMCP()
     report = make_report()
     await ensure_board(report, mcp, environment_slug="receipts-demo")
@@ -185,14 +386,14 @@ async def test_create_board_is_named_and_scoped_to_the_right_environment() -> No
     assert args["name"] == board_name(report)
     assert args["environment_slug"] == "receipts-demo"
     assert len(args["panels"]) == 4  # 3 query + 1 text
+    query_panels = [p for p in args["panels"] if p["type"] == "query"]
+    assert all(p["name"] for p in query_panels)
 
 
 async def test_a_board_matching_by_name_on_a_later_page_is_still_found() -> None:
     """A board from an earlier ensure_board call for a different run sits in
     front of the one being looked for; the match is by name, not position."""
-    mcp = FakeBoardMCP(
-        boards=[{"id": "brd-other", "url": "https://x", "name": "receipts other-scenario run-0000"}]
-    )
+    mcp = FakeBoardMCP(boards=[{"id": "brd-other", "name": "receipts other-scenario run-0000"}])
     report = make_report()
     result = await ensure_board(report, mcp, environment_slug="receipts-demo")
     assert result.created is True  # the existing board's name does not match
@@ -200,11 +401,15 @@ async def test_a_board_matching_by_name_on_a_later_page_is_still_found() -> None
 
 
 async def test_a_failed_create_board_is_recorded_and_never_raises() -> None:
-    mcp = FakeBoardMCP(create_result=_Result(raw={}, text="quota exceeded", is_error=True))
+    """The real minimal-panel rejection text, captured live: `create_board`
+    can fail outright (a nameless query panel, a quota, or anything else the
+    server flags), and that must come back as a BoardResult, never a raise."""
+    fixture = load("create_board_error")
+    mcp = FakeBoardMCP(create_error_text=text_of(fixture))
     result = await ensure_board(make_report(), mcp, environment_slug="receipts-demo")
     assert result.created is False
     assert result.board_id is None
-    assert result.error == "quota exceeded"
+    assert result.error == "Unable to create board"
 
 
 async def test_a_raising_call_is_recorded_and_never_raises() -> None:

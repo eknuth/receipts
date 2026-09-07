@@ -1,0 +1,9 @@
+{
+  "tool": "list_boards",
+  "args": {"environment_slug": "receipts-demo", "page": 1},
+  "structured_content": null,
+  "content_texts": [
+    "# Boards\n\n---\nMetadata:\n  environment: receipts-demo\n  items_per_page: 25\n  page: 1\n  total_items: 0\n  total_pages: 0\n"
+  ],
+  "is_error": false
+}

@@ -1,0 +1,14 @@
+{
+  "tool": "create_board",
+  "args": {
+    "environment_slug": "receipts-demo",
+    "name": "receipts probe with query",
+    "panels": [{"type": "query", "id": "FAKEq0001", "description": "P99 went from 180ms to 980ms"}],
+    "tags": []
+  },
+  "structured_content": null,
+  "content_texts": [
+    "Unable to create board"
+  ],
+  "is_error": true
+}

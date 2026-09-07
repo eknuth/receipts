@@ -5,14 +5,26 @@ stands in for a `HoneycombMCP` opened with `allow_write=True`.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from agent.handoff import DEFAULT_DEADLINE_S, Handoff, classify, hand_off, render_message
 from agent.report import Evidence, Hypothesis, Report
+
+FIXTURES = Path(__file__).parent / "fixtures" / "mcp"
+
+
+def load(name: str) -> dict:
+    return json.loads((FIXTURES / f"{name}.json").read_text())
+
+
+def text_of(fixture: dict) -> str:
+    return "\n".join(fixture["content_texts"])
 
 
 def make_report(**overrides: Any) -> Report:
@@ -174,6 +186,52 @@ async def test_completed_on_first_poll() -> None:
     assert result.investigation_url.endswith("/canvas/abc123")
 
 
+async def test_the_reply_field_is_chat_first_not_response() -> None:
+    """The live server's completed reply carries the field `chat`, not
+    `response` (verified 2026-09-07; see tests/fixtures/mcp/canvas_agent_poll_response.json).
+    An earlier version of `hand_off` tried `response` first and would have
+    read every real reply as empty; `chat` must win even when both are present."""
+    mcp = FakeCanvasMCP()
+    mcp.queue("canvas_agent_invoke", INVOKE_RUNNING)
+    mcp.queue(
+        "canvas_agent_poll_response",
+        _Result(raw={"status": "completed", "chat": "from chat", "response": "from response"}),
+    )
+
+    result = await hand_off(make_report(), mcp, clock=clock_sequence(0.0, 0.0))
+
+    assert result.raw_text == "from chat"
+
+
+async def test_the_real_captured_completed_reply_parses_and_classifies_as_extend() -> None:
+    """Drives the poll step from the real (sanitized) live capture rather
+    than a hand-built dict, so the test pins the server's actual shape."""
+    invoke_fixture = load("canvas_agent_invoke")
+    poll_fixture = load("canvas_agent_poll_response")
+    mcp = FakeCanvasMCP()
+    mcp.queue("canvas_agent_invoke", _Result(raw=text_of(invoke_fixture)))
+    mcp.queue("canvas_agent_poll_response", _Result(raw=text_of(poll_fixture)))
+
+    result = await hand_off(make_report(), mcp, clock=clock_sequence(0.0, 0.0))
+
+    assert result.status == "completed"
+    assert result.classification != "no_response"
+    assert "smoke test" in (result.raw_text or "")
+    assert result.investigation_created is True
+    assert result.investigation_id == "hcaiv_00fake0000000000000000000"
+    assert result.session_id == "00000000-0000-4000-8000-000000000000"
+
+
+async def test_investigation_created_defaults_to_none_when_the_field_is_absent() -> None:
+    mcp = FakeCanvasMCP()
+    mcp.queue("canvas_agent_invoke", INVOKE_RUNNING)  # no investigation_created key at all
+    mcp.queue("canvas_agent_poll_response", _Result(raw={"status": "completed", "chat": "ok"}))
+
+    result = await hand_off(make_report(), mcp, clock=clock_sequence(0.0, 0.0))
+
+    assert result.investigation_created is None
+
+
 async def test_running_then_completed_polls_again_with_the_same_ids() -> None:
     mcp = FakeCanvasMCP()
     mcp.queue("canvas_agent_invoke", INVOKE_RUNNING)
@@ -296,6 +354,7 @@ def test_handoff_is_a_pydantic_model_with_the_required_fields() -> None:
         "raw_text",
         "investigation_id",
         "investigation_url",
+        "investigation_created",
         "session_id",
         "board_id",
         "board_url",

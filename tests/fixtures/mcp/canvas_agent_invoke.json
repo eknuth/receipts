@@ -1,0 +1,12 @@
+{
+  "tool": "canvas_agent_invoke",
+  "args": {
+    "prompt": "Smoke test from an external agent.",
+    "title": "receipts oauth smoke"
+  },
+  "structured_content": null,
+  "content_texts": [
+    "{\"status\":\"running\",\"investigation_id\":\"hcaiv_00fake0000000000000000000\",\"investigation_url\":\"https://ui.honeycomb.io/acme-team/v2/canvas/investigations/hcaiv_00fake0000000000000000000\",\"session_id\":\"00000000-0000-4000-8000-000000000000\",\"investigation_created\":true,\"next_step\":\"Call canvas_agent_poll_response with these (investigation_id, session_id) values...\"}"
+  ],
+  "is_error": false
+}

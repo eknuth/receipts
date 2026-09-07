@@ -1,9 +1,11 @@
 """Client for the hosted Honeycomb MCP.
 
-Talks to `https://mcp.honeycomb.io/mcp` over streamable HTTP with a Bearer
-management key. Read tools are allowed by default; write tools (board and
-Canvas creation, R12) raise `ToolNotAllowed` unless the caller opts in with
-`allow_write=True`.
+Talks to `https://mcp.honeycomb.io/mcp` over streamable HTTP, authenticated
+either way `settings.honeycomb_auth` says: a Bearer management key (the
+default, `"key"`) or an OAuth session built from `agent/auth.py` (`"oauth"`,
+needed for Canvas; see `_open_streams`). Read tools are allowed by default;
+write tools (board and Canvas creation, R12) raise `ToolNotAllowed` unless
+the caller opts in with `allow_write=True`.
 
 Tools that take a `dataset_slug` on the server (`DATASET_SCOPED_TOOLS`) are
 refused unless it names `settings.honeycomb_dataset`, so an investigation
@@ -60,6 +62,7 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.exceptions import MCPError
 
 from agent import format as fmt
+from agent.auth import require_oauth_provider
 from receipts.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -336,6 +339,29 @@ class HoneycombMCP:
             return True
         return self._allow_write and name in WRITE_TOOLS
 
+    async def _build_http_client(self) -> httpx2.AsyncClient:
+        """The httpx2 client `_open_streams` wraps with the streamable-HTTP
+        transport, picked by `settings.honeycomb_auth`.
+
+        `"key"` (the default) sends the management key as a Bearer header,
+        unchanged since before R12. `"oauth"` builds an `OAuthClientProvider`
+        from `agent.auth.require_oauth_provider`, which raises
+        `OAuthNotAuthorized` naming the login command rather than opening a
+        browser here. Canvas (R12, EDW-1334) needs OAuth; a management key
+        has no user actor and `canvas_agent_invoke` fails with
+        `actor_user_hcid is required` under one, verified live on
+        2026-09-07. Split out from `_open_streams` so a test can build and
+        inspect one without opening a real transport.
+        """
+        if self._settings.honeycomb_auth == "oauth":
+            provider = await require_oauth_provider(self._settings)
+            return httpx2.AsyncClient(auth=provider, timeout=httpx2.Timeout(30.0, read=300.0))
+        key = self._settings.honeycomb_mcp_key.get_secret_value()
+        return httpx2.AsyncClient(
+            headers={"Authorization": f"Bearer {key}"},
+            timeout=httpx2.Timeout(30.0, read=300.0),
+        )
+
     async def _open_streams(self, stack: AsyncExitStack) -> tuple[Any, Any]:
         """Open the transport and return its (read, write) streams.
 
@@ -344,11 +370,7 @@ class HoneycombMCP:
         """
         http_client = self._http_client
         if http_client is None:
-            key = self._settings.honeycomb_mcp_key.get_secret_value()
-            http_client = httpx2.AsyncClient(
-                headers={"Authorization": f"Bearer {key}"},
-                timeout=httpx2.Timeout(30.0, read=300.0),
-            )
+            http_client = await self._build_http_client()
             await stack.enter_async_context(http_client)
         return await stack.enter_async_context(
             streamable_http_client(self._settings.honeycomb_mcp_url, http_client=http_client)

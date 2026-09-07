@@ -1005,6 +1005,58 @@ async def test_an_error_unrelated_to_group_indices_is_not_hinted(settings: Setti
     assert result.hinted is False
 
 
+# --------------------------------------------------------------------------
+# OAuth (R12, EDW-1334): which auth _build_http_client picks
+# --------------------------------------------------------------------------
+
+
+async def test_key_auth_sends_the_management_key_as_a_bearer_header(settings: Settings) -> None:
+    mcp = HoneycombMCP(settings=settings)  # settings.honeycomb_auth defaults to "key"
+    client = await mcp._build_http_client()
+    async with client:
+        assert (
+            client.headers["Authorization"]
+            == f"Bearer {settings.honeycomb_mcp_key.get_secret_value()}"
+        )
+
+
+async def test_oauth_auth_with_no_stored_token_raises_before_building_a_client(
+    settings: Settings, tmp_path: Any
+) -> None:
+    from agent.auth import OAuthNotAuthorized
+
+    oauth_settings = settings.model_copy(
+        update={
+            "honeycomb_auth": "oauth",
+            "honeycomb_oauth_token_path": tmp_path / "honeycomb_oauth.json",
+        }
+    )
+    mcp = HoneycombMCP(settings=oauth_settings)
+    with pytest.raises(OAuthNotAuthorized):
+        await mcp._build_http_client()
+
+
+async def test_oauth_auth_with_a_stored_token_builds_a_client_with_the_oauth_provider(
+    settings: Settings, tmp_path: Any
+) -> None:
+    from mcp.client.auth import OAuthClientProvider
+    from mcp.shared.auth import OAuthToken
+
+    from agent.auth import FileTokenStorage
+
+    token_path = tmp_path / "honeycomb_oauth.json"
+    await FileTokenStorage(token_path).set_tokens(
+        OAuthToken(access_token="at-1", refresh_token="rt-1", expires_in=3600)
+    )
+    oauth_settings = settings.model_copy(
+        update={"honeycomb_auth": "oauth", "honeycomb_oauth_token_path": token_path}
+    )
+    mcp = HoneycombMCP(settings=oauth_settings)
+    client = await mcp._build_http_client()
+    async with client:
+        assert isinstance(client.auth, OAuthClientProvider)
+
+
 def test_meta_kwarg_serializes_to_wire_key_meta() -> None:
     """The SDK's own serialization: `meta=` on CallToolRequestParams lands at `_meta`."""
     params = types.CallToolRequestParams(

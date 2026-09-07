@@ -1,0 +1,9 @@
+{
+  "tool": "list_boards",
+  "args": {"environment_slug": "receipts-demo", "page": 1},
+  "structured_content": null,
+  "content_texts": [
+    "# Boards\n\n| ID | Name | Description | Private | QueryCount | SLOCount | TextCount | UpdatedAt | Tags |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n| FAKEbrd0002x | receipts probe tagged |  | false | 0 | 0 | 1 | 2026-09-07T03:38:53Z | run:run-fake00000000 |\n| FAKEbrd0001x | receipts probe text only |  | false | 0 | 0 | 1 | 2026-09-07T03:38:51Z |  |\n\n---\nMetadata:\n  environment: receipts-demo\n  items_per_page: 25\n  page: 1\n  total_items: 2\n  total_pages: 1\n"
+  ],
+  "is_error": false
+}
