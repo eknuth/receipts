@@ -19,3 +19,10 @@ gen/runs/
 
 # tools/record/build.py output: clips, stills, and the finished mp4
 tools/record/out/
+
+# tools/record/remotion: the Remotion cut. public/ holds symlinks to
+# tools/record/out/ made by sync.sh, never real copies; node_modules and
+# Remotion's own render output are the usual JS build artifacts.
+tools/record/remotion/public/
+tools/record/remotion/node_modules/
+tools/record/remotion/out/

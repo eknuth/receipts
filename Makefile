@@ -1,4 +1,4 @@
-.PHONY: install lint test video diagrams
+.PHONY: install lint test video video-remotion diagrams
 
 # The archify skill's install root. Override on the command line
 # (`make diagrams ARCHIFY=/path/to/archify`) rather than editing this file,
@@ -19,6 +19,13 @@ test:
 # The three-minute recording: one emit, one investigation, ffmpeg. See tools/record/build.py.
 video:
 	uv run python tools/record/build.py
+
+# The Remotion cut of the same recording: transitions, captions, and the
+# thermal-receipt title/end cards, built from the same tools/record/out/
+# clips and stills. See tools/record/remotion/README section in
+# tools/record/README.md. The ffmpeg cut above remains the fallback.
+video-remotion:
+	cd tools/record/remotion && npm i && ./render.sh
 
 # Validates every docs/diagrams/*.json at --quality showcase and renders its
 # .html, .svg, and .png. docs/diagrams/diagrams.txt lists each diagram's

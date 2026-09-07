@@ -35,3 +35,35 @@ manifest's window, and the two Agent Timeline pages are
 `agent-timeline/<conversation id>` with the root span selected. The architecture
 still needs no capture step: `build.py` renders `docs/diagrams/architecture.svg`
 itself with headless Chrome, at frame size, so nothing has to be upscaled.
+
+## The Remotion cut
+
+`make video-remotion` builds a second cut of the same recording, at
+`tools/record/remotion/`, from the same clips and stills in `out/`: real scene
+transitions (a 10-frame cross-dissolve), a caption that slides up and fades in
+at every scene's start, and a title and end card done as a thermal-paper
+receipt instead of a plain dark card. This is the polished cut; `build.py`'s
+ffmpeg assembly above is the fallback and stays as it is.
+
+The Remotion project reads its inputs from `tools/record/remotion/public/`,
+which `sync.sh` fills with `cp -c` clones of the files in `out/` (an APFS
+copy-on-write clone, not a symlink: Remotion's own render pipeline copies
+`public/` into a temp bundle directory per render and does not follow a
+symlink whose target lives outside `public/`, so a clone is the closest thing
+to "no second copy" that still renders). Nothing under
+`tools/record/remotion/public/`, `node_modules/`, or `out/` is committed.
+
+To render:
+
+```
+make video-remotion                                    # silent
+cd tools/record/remotion && ./render.sh ~/Desktop/voice.m4a   # with the voice-over muxed in
+```
+
+Output is `tools/record/out/receipts-demo-2026-09-remotion.mp4`, a different
+filename from the ffmpeg cut's, so neither build overwrites the other.
+`render.sh` re-syncs `public/`, reads the investigation clip's true duration
+with `scripts/agent-duration.mjs` (a small Node script, since Remotion's own
+bundler has no `ffprobe`/`fs` access inside the composition itself) to compute
+the middle segment's `playbackRate` the way `build.py`'s `duration()` helper
+does, and renders with `--props`.
