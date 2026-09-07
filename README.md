@@ -37,8 +37,9 @@ a control and on an incident alike. A wrong top hypothesis at high confidence co
 medium 0.25, at low 0.10; a report the validator rejected twice costs 0.25.
 
 The two columns were graded by the same grader, and they did not run the same agent. The
-nemotron column ran on the morning of 2026-09-06, an hour before the noise floor step below
-landed, so it exercises the prompt and validator as they stood before it.
+nemotron rows have been in the committed report since de65aa4, seven hours before the noise
+floor step below landed in 7d6fb85, so that column exercises the prompt and the validator as
+they stood before the step.
 
 ### Sonnet
 
@@ -72,27 +73,41 @@ lies entirely outside the run window.
 
 The column before it is parked at `evals/results/r18-pass/full/`, and the mean total went from
 0.825 to 0.910. Most of that is not the noise floor step. The before column ran on 2026-09-05,
-ahead of three commits on `main` (2ba4100, 4a2b286, 883b23e) that changed the same validator for
-the same class of failure, and `total` carries the validator's 0.25 penalty. What isolates the
-method change is `outcome`, which no commit between the two columns touched. It went from 0.725
-to 0.745, and two of the thirty cells moved:
+ahead of three commits on `main` (2ba4100, 4a2b286, 883b23e) that went at the same class of
+failure, and `total` carries the validator's 0.25 penalty. All three changed the validator, and
+two of them also changed the `not_checked` and `partially_checked` rules in the prompt, which
+leaves the investigation steps alone. Result directories are gitignored except for `runs.json`,
+so a clone has the code and the scenarios and not these cells.
+
+What isolates the method change is `outcome`. One grader commit landed between the two columns,
+0ca70f8, and it changes only how a run that filed nothing scores; every run in both columns
+filed, so it cannot move either one. Outcome went from 0.725 to 0.745, and two of the thirty
+cells moved:
 
 - `control-noisy` repeat 2, outcome 0.00 to 0.75 and total -0.50 to 0.75. Before the change the
   run filed a high confidence incident on `payments.charge` errors with no dimension narrower
-  than the span name, reading 99 errors in 18,000 spans, a rate of 0.55 percent, as an ongoing
-  failure. That rate is the generator's own background: every span in every scenario errors at
-  0.5 percent. The scenario's only event is a one minute burst of paypal errors that stops on its
-  own. After the change the run said there was no incident, which the other two repeats on the
+  than the span name, reading 99 errors in 18,000 `payments.charge` spans, a rate of 0.55
+  percent, as an ongoing failure. The generator fails 0.5 percent of requests for ordinary
+  reasons and puts half of those on `payments.charge`, so the same count on `control-quiet` is
+  36. The other 63 come from the one minute burst of paypal errors this scenario injects, which
+  stops on its own. The run added the two together and called the sum an incident that was still
+  running. After the change it said there was no incident, which the other two repeats on the
   same data had already said.
 - `deploy-regression-v260` repeat 3, outcome 0.75 to 0.60. The run named `HTTP POST /checkout` as
   the slow span where the run before it named `checkout.process`, which is the ground truth. The
   root cause dimension was right in both.
 
+The step also cost something. Both negations described above are new in this column,
+`dependency-inventory-db-timeouts/3` going 0.75 to 0.60 and `error-surge-exceptions/2` going 1.00
+to 0.60, and step 5 asks for the rows outside the candidate over the whole window, which is the
+query both runs then filed as the negation the receipts rule rejected. Set against the outcome
+gain that is -0.55 of `total`, and EDW-1369 is the fix.
+
 So the step is worth 0.60 of outcome across thirty runs, won in one cell and partly given back in
-another. Both columns are separate runs of a stochastic agent over the same data, so one cell
-moving does not prove the change caused it. What can be said is that the control failure the
-change was aimed at stopped happening, and that nothing else in the outcome components moved
-except one span name.
+another, against a likely -0.55 on total. Both columns are separate runs of a stochastic agent
+over the same data, so one cell moving does not prove the change caused it. What can be said is
+that the control failure the change was aimed at stopped happening, and that nothing else in the
+outcome components moved except one span name.
 
 ### Nemotron
 
@@ -142,7 +157,7 @@ uv run python -m evals.report
 uv run python -m evals.compare r18-pass/full full
 ```
 
-Both commands write to `evals/results/full/`, so run the second with `--results-dir` pointing
+The two run commands write to `evals/results/full/`, so run the second with `--results-dir` pointing
 somewhere else and copy its `full/` directory in beside the first as `evals/results/full-nvidia/`.
 The report keys columns by provider when more than one is present.
 
