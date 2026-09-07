@@ -59,10 +59,17 @@ from agent.report import Report
 
 logger = logging.getLogger(__name__)
 
-# The whole budget, per the spec: three 40s polls or two 50s polls plus a
-# short one. Measured against `clock`, not wall-clock sleep, so a test can
-# exhaust it without waiting.
-DEFAULT_DEADLINE_S = 120.0
+# The whole budget. The issue said 120 seconds, and a live run on 2026-09-07
+# showed that is not enough: handed a real report, the Canvas agent runs its
+# own investigation (schema discovery, a BubbleUp, a cart-size breakdown, a
+# trace) and took 182 seconds to answer. At 120 it timed out with the
+# investigation still running, which scores as no_response and reads as
+# Canvas having nothing to say, the opposite of what happened. 300 covers
+# that measurement with headroom. A smoke-test prompt still comes back in
+# seconds, since the loop returns on the first completed poll and does not
+# wait out the budget. Measured against `clock`, not wall-clock sleep, so a
+# test can exhaust it without waiting.
+DEFAULT_DEADLINE_S = 300.0
 
 # The server's own cap on one poll's wait_seconds (its default is 30).
 MAX_POLL_WAIT_S = 50.0
