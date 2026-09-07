@@ -18,7 +18,14 @@ Four checks:
 
 Code fences and inline code spans are stripped before tokens are collected, so a
 command line or an identifier in backticks is not held to the rule; a table cell
-is, because a reader reads a table as a claim.
+is, because a reader reads a table as a claim. Run ids, query permalinks, commit
+hashes, ISO dates, and model names are scrubbed from both sides first, so a digit
+inside `run-974f4e6bd0ed` or `claude-sonnet-4-5` neither counts as a claim nor
+vouches for one.
+
+The check reads digits only. A count the README spells out in words (nine runs,
+eighteen of thirty) is derived from the rows of `evals/report.md`, and the test in
+`tests/test_readme_numbers.py` recomputes each one from those rows.
 """
 
 from __future__ import annotations
@@ -48,10 +55,27 @@ ALLOWLIST: dict[str, str] = {
 NUMBER = re.compile(r"\d+(?:,\d{3})+(?:\.\d+)?%?|\d+(?:\.\d+)?%?")
 FENCE = re.compile(r"^```")
 INLINE_CODE = re.compile(r"`[^`]*`")
+# Identifiers that carry digits without being numbers: run ids, query permalinks,
+# commit hashes (seven or more hex characters with at least one letter), ISO dates,
+# and model names such as claude-sonnet-4-5 or nemotron-3-super-120b-a12b.
+IDENTIFIERS = (
+    re.compile(r"\brun-[0-9a-f]{12}\b"),
+    re.compile(r"/result/[A-Za-z0-9]+"),
+    re.compile(r"\b(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b"),
+    re.compile(r"\b\d{4}-\d{2}-\d{2}(?:T[\d:]+Z?)?\b"),
+    re.compile(r"\b[A-Za-z][A-Za-z0-9]*(?:[-/.][A-Za-z0-9]+)+\b"),
+)
+
+
+def scrub_identifiers(line: str) -> str:
+    """Blank the identifiers in IDENTIFIERS so their digits are not read as numbers."""
+    for pattern in IDENTIFIERS:
+        line = pattern.sub(" ", line)
+    return line
 
 
 def strip_code(text: str) -> str:
-    """Drop fenced blocks and inline code spans, keeping line structure."""
+    """Drop fenced blocks, inline code spans, and identifiers, keeping line structure."""
     out: list[str] = []
     in_fence = False
     for line in text.splitlines():
@@ -59,7 +83,7 @@ def strip_code(text: str) -> str:
             in_fence = not in_fence
             out.append("")
             continue
-        out.append("" if in_fence else INLINE_CODE.sub(" ", line))
+        out.append("" if in_fence else scrub_identifiers(INLINE_CODE.sub(" ", line)))
     return "\n".join(out)
 
 

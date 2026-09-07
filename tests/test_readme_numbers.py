@@ -54,6 +54,29 @@ def test_an_invented_number_fails(tmp_path, monkeypatch):
     assert check.main() == 1
 
 
+def test_identifiers_do_not_vouch_for_numbers():
+    """A digit inside a run id, permalink, hash, date, or model name is not a number."""
+    check = _load()
+    line = (
+        "run-974f4e6bd0ed [query](https://ui.honeycomb.io/x/result/a7qThS85jHs) "
+        "de65aa4 2026-09-05 claude-sonnet-4-5 nemotron-3-super-120b-a12b 0.91"
+    )
+    tokens = [token for token, _ in check.tokens_with_lines(check.strip_code(line))]
+    assert tokens == ["0.91"]
+    known = check.source_tokens()
+    for leaked in ("974", "85", "2026", "7", "9", "10"):
+        assert leaked not in known, leaked
+
+
+def test_a_number_known_only_through_an_identifier_fails(tmp_path, monkeypatch):
+    check = _load()
+    readme = (ROOT / "README.md").read_text().replace("Ten scenarios,", "974 scenarios,")
+    fake = tmp_path / "README.md"
+    fake.write_text(readme)
+    monkeypatch.setattr(check, "README", fake)
+    assert check.main() == 1
+
+
 def test_code_fences_and_inline_code_are_stripped():
     check = _load()
     stripped = check.strip_code("a `x = 99` b\n```\n77\n```\nc 5\n")
@@ -90,3 +113,33 @@ def test_readme_embeds_the_report_tables_byte_for_byte():
         rows = _first_table_after(report, heading)
         assert rows, heading
         assert "\n".join(rows) in readme, heading
+
+
+def _runs_rows() -> list[dict[str, str]]:
+    """The per-run rows of evals/report.md, keyed by the table's header."""
+    report = (ROOT / "evals" / "report.md").read_text()
+    rows = _first_table_after(report, "## Runs")
+    header = [cell.strip() for cell in rows[0].strip("|").split("|")]
+    out = []
+    for row in rows[2:]:
+        cells = [cell.strip() for cell in row.strip("|").split("|")]
+        out.append(dict(zip(header, cells, strict=True)))
+    return out
+
+
+def test_counts_the_readme_spells_out_match_the_report_rows():
+    """The checker reads digits; these are the counts the Results reading writes in words."""
+    rows = _runs_rows()
+    sonnet = [r for r in rows if r["provider"] == "anthropic"]
+    nemotron = [r for r in rows if r["provider"] == "nvidia"]
+    readme = (ROOT / "README.md").read_text()
+
+    assert len(sonnet) == 30 and "Thirty of thirty Sonnet runs" in readme
+    rejected = [r for r in sonnet if r["stopped by"] == "report (validation failed)"]
+    assert len(rejected) == 9 and "nine of the thirty runs paid the 0.25" in readme
+    at_060 = [r for r in rejected if r["total"] == "0.60"]
+    assert len(at_060) == 2 and "left them at 0.60" in readme
+    assert len(rejected) - len(at_060) == 7 and "seven for a not-checked list" in readme
+
+    unfiled = [r for r in nemotron if not r["stopped by"].startswith("report")]
+    assert len(unfiled) == 18 and "eighteen of its thirty runs never filed" in readme

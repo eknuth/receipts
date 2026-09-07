@@ -5,28 +5,27 @@
 Receipts is an investigation agent for Honeycomb that has to show its work, plus an eval harness
 that grades it on outcomes. A fault-injectable generator emits scripted incidents into a real
 Honeycomb environment, so a file holds the true root cause, the affected population, and the onset.
-The agent works the incident over the hosted Honeycomb MCP, following Honeycomb's playbook. Every
+The agent works the incident over the hosted Honeycomb MCP with Honeycomb's playbook. Every
 hypothesis it reports has to cite the query and the rows behind it and a negation query that was
 actually run, and the report has to list what was in scope and never checked. The grader charges
-more for a confident wrong answer than for a hedged one. The agent's own loop traces into the same
-environment with the OpenTelemetry GenAI conventions.
+more for a confident wrong answer than for a hedged one.
 
 ## The argument
 
 Honeycomb publishes evals for its investigation skill in `honeycombio/agent-skill`. The scorer in
 `tests/scenarios/evaluator.py` weights required tools 0.30, required argument patterns 0.25,
 anti-patterns 0.20, tool ordering 0.15, and recommended tools 0.10, and passes at 0.6. That is a
-fair measure of whether an agent worked the problem the way Honeycomb works it, and the right thing
-to check for a shipped skill. Nothing in it reads the answer. A run that calls the right tools in
+fair check on whether an agent worked the problem the way Honeycomb works it. Nothing in it reads
+the answer. A run that calls the right tools in
 the right order and names the wrong cause at high confidence passes.
 
 Kale Bogdanovs named the failure mode in
 [Evaluating Observability Tools for the AI Era](https://www.honeycomb.io/blog/evaluating-observability-tools-for-the-ai-era):
-"An AI reasoning from incomplete information gives you confident but incorrect answers." The post
-is about what to ask of the data, and it treats sampling as a trade-off to make with care. This
-project takes the sentence one step further. With every event stored, the agent still picks which
-slice to look at, and it narrates whatever it looked at as though that were the whole picture. The
-report reads like a finished answer either way, so a person reading it is not the check.
+a tool "needs complete data, because an AI reasoning from incomplete information gives you
+confident but incorrect answers." The post is a buyer's checklist, and complete data is its first
+item. With every event stored, the agent still picks which slice to look at, and it narrates
+whatever it looked at as though that were the whole picture. The report reads like a finished
+answer either way, so a person reading it is not the check.
 
 That leaves two places to put the check. One is the report: a hypothesis is reportable only with a
 `query_id` from a `run_query` that actually ran and a negation query that ran too, and the report
@@ -67,7 +66,7 @@ reaches the wire, because its values read as answers.
 
 The investigator runs the six steps of Honeycomb's `production-investigation` skill against the
 hosted MCP over an allowlist of read tools, discovering columns before assuming names and combining
-calculations into one query the way the skill asks, plus the receipts rule and the not-checked list
+calculations into one query, plus the receipts rule and the not-checked list
 above. After a report is filed and graded, `evals/run.py --handoff` hands the investigation to
 Honeycomb's Canvas over a user OAuth session, creating a board of the evidence queries and asking
 Canvas Agent what it makes of the same window.
@@ -108,8 +107,7 @@ Ten scenarios, three repeats each, one config, two providers, one grader. Two of
 controls where nothing happens and the right answer is no incident. In `herring-customer-whale` and
 `herring-region-vs-version` the red herring is larger by count than the true cause, and
 `trigger-checkout-latency` fires a real Honeycomb trigger during the window. Every number below is
-read from `evals/report.md`, which is generated from the `grade.json` files with nothing typed by
-hand.
+read from `evals/report.md`, generated from the `grade.json` files.
 
 | provider | model | total | outcome | top right | mean calls | mean wall s | total cost USD |
 |---|---|---|---|---|---|---|---|
@@ -143,37 +141,41 @@ scored at least 0.5 on dims.
 | full (anthropic) | 30 | 0 | 24.5 | 547 | 9,935 | 0.54 | 16.25 | 181 | 12 | 0 of 30 | 480 |  |
 | full (nvidia) | 30 | 0 | 33.9 | 1,501,110 | 26,815 | 0.00 | 0.00 | 352 |  | 25 of 30 | 480 |  |
 
-The rules did their work on the Sonnet column: thirty of thirty runs named the right cause or, on a
-control, said there was no incident, and the two scenarios where the herring outweighs the cause
-scored 0.92 and 1.00. What the rules did not fix is the report's account of itself. Nine of the
-thirty Sonnet runs lost 0.25 to a validator rejection, the answer was right in all nine, and the
-not-checked list was the part that was wrong. The nemotron column is the case for grading the
-outcome: 25 of its 30 runs pass Honeycomb's process evaluator and score under 0.50 here, and its
-mean total is -0.01 against Sonnet's 0.91. It is also slower, 352 seconds a run against 181, and
-eighteen of its thirty runs never filed a report at all. The run-by-run reading is in
-[`docs/results.md`](docs/results.md).
+Thirty of thirty Sonnet runs named the right cause or, on a control, said there was no incident,
+and the two scenarios where the herring outweighs the cause scored 0.92 and 1.00. This is one
+config, so the table says what the method does, not what each rule is worth alone. What it did not
+fix is the report's account of itself: nine of the thirty runs paid the 0.25 validation penalty
+with the right answer filed, seven for a not-checked list that named an instrumentation column or
+contradicted the run's own queries, and two for a negation query that excluded nothing, which also
+cost those two the receipts weight and left them at 0.60. The nemotron column is the case for
+grading the outcome: 25 of its 30 runs pass Honeycomb's process evaluator and score under 0.50
+here, its mean total is -0.01 against Sonnet's 0.91, it takes 352 seconds a run against 181, and
+eighteen of its thirty runs never filed a report. That column ran seven hours before the noise
+floor step landed, so it met the earlier prompt and validator under the same grader. The
+run-by-run reading is in [`docs/results.md`](docs/results.md).
 
 ## Run it
 
 You need a Honeycomb ingest key and a management v2 key with `mcp:read` for the environment, an
 Anthropic API key, Python 3.12, and `uv`. Copy `.env.example` to `.env` and fill in the names it
-lists.
+lists. The fourth command emits a fresh run per scenario and grades three repeats of each, which
+cost $16.25 on Sonnet.
 
 ```
 uv sync
 uv run python -m gen.emit --scenario payments-stripe-v251-uswest
 uv run python -m agent --scenario payments-stripe-v251-uswest --run-id <the id emit printed>
-uv run python -m evals.run --scenarios all --configs full --repeats 3
+uv run python -m evals.run --scenarios all --configs full --repeats 3 --emit
 uv run python -m evals.report
 ```
 
 ## What it does not do
 
-- No memory across investigations: every run starts cold and learns nothing from the run before it.
+- No memory across investigations: every run starts cold.
 - No spatial awareness of the canvas: the agent can put a board and a question on Canvas, and
   cannot see what is already laid out there.
-- Synthetic traffic only: the incidents are scripted, so nothing here says how the agent behaves
-  on production traffic it has never seen.
+- Synthetic traffic only: the incidents are scripted, so nothing here says how the agent does on
+  production traffic.
 - One team's data model: everything assumes the shape of `receipts-shop`, one dataset with a known
   set of columns.
 - Single agent: one loop, one investigation, no work claims and no awareness of other agents
@@ -185,10 +187,10 @@ The investigation method is Honeycomb's, from the `honeycomb-investigator` agent
 `production-investigation` skill in `honeycombio/agent-skill`. The process score used for contrast
 reimplements the `evaluate` function in that repo's `tests/scenarios/evaluator.py`; the commit it
 was read from is recorded in `evals/grader.md`. The self-telemetry follows the OpenTelemetry GenAI
-semantic conventions rather than a scheme of my own.
+semantic conventions.
 
 The receipts rule is a port of the fact checker in Agent Blue, an operations platform I built for a
-conservation nonprofit. A second pass there classifies every sentence of a generated document as
+conservation nonprofit. A second pass there classifies every factual claim in a generated document as
 grounded, partial, or unsupported and holds the document until a person clears the flagged ones.
 That vocabulary became the confidence levels here, and holding the document became refusing to
 report a hypothesis with no query behind it.
@@ -196,5 +198,4 @@ report a hypothesis with no query behind it.
 Receipts was built with Claude Code: an orchestrator session, an implementer subagent per issue on
 the model that issue is labeled for, and an adversarial review before every PR.
 `docs/agentic-workflow.md` reports what the transcripts show the work re-deriving by hand and what
-`.claude/` now carries so it stops, with every number in it printed by `tools/usage_stats.py` from
-the transcripts.
+`.claude/` now carries so it stops, every number in it printed by `tools/usage_stats.py`.
