@@ -298,6 +298,24 @@ def test_the_prompt_adds_a_noise_floor_step() -> None:
     assert steps[0] == steps[1] == steps[2]
 
 
+def test_the_prompt_names_the_negation_spelling_in_the_noise_floor_step() -> None:
+    """EDW-1369: a report filed dims {payment.provider: adyen} at high with a
+    negation of `payment.provider in [stripe, paypal]`, which the validator
+    reads as excludes [] and zeroes the receipts component on a right answer.
+    Step 5 told the model to sum "the other values' rows", and an `in` on
+    those other values is a literal rendering of that sentence; step 8 only
+    accepts `!=` or `not-in`. Step 5 now names that spelling itself, so one
+    query serves both the noise floor and the negation.
+    """
+    prompt = render_prompt(RUN, AgentConfig())
+    begin = prompt.index("**Noise floor.**")
+    finish = prompt.index("**Select the population.**")
+    step5 = " ".join(prompt[begin:finish].split())  # collapse the source's line wrapping
+    assert "`!=` or `not-in` on the candidate's column over the whole window" in step5
+    assert "the spelling step 8 accepts as the negation" in step5
+    assert "An `in` naming the other values is not that query" in step5
+
+
 def test_the_ablations_remove_whole_rules_from_the_prompt() -> None:
     full = render_prompt(RUN, AgentConfig())
     assert "negation" in full.lower()
@@ -735,6 +753,31 @@ async def test_a_rejected_report_is_handed_back_once_and_can_be_fixed(
     )
     assert "The report was rejected" in handed_back
     assert "carries no evidence" in handed_back
+
+
+async def test_a_fixed_first_rejection_is_still_recorded_in_rejections(
+    settings: Settings,
+) -> None:
+    """EDW-1369: agent/loop.py used to keep only the second validator
+    rejection in validation_messages, so a first rejection the model went on
+    to fix left no trace in report.json. A run that was rejected once and
+    then filed clean must still show one entry in the new rejections field,
+    not zero and not overwritten by the clean attempt."""
+    bad = report_args(hypotheses=[dict(report_args()["hypotheses"][0], evidence=[])])
+    provider = FakeProvider(
+        [
+            completion(query_use("b"), negation_use("c"), baseline_use("d")),
+            completion(use(SUBMIT_REPORT, bad, ident="d")),
+            completion(use(SUBMIT_REPORT, report_args(), ident="e")),
+        ]
+    )
+    report = await run_loop(provider, settings=settings)
+
+    assert report.validation_failed is False
+    assert report.stop_reason == "report"
+    assert report.validation_messages == []  # the run's last word was a clean report
+    assert len(report.rejections) == 1
+    assert "carries no evidence" in report.rejections[0]
 
 
 async def test_a_second_rejection_keeps_the_report_and_flags_it(settings: Settings) -> None:

@@ -456,6 +456,20 @@ class Report(BaseModel):
 
     validation_failed: bool = False
     validation_messages: list[str] = Field(default_factory=list)
+    rejections: list[str] | None = Field(
+        default=None,
+        description=(
+            "Every validation rejection this run received from submit_report, in order, one "
+            "entry per attempt that failed, whether or not a later attempt fixed it. "
+            "validation_messages only carries the rejection reasons when the run's last word "
+            "was itself a rejection (a second failure, kept and flagged); a first rejection "
+            "that the model then fixed left no trace there. This is that trace: it is appended "
+            "to on every rejected attempt and never cleared, so a run that was rejected once "
+            "and then filed clean still shows what it was told. None means the run predates "
+            "this field (EDW-1369) and no rejection count can be read from it; an empty list "
+            "means the run was recorded and filed clean on the first attempt."
+        ),
+    )
     coerced_fields: list[str] = Field(
         default_factory=list,
         description=(

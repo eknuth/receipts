@@ -23,7 +23,9 @@ Validation. A rejected report is handed back once with the reasons, in the
 "hold until the flagged claims are cleared" shape from
 `charles/api/src/services/fact-checker.ts`. A second rejection keeps the report
 and sets `validation_failed`, because a report that broke its own rules is a
-result, and the grader should see it and mark it down.
+result, and the grader should see it and mark it down. Every rejection, fixed
+or not, is appended to `Report.rejections`, so a run that was rejected once
+and then filed clean still shows what it was told.
 """
 
 from __future__ import annotations
@@ -449,8 +451,15 @@ class _RunState:
         self.cache_write = 0
         self.model_turns = 0
         self.model_stop_reason: str | None = None
-        self.rejections = 0
+        self.rejection_count = 0
         self.last_rejection = ""
+        self.rejection_log: list[str] = []
+        """Every rejection message this run received, one entry per rejected
+        attempt, in order, never cleared. `self.last_rejection` holds only the
+        most recent one, which `Report.validation_messages` sees only when the
+        run's last word was itself a rejection; this is what carries a first
+        rejection the model went on to fix into the written report. See
+        `Report.rejections`."""
         self.issues: list[validate.Issue] = []
         self.coerced: list[str] = []
         """Fields `submit_report` sent as a JSON-encoded string, or a wrapper
@@ -590,12 +599,13 @@ class _RunState:
                 draft = ReportDraft.model_validate(use.args, context=coercion_context)
             except ValidationError as exc:
                 self.coerced.extend(coercion_context.get("coerced_fields", []))
-                self.rejections += 1
+                self.rejection_count += 1
                 self.last_rejection = (
                     f"{SCHEMA_REJECTION}\n{exc}\nFix the fields and call submit_report again."
                 )
+                self.rejection_log.append(self.last_rejection)
                 span.record_validation_rejection(self.last_rejection)
-                if self.rejections > 1:
+                if self.rejection_count > 1:
                     # Nothing was filed: the stop reason says so, and the grader
                     # scores it as no answer rather than as the empty defaults.
                     return self.finish(
@@ -620,12 +630,13 @@ class _RunState:
                 span.record_result("accepted", is_error=False)
                 return self.finish(stop_reason="report", draft=draft)
 
-            self.rejections += 1
+            self.rejection_count += 1
             self.issues = issues
             terms = validate.queried_terms(self.tool_log, run_id=self.run.run_id)
             self.last_rejection = validate.rejection_message(issues, terms)
+            self.rejection_log.append(self.last_rejection)
             span.record_validation_rejection(self.last_rejection)
-            if self.rejections > 1:
+            if self.rejection_count > 1:
                 # Kept and flagged rather than discarded. The grader punishes it.
                 return self.finish(
                     stop_reason="report",
@@ -695,6 +706,7 @@ class _RunState:
             "model_stop_reason": self.model_stop_reason,
             "validation_failed": validation_failed,
             "validation_messages": validation_messages,
+            "rejections": list(self.rejection_log),
             "coerced_fields": coerced_fields,
             "malformed_calls": self.malformed_calls,
             "error": error,

@@ -76,9 +76,11 @@ Follow the method Honeycomb publishes in the `honeycomb-investigator` agent and 
    from step 4 already holds both readings when it carries the total COUNT and the count of the
    rows carrying the event beside the breakdown: the other values' rows summed across buckets are
    the outside rate, and their buckets are the spread. A new query is only for a candidate the
-   split did not break down on. When every value of the column moved together, so that there is
-   no outside on the same window, the reference is the candidate's own buckets on the early side
-   of the split.
+   split did not break down on. Filter it with `!=` or `not-in` on the candidate's column over
+   the whole window, the spelling step 8 accepts as the negation, so one query does both jobs.
+   An `in` naming the other values is not that query. When every value of the column moved
+   together, so that there is no outside on the same window, the reference is the candidate's
+   own buckets on the early side of the split.
    A candidate rate is a change only when it sits outside that spread, and only when the
    population under it is large enough that the difference comes to more than a few rows. Put
    the expected count next to the observed one: at the reference rate, how many events would this
