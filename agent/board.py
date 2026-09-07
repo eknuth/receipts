@@ -45,8 +45,10 @@ translation, as R12 originally specified.
 R23 (EDW-1370) gives `ensure_board` an optional `trace`: `list_boards` and
 `create_board` both go through `agent.telemetry.traced_call`, so they show
 up as `execute_tool` spans under the handoff's trace instead of leaving no
-telemetry at all. `evals/run.py`'s `_hand_off_cell` puts the board's id and
-url on the trace itself once this function returns.
+telemetry at all, arguments and results untouched (see `Telemetry.start_handoff`
+for why the board's name, which carries `report.scenario_id` by design, is
+safe there). `evals/run.py`'s `_hand_off_cell` puts the board's id and url
+on the trace itself once this function returns.
 """
 
 from __future__ import annotations
@@ -204,21 +206,6 @@ class _LookupFailed:
         self.error = error
 
 
-def _scrub_scenario_id(text: str, scenario_id: str) -> str:
-    """`text` with every occurrence of `scenario_id` replaced by a placeholder.
-
-    Telemetry only, applied to what a `create_board`/`list_boards` span
-    shows (R23, EDW-1370): a board's own name carries `report.scenario_id`
-    by design (`board_name`, above), so tracing those calls' real arguments
-    and results verbatim would put the scenario id on a surface CLAUDE.md
-    means to keep it off (Agent Timeline, readable before a run is graded).
-    The real call to Honeycomb, and what `ensure_board` returns, are both
-    unaffected; only the copy handed to `agent.telemetry.traced_call`'s
-    `trace_args`/`redact_result` is scrubbed.
-    """
-    return text.replace(scenario_id, "<scenario>") if scenario_id else text
-
-
 async def _find_existing(
     mcp: Any,
     *,
@@ -226,7 +213,6 @@ async def _find_existing(
     name: str,
     tag: str | None,
     run_id: str,
-    scenario_id: str,
     trace: RunTrace,
 ) -> tuple[str, str | None] | _LookupFailed | None:
     """The id of a board already named `name`; `None` when the listing
@@ -269,14 +255,7 @@ async def _find_existing(
         args: dict[str, Any] = {"environment_slug": environment_slug, "page": page}
         if tag:
             args["tags"] = [tag]
-        result = await traced_call(
-            trace,
-            mcp,
-            "list_boards",
-            args,
-            f"{run_id}-list-boards-{page}",
-            redact_result=lambda text: _scrub_scenario_id(text, scenario_id),
-        )
+        result = await traced_call(trace, mcp, "list_boards", args, f"{run_id}-list-boards-{page}")
         if getattr(result, "is_error", False):
             return _LookupFailed(_result_text(result) or "list_boards failed")
         text = _result_text(result)
@@ -338,7 +317,6 @@ async def ensure_board(
             name=name,
             tag=tag,
             run_id=report.run_id,
-            scenario_id=report.scenario_id,
             trace=trace,
         )
         if isinstance(existing, _LookupFailed):
@@ -347,20 +325,17 @@ async def ensure_board(
             board_id, board_url = existing
             return BoardResult(board_id=board_id, board_url=board_url, created=False)
 
-        create_args = {
-            "environment_slug": environment_slug,
-            "name": name,
-            "panels": _panels(report),
-            "tags": [tag] if tag else [],
-        }
         result = await traced_call(
             trace,
             mcp,
             "create_board",
-            create_args,
+            {
+                "environment_slug": environment_slug,
+                "name": name,
+                "panels": _panels(report),
+                "tags": [tag] if tag else [],
+            },
             f"{report.run_id}-create-board",
-            trace_args={**create_args, "name": _scrub_scenario_id(name, report.scenario_id)},
-            redact_result=lambda text: _scrub_scenario_id(text, report.scenario_id),
         )
         if getattr(result, "is_error", False):
             return BoardResult(

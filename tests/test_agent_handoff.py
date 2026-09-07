@@ -554,7 +554,10 @@ def test_handoff_is_a_pydantic_model_with_the_required_fields() -> None:
 
 def _handoff_trace(exporter: InMemorySpanExporter) -> Any:
     telemetry = Telemetry(exporter=exporter)
-    return telemetry, telemetry.start_handoff("run-abcdef123456", conversation_id="conv-1")
+    run_trace = telemetry.start_handoff(
+        "run-abcdef123456", conversation_id="conv-1", config_label="full", provider="anthropic"
+    )
+    return telemetry, run_trace
 
 
 async def test_hand_off_wraps_both_canvas_calls_in_execute_tool_spans() -> None:
@@ -591,7 +594,12 @@ async def test_hand_off_wraps_both_canvas_calls_in_execute_tool_spans() -> None:
         assert span.attributes["gen_ai.tool.call.arguments"]
     assert invoke_spans[0].attributes["gen_ai.tool.name"] == "canvas_agent_invoke"
     assert poll_spans[0].attributes["gen_ai.tool.name"] == "canvas_agent_poll_response"
-    assert "receipts oauth smoke" not in invoke_spans[0].attributes["gen_ai.tool.call.arguments"]
+    # The default title hand_off builds (`f"receipts {report.run_id}"`, no
+    # scenario id: see test_the_default_title_carries_no_scenario_id above)
+    # is what should actually be on the span, not a leftover fixture string.
+    invoke_arguments = invoke_spans[0].attributes["gen_ai.tool.call.arguments"]
+    assert '"title": "receipts run-abcdef123456"' in invoke_arguments
+    assert "payments-stripe-v251-uswest" not in invoke_arguments
 
 
 async def test_hand_off_with_multiple_polls_gets_one_span_per_poll() -> None:
