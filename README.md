@@ -22,11 +22,11 @@ the right order and names the wrong cause at high confidence passes.
 
 Kale Bogdanovs named the failure mode in
 [Evaluating Observability Tools for the AI Era](https://www.honeycomb.io/blog/evaluating-observability-tools-for-the-ai-era):
-"an AI reasoning from incomplete information gives you confident but incorrect answers." His remedy
-is complete data. Sampling guarantees the failure, and complete data does not prevent it. The agent
-still picks which slice of the store to look at, and it narrates whatever it looked at as though
-that were the whole picture. Either way it reads like a finished answer, so a person reading it is
-not the check.
+"An AI reasoning from incomplete information gives you confident but incorrect answers." The post
+is about what to ask of the data, and it treats sampling as a trade-off to make with care. This
+project takes the sentence one step further. With every event stored, the agent still picks which
+slice to look at, and it narrates whatever it looked at as though that were the whole picture. The
+report reads like a finished answer either way, so a person reading it is not the check.
 
 That leaves two places to put the check. One is the report: a hypothesis is reportable only with a
 `query_id` from a `run_query` that actually ran and a negation query that ran too, and the report
