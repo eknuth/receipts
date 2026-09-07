@@ -403,9 +403,11 @@ def _handoff_section(handoffs: Sequence[HandoffEntry]) -> list[str]:
         "One row per scenario and config that ran with `--handoff`: how many of its runs' "
         "Canvas replies classified as each of `agree`, `disagree`, and `extend`, and how many "
         "got no reply at all (`no response`: a timeout, an error, or a busy server; see "
-        "`agent/handoff.py`'s `classify`). `board` links the board created for the run id "
-        "this row's cells share; every repeat and every config investigates the same run id, "
-        "so it is the same board across a scenario's whole row group.",
+        "`agent/handoff.py`'s `classify`). `board` links a board from this row's own cells. "
+        "Most scenarios emit once and every repeat and config then investigates that one run "
+        "id, so the whole row group shares one board. A scenario emitted once per cell, which "
+        "is how `/pass-run` emits the trigger scenario, has one board per repeat, and the link "
+        "is to the first of them.",
         "",
     ]
     header = ["scenario", "config", "agree", "disagree", "extend", "no response", "board"]
