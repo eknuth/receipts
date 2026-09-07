@@ -62,6 +62,33 @@ def test_read_tools_and_write_tools_are_disjoint() -> None:
     assert READ_TOOLS & WRITE_TOOLS == set()
 
 
+def test_write_tools_is_exactly_the_two_r12_uses() -> None:
+    assert WRITE_TOOLS == {"create_board", "canvas_agent_invoke"}
+
+
+# The management key was widened to `mcp:write` on 2026-09-07 (see CLAUDE.md's
+# Honeycomb facts) and the hosted server now also serves these five tools.
+# None of them is in scope for R12, and a wider key must not silently widen
+# what this client will call, so each one must stay refused even with
+# allow_write=True.
+_WIDER_KEY_ONLY_TOOLS = (
+    "create_trigger",
+    "create_slo",
+    "create_recipient",
+    "create_marker",
+    "update_board",
+)
+
+
+@pytest.mark.parametrize("tool", _WIDER_KEY_ONLY_TOOLS)
+async def test_a_tool_the_wider_key_serves_but_r12_does_not_use_stays_refused(
+    tool: str, settings: Settings
+) -> None:
+    mcp = HoneycombMCP(settings=settings, allow_write=True)  # never entered: refused pre-session
+    with pytest.raises(ToolNotAllowed):
+        await mcp.call(tool, {})
+
+
 def test_dataset_scoped_tools_are_all_read_tools() -> None:
     assert DATASET_SCOPED_TOOLS <= READ_TOOLS
 
@@ -315,6 +342,30 @@ class _RecordingServer:
                 f"  query_run_pk: {source_pk}\n"
             )
 
+        # Stub tools the server advertises but this module's other tests
+        # never call: registered so a `list_tools` call has something to
+        # filter, for the allowlist test that checks the filtering rather
+        # than the wire behavior of any one of these.
+        for stub_name in (
+            "canvas_agent_invoke",
+            "canvas_agent_poll_response",
+            "create_board",
+            "list_boards",
+            "create_trigger",
+            "create_slo",
+            "create_recipient",
+            "create_marker",
+            "update_board",
+        ):
+
+            def make_stub(name: str) -> Any:
+                async def stub() -> str:
+                    return f"{name} stub"
+
+                return stub
+
+            server.tool(name=stub_name)(make_stub(stub_name))
+
         lowlevel = server._lowlevel_server
         original = lowlevel.get_request_handler("tools/list")
 
@@ -408,6 +459,29 @@ async def test_server_error_is_flagged_not_swallowed(settings: Settings) -> None
     assert bad.query_id is None
     assert "does-not-exist" in bad.text
     assert bad.text.startswith("run_query failed:")
+
+
+async def test_list_tools_admits_the_in_scope_write_tools_and_filters_the_rest(
+    settings: Settings,
+) -> None:
+    """The server (stubbed above) advertises `create_board` and
+    `canvas_agent_invoke` alongside the five the wider key serves but R12
+    does not use; `list_tools` with `allow_write=True` returns the former
+    and drops the latter, the same as it always dropped an unknown name."""
+    async with in_process_mcp(settings, allow_write=True) as (mcp, _):
+        names = {spec.name for spec in await mcp.list_tools()}
+
+    in_scope = {"create_board", "canvas_agent_invoke", "list_boards", "canvas_agent_poll_response"}
+    assert in_scope <= names
+    assert names.isdisjoint(_WIDER_KEY_ONLY_TOOLS)
+
+
+async def test_list_tools_without_allow_write_omits_every_write_tool(settings: Settings) -> None:
+    async with in_process_mcp(settings, allow_write=False) as (mcp, _):
+        names = {spec.name for spec in await mcp.list_tools()}
+
+    assert names.isdisjoint(WRITE_TOOLS)
+    assert "list_boards" in names  # a read tool, present either way
 
 
 async def test_tools_list_is_fetched_once_on_enter_and_paced(settings: Settings) -> None:
@@ -929,6 +1003,58 @@ async def test_an_error_unrelated_to_group_indices_is_not_hinted(settings: Setti
         )
 
     assert result.hinted is False
+
+
+# --------------------------------------------------------------------------
+# OAuth (R12, EDW-1334): which auth _build_http_client picks
+# --------------------------------------------------------------------------
+
+
+async def test_key_auth_sends_the_management_key_as_a_bearer_header(settings: Settings) -> None:
+    mcp = HoneycombMCP(settings=settings)  # settings.honeycomb_auth defaults to "key"
+    client = await mcp._build_http_client()
+    async with client:
+        assert (
+            client.headers["Authorization"]
+            == f"Bearer {settings.honeycomb_mcp_key.get_secret_value()}"
+        )
+
+
+async def test_oauth_auth_with_no_stored_token_raises_before_building_a_client(
+    settings: Settings, tmp_path: Any
+) -> None:
+    from agent.auth import OAuthNotAuthorized
+
+    oauth_settings = settings.model_copy(
+        update={
+            "honeycomb_auth": "oauth",
+            "honeycomb_oauth_token_path": tmp_path / "honeycomb_oauth.json",
+        }
+    )
+    mcp = HoneycombMCP(settings=oauth_settings)
+    with pytest.raises(OAuthNotAuthorized):
+        await mcp._build_http_client()
+
+
+async def test_oauth_auth_with_a_stored_token_builds_a_client_with_the_oauth_provider(
+    settings: Settings, tmp_path: Any
+) -> None:
+    from mcp.client.auth import OAuthClientProvider
+    from mcp.shared.auth import OAuthToken
+
+    from agent.auth import FileTokenStorage
+
+    token_path = tmp_path / "honeycomb_oauth.json"
+    await FileTokenStorage(token_path).set_tokens(
+        OAuthToken(access_token="at-1", refresh_token="rt-1", expires_in=3600)
+    )
+    oauth_settings = settings.model_copy(
+        update={"honeycomb_auth": "oauth", "honeycomb_oauth_token_path": token_path}
+    )
+    mcp = HoneycombMCP(settings=oauth_settings)
+    client = await mcp._build_http_client()
+    async with client:
+        assert isinstance(client.auth, OAuthClientProvider)
 
 
 def test_meta_kwarg_serializes_to_wire_key_meta() -> None:

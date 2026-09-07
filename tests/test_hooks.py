@@ -42,6 +42,8 @@ HCAMK = "hcamk_" + "c" * 20
 NVAPI = "nvapi-" + "d" * 20
 AKIA = "AKIA" + "A" * 16
 HEADER = "x-honeycomb-team: " + "e" * 24
+OAUTH_ACCESS_TOKEN = '"access_token": "' + "f" * 24 + '"'
+OAUTH_REFRESH_TOKEN = '"refresh_token": "' + "g" * 24 + '"'
 
 
 def run_hook(
@@ -205,6 +207,8 @@ def test_secrets_the_repository_itself_passes(tmp_path: Path) -> None:
         (f"k = '{AKIA}'\n", "AWS access key id"),
         (f"headers = {{'{HEADER}'}}\n", "x-honeycomb-team header with a value"),
         ("NVIDIA_API_KEY=abc123\n", "NVIDIA_API_KEY= with a value not in .env.example"),
+        ("{" + OAUTH_ACCESS_TOKEN + "}\n", "OAuth access_token in a committed file"),
+        ("{" + OAUTH_REFRESH_TOKEN + "}\n", "OAuth refresh_token in a committed file"),
     ],
 )
 def test_secrets_commit_with_a_key_is_blocked(repo: Path, text: str, label: str) -> None:
@@ -212,8 +216,34 @@ def test_secrets_commit_with_a_key_is_blocked(repo: Path, text: str, label: str)
     proc = run_hook(SECRETS, bash("git commit -m 'oops'", repo))
     assert proc.returncode == 2
     assert "leak.txt: " + label in proc.stderr
-    for value in (SK_ANT, HCAIK, HCAMK, NVAPI, AKIA, HEADER, "abc123"):
+    for value in (
+        SK_ANT,
+        HCAIK,
+        HCAMK,
+        NVAPI,
+        AKIA,
+        HEADER,
+        "abc123",
+        "f" * 24,
+        "g" * 24,
+    ):
         assert value not in proc.stderr
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git add honeycomb_oauth.json",
+        "git add .receipts/honeycomb_oauth.json",
+        "git commit honeycomb_oauth.json -m x",
+    ],
+)
+def test_secrets_oauth_token_file_is_blocked_by_name(repo: Path, command: str) -> None:
+    """R12 (EDW-1334): agent/auth.py's OAuth token store defaults outside the
+    repo, but this catches it if one is ever staged from inside it anyway."""
+    proc = run_hook(SECRETS, bash(command, repo))
+    assert proc.returncode == 2
+    assert "secrets file" in proc.stderr
 
 
 def test_secrets_commit_through_git_dash_c_is_still_checked(repo: Path) -> None:

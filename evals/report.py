@@ -23,17 +23,35 @@ first render.
 A `grade.json` the current schema cannot read is listed at the end of the
 report by path instead of stopping the render, since repeats append across
 schema changes and an old file next to a new one is the expected shape.
+
+R12 (EDW-1334) adds one more section, read from `handoff.json` rather than
+`grade.json`: a `--handoff` run hands its report to Canvas after grading and
+records the reply next to the grade, and this renders the agree, disagree,
+extend, and no-response counts per scenario and config, plus a link to the
+board. `render` takes the handoffs as a plain sequence, the same as it takes
+`runs`, so the section is exercised without touching disk; `write_report` is
+the only thing that reads `evals/results/` for it. No cell in the results
+directory has ever carried a `handoff.json` before this, so an empty list
+here (the normal case for every column so far) renders no section at all,
+and every existing table is untouched by its presence.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+from collections import Counter
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from statistics import fmean
 
+from agent.handoff import Handoff
 from evals.run import CONFIGS, RESULTS_DIR, GradedRun, load_run
+
+# (config, scenario_id, Handoff): the two path components `read_handoffs`
+# reads off `<config>/<scenario>/<n>/handoff.json`'s location, since `Handoff`
+# itself carries only `run_id`, not which cell of the matrix it came from.
+HandoffEntry = tuple[str, str, Handoff]
 
 REPORT_PATH = Path(__file__).resolve().parent / "report.md"
 
@@ -85,6 +103,30 @@ def load_results(results_dir: Path = RESULTS_DIR) -> list[GradedRun]:
     return read_results(results_dir)[0]
 
 
+def read_handoffs(results_dir: Path = RESULTS_DIR) -> list[HandoffEntry]:
+    """Every `handoff.json` under `<config>/<scenario>/<n>/`, sorted by path.
+
+    Read separately from `read_results`: a `handoff.json` sits next to a
+    `grade.json` written by the same `--handoff` run, but the two files
+    are independent (see `evals/run.py`'s `_hand_off_cell`), so one missing
+    or unreadable never stops the other from rendering. An entry the current
+    schema cannot read is skipped rather than raising, the same as an
+    unreadable `grade.json` is skipped by `read_results`, just without a
+    line in the report: a Canvas transcript is a courtesy, not a number the
+    reader is owed an accounting of.
+    """
+    entries: list[HandoffEntry] = []
+    for path in sorted(results_dir.glob("*/*/*/handoff.json")):
+        config = path.parent.parent.parent.name
+        scenario_id = path.parent.parent.name
+        try:
+            handoff = Handoff.model_validate_json(path.read_text())
+        except (ValueError, OSError):
+            continue
+        entries.append((config, scenario_id, handoff))
+    return entries
+
+
 def config_order(name: str) -> tuple[int, str]:
     """Known configs in `CONFIGS` order, `full` first; anything else after, alphabetically."""
     known = list(CONFIGS)
@@ -125,7 +167,11 @@ def _column_cell(runs: Sequence[GradedRun], config: str, provider: str | None) -
     ]
 
 
-def render(runs: Sequence[GradedRun], unreadable: Sequence[str] = ()) -> str:
+def render(
+    runs: Sequence[GradedRun],
+    unreadable: Sequence[str] = (),
+    handoffs: Sequence[HandoffEntry] = (),
+) -> str:
     """The whole report as Markdown."""
     lines: list[str] = [
         "# Eval report",
@@ -151,6 +197,7 @@ def render(runs: Sequence[GradedRun], unreadable: Sequence[str] = ()) -> str:
     ]
     if not runs:
         lines += ["No runs found.", ""]
+        lines += _handoff_section(handoffs)
         lines += _unreadable_section(unreadable)
         return "\n".join(lines)
 
@@ -318,8 +365,80 @@ def render(runs: Sequence[GradedRun], unreadable: Sequence[str] = ()) -> str:
         ]
         lines.append(_row(row))
     lines.append("")
+    lines += _handoff_section(handoffs)
     lines += _unreadable_section(unreadable)
     return "\n".join(lines)
+
+
+def _handoff_section(handoffs: Sequence[HandoffEntry]) -> list[str]:
+    """The `--handoff` (R12) summary: one row per (scenario, config) that ran
+    with it, empty (and so invisible in the rendered file) when nothing did.
+
+    Most scenarios investigate one run id for their whole row group (one
+    emit serves every config and repeat), so every row in the group shares
+    one board and the `board` column should show that one link on all of
+    them. The trigger scenario breaks that assumption: it is emitted once
+    per cell (see `.claude/skills/pass-run/SKILL.md`), so its configs carry
+    different run ids and therefore different boards. Keying the url by
+    `scenario_id` alone, as an earlier version did, rendered the first
+    config's board link on every other config's row too, which is wrong
+    whenever the row's own handoff points at a different board.
+
+    The url is instead keyed by `board_id`, collected across every handoff
+    regardless of scenario or config, and each row looks up its link by the
+    `board_id` its own group's handoffs carry. `agent/board.py`'s
+    `_find_existing` only ever hands back a url for the config that ran
+    first (a rediscovered board carries `board_url=None`, since
+    `list_boards`' table has no URL column), so a row's own handoff can have
+    the right `board_id` and no url of its own; the url still comes from
+    wherever in the whole handoff list that `board_id` picked one up. A row
+    whose `board_id` never picked up a url anywhere renders no link, rather
+    than borrowing a different board's.
+    """
+    if not handoffs:
+        return []
+    lines = [
+        "## Canvas handoffs",
+        "",
+        "One row per scenario and config that ran with `--handoff`: how many of its runs' "
+        "Canvas replies classified as each of `agree`, `disagree`, and `extend`, and how many "
+        "got no reply at all (`no response`: a timeout, an error, or a busy server; see "
+        "`agent/handoff.py`'s `classify`). `board` links a board from this row's own cells. "
+        "Most scenarios emit once and every repeat and config then investigates that one run "
+        "id, so the whole row group shares one board. A scenario emitted once per cell, which "
+        "is how `/pass-run` emits the trigger scenario, has one board per repeat, and the link "
+        "is to the first of them.",
+        "",
+    ]
+    header = ["scenario", "config", "agree", "disagree", "extend", "no response", "board"]
+    lines.append(_row(header))
+    lines.append(_row(["---"] * len(header)))
+    groups: dict[tuple[str, str], list[Handoff]] = {}
+    board_url_by_board_id: dict[str, str] = {}
+    for config, scenario_id, handoff in handoffs:
+        groups.setdefault((scenario_id, config), []).append(handoff)
+        if handoff.board_id and handoff.board_url and handoff.board_id not in board_url_by_board_id:
+            board_url_by_board_id[handoff.board_id] = handoff.board_url
+    for scenario_id, config in sorted(groups, key=lambda pair: (pair[0], config_order(pair[1]))):
+        group = groups[(scenario_id, config)]
+        counts = Counter(item.classification for item in group)
+        board_id = next((item.board_id for item in group if item.board_id), None)
+        board_url = board_url_by_board_id.get(board_id) if board_id else None
+        lines.append(
+            _row(
+                [
+                    scenario_id,
+                    config,
+                    str(counts["agree"]),
+                    str(counts["disagree"]),
+                    str(counts["extend"]),
+                    str(counts["no_response"]),
+                    f"[board]({board_url})" if board_url else "",
+                ]
+            )
+        )
+    lines.append("")
+    return lines
 
 
 def _unreadable_section(unreadable: Sequence[str]) -> list[str]:
@@ -598,7 +717,8 @@ def _escape(text: str) -> str:
 
 def write_report(results_dir: Path = RESULTS_DIR, path: Path = REPORT_PATH) -> Path:
     runs, unreadable = read_results(results_dir)
-    path.write_text(render(runs, unreadable))
+    handoffs = read_handoffs(results_dir)
+    path.write_text(render(runs, unreadable, handoffs))
     return path
 
 

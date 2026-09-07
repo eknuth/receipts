@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import subprocess
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,7 @@ from test_agent_loop import (
 )
 
 from agent.loop import SUBMIT_REPORT, AgentConfig
+from agent.mcp_client import TokenBucket
 from agent.providers.base import Completion, ToolSchema, Turn
 from agent.report import Evidence, Hypothesis, Report, load_report
 from evals.grader import grade_file
@@ -1218,3 +1220,383 @@ def test_regrade_via_the_cli_says_so_when_nothing_changed(
         == 0
     )
     assert "no grades changed" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------
+# --handoff (R12, EDW-1334)
+# --------------------------------------------------------------------------
+
+
+@dataclass
+class _WriteResult:
+    raw: Any
+    text: str = ""
+    is_error: bool = False
+
+
+def _fake_boards_markdown(boards: list[dict[str, Any]]) -> str:
+    """A `list_boards`-shaped page: real header, one row per board, a
+    `Metadata:` block with `total_pages: 1` (every board fits on one page in
+    these tests). Matches the live shape in `tests/fixtures/mcp/list_boards.json`."""
+    lines = ["# Boards", ""]
+    if boards:
+        lines.append(
+            "| ID | Name | Description | Private | QueryCount | SLOCount | TextCount "
+            "| UpdatedAt | Tags |"
+        )
+        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+        for b in boards:
+            lines.append(
+                f"| {b['id']} | {b['name']} |  | false | 0 | 0 | 1 | 2026-09-07T00:00:00Z |  |"
+            )
+    lines += [
+        "",
+        "---",
+        "Metadata:",
+        "  environment: receipts-demo",
+        "  page: 1",
+        f"  total_items: {len(boards)}",
+        "  total_pages: 1",
+    ]
+    return "\n".join(lines)
+
+
+def _fake_created_board_markdown(board_id: str, board_url: str, name: str) -> str:
+    """A `create_board`-shaped success reply, matching the live shape in
+    `tests/fixtures/mcp/create_board.json`."""
+    return (
+        "Board created successfully.\n\n---\nMetadata:\n"
+        f"  board_id: {board_id}\n"
+        f"  board_name: {name}\n"
+        f'  board_url: "{board_url}"\n'
+        "  environment: receipts-demo\n"
+        "  text_count: 1\n"
+    )
+
+
+@dataclass
+class FakeWriteMCP:
+    """Enough of a write-capable HoneycombMCP for `agent/board.py` and
+    `agent/handoff.py`: `list_boards`, `create_board`, `canvas_agent_invoke`,
+    and `canvas_agent_poll_response`, answered from fixed, successful
+    responses. `boards` starts empty so the first `ensure_board` call always
+    creates one.
+
+    `list_boards` and `create_board` answer with real-shaped Markdown text
+    (see `agent/board.py`'s module docstring: both are Markdown, not JSON,
+    confirmed live 2026-09-07); `canvas_agent_invoke` and
+    `canvas_agent_poll_response` still answer with a JSON `raw` dict, since
+    those two are JSON on the wire.
+    """
+
+    boards: list[dict[str, Any]] = field(default_factory=list)
+    reply: str = "I agree with this."
+    calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    created_count: int = 0
+
+    async def call(self, name: str, args: dict[str, Any] | None = None, **kwargs: Any) -> Any:
+        self.calls.append((name, dict(args or {})))
+        if name == "list_boards":
+            return _WriteResult(raw=None, text=_fake_boards_markdown(self.boards))
+        if name == "create_board":
+            self.created_count += 1
+            board_id = f"brd-{self.created_count}"
+            board_url = f"https://ui.honeycomb.io/team/boards/{board_id}"
+            name_arg = (args or {})["name"]
+            self.boards.append({"id": board_id, "name": name_arg})
+            return _WriteResult(
+                raw=None, text=_fake_created_board_markdown(board_id, board_url, name_arg)
+            )
+        if name == "canvas_agent_invoke":
+            return _WriteResult(
+                raw={
+                    "status": "running",
+                    "session_id": "sess-1",
+                    "investigation_id": "hcciv_1",
+                    "investigation_url": "https://ui.honeycomb.io/team/canvas/1",
+                    "investigation_created": True,
+                }
+            )
+        if name == "canvas_agent_poll_response":
+            return _WriteResult(raw={"status": "completed", "chat": self.reply})
+        raise AssertionError(f"unexpected call to {name!r}")
+
+
+class FakeWriteSession:
+    """`async with open_write_mcp(settings) as session`, yielding a FakeWriteMCP."""
+
+    def __init__(self, mcp: FakeWriteMCP | None = None) -> None:
+        self.mcp = mcp or FakeWriteMCP()
+
+    async def __aenter__(self) -> FakeWriteMCP:
+        return self.mcp
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+
+def _grade_json_ignoring_wall_time(directory: Path) -> dict[str, Any]:
+    """`grade.json`'s content with every real-elapsed-time field zeroed out,
+    so two separate runs of the same deterministic script can be compared
+    for equality without flaking on how long each one actually took."""
+    data = json.loads((directory / "grade.json").read_text())
+    data["wall_s"] = None
+    if data.get("grade") is not None:
+        data["grade"]["process"]["wall_s"] = None
+    return data
+
+
+async def test_handoff_writes_a_handoff_json_next_to_grade_json(
+    settings: Settings, results_dir: Path, runs_dir: Path, tmp_path: Path
+) -> None:
+    write_session = FakeWriteSession()
+    results = await run(
+        [PAYMENTS],
+        ["full"],
+        1,
+        settings=settings,
+        results_dir=results_dir,
+        runs_dir=runs_dir,
+        provider_factory=factory([lambda: FakeProvider(good_script())]),
+        handoff=True,
+        open_write_mcp=lambda settings: write_session,
+    )
+
+    # A handoff must never move the grade it is attached to. The old
+    # assertion here was `results[0].total == results[0].total`, which
+    # holds no matter what `hand_off` does; rerun the identical script with
+    # handoff off and diff the two grade.json files instead, so a handoff
+    # that somehow perturbed grading would actually be caught.
+    baseline_dir = tmp_path / "baseline-results"
+    baseline_results = await run(
+        [PAYMENTS],
+        ["full"],
+        1,
+        settings=settings,
+        results_dir=baseline_dir,
+        runs_dir=runs_dir,
+        provider_factory=factory([lambda: FakeProvider(good_script())]),
+    )
+    assert results[0].total == baseline_results[0].total
+    assert _grade_json_ignoring_wall_time(
+        run_dir(results_dir, "full", PAYMENTS, 1)
+    ) == _grade_json_ignoring_wall_time(run_dir(baseline_dir, "full", PAYMENTS, 1))
+
+    handoff_path = run_dir(results_dir, "full", PAYMENTS, 1) / "handoff.json"
+    assert handoff_path.exists()
+    data = json.loads(handoff_path.read_text())
+    assert data["classification"] == "agree"
+    assert data["raw_text"] == "I agree with this."
+    assert data["status"] == "completed"
+    assert data["board_id"] == "brd-1"
+    assert data["board_url"] == "https://ui.honeycomb.io/team/boards/brd-1"
+    assert data["prompt"]  # the message that was sent is kept too
+
+
+async def test_without_the_handoff_flag_no_handoff_json_is_written(
+    settings: Settings, results_dir: Path, runs_dir: Path
+) -> None:
+    await run(
+        [PAYMENTS],
+        ["full"],
+        1,
+        settings=settings,
+        results_dir=results_dir,
+        runs_dir=runs_dir,
+        provider_factory=factory([lambda: FakeProvider(good_script())]),
+    )
+    assert not (run_dir(results_dir, "full", PAYMENTS, 1) / "handoff.json").exists()
+
+
+async def test_handoff_does_not_create_a_second_board_for_a_second_repeat_of_the_same_run(
+    settings: Settings, results_dir: Path, runs_dir: Path
+) -> None:
+    """Repeats of one scenario share a run id (one emit serves every repeat),
+    so the board they hand off to should be the one board, not one per repeat."""
+    write_session = FakeWriteSession()
+    await run(
+        [PAYMENTS],
+        ["full"],
+        2,
+        settings=settings,
+        results_dir=results_dir,
+        runs_dir=runs_dir,
+        provider_factory=factory([lambda: FakeProvider(good_script())] * 2),
+        handoff=True,
+        open_write_mcp=lambda settings: write_session,
+    )
+    assert write_session.mcp.created_count == 1
+    first = json.loads((run_dir(results_dir, "full", PAYMENTS, 1) / "handoff.json").read_text())
+    second = json.loads((run_dir(results_dir, "full", PAYMENTS, 2) / "handoff.json").read_text())
+    assert first["board_id"] == second["board_id"] == "brd-1"
+
+
+async def test_a_crashed_run_gets_no_handoff_json(
+    settings: Settings, results_dir: Path, runs_dir: Path
+) -> None:
+    write_session = FakeWriteSession()
+    await run(
+        [PAYMENTS],
+        ["full"],
+        1,
+        settings=settings,
+        results_dir=results_dir,
+        runs_dir=runs_dir,
+        provider_factory=factory([RaisingProvider]),
+        handoff=True,
+        open_write_mcp=lambda settings: write_session,
+    )
+    assert not (run_dir(results_dir, "full", PAYMENTS, 1) / "handoff.json").exists()
+    assert write_session.mcp.calls == []  # never even opened for a crash
+
+
+async def test_a_failing_write_session_still_records_a_handoff_and_never_raises(
+    settings: Settings, results_dir: Path, runs_dir: Path
+) -> None:
+    class RaisingWriteSession:
+        async def __aenter__(self) -> Any:
+            raise RuntimeError("write session could not open")
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    results = await run(
+        [PAYMENTS],
+        ["full"],
+        1,
+        settings=settings,
+        results_dir=results_dir,
+        runs_dir=runs_dir,
+        provider_factory=factory([lambda: FakeProvider(good_script())]),
+        handoff=True,
+        open_write_mcp=lambda settings: RaisingWriteSession(),
+    )
+    assert results[0].error is None  # the run itself is unaffected
+    data = json.loads((run_dir(results_dir, "full", PAYMENTS, 1) / "handoff.json").read_text())
+    assert data["status"] == "error"
+    assert data["classification"] == "no_response"
+    assert "write session could not open" in data["error"]
+
+
+async def test_hand_off_cells_default_write_session_uses_the_given_bucket(
+    tmp_path: Path, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_hand_off_cell`'s own fallback session (built only when a caller
+    invokes it, or `run_one`, directly without an `open_write_mcp`) used to
+    construct a plain `HoneycombMCP()` with no bucket at all: a fresh,
+    disconnected `TokenBucket` on every call, able to exceed the team-wide
+    rate limit on its own no matter how the matrix's read sessions were
+    already paced. Threading `write_bucket` through must make that
+    fallback share one bucket across cells instead of minting a new one
+    every time."""
+    import evals.run as run_module
+
+    captured: list[Any] = []
+
+    class FakeHoneycombMCP:
+        def __init__(
+            self,
+            *,
+            settings: Any,
+            allow_write: bool = False,
+            bucket: Any = None,
+            http_client: Any = None,
+        ) -> None:
+            captured.append(bucket)
+            self._mcp = FakeWriteMCP()
+
+        async def __aenter__(self) -> Any:
+            return self._mcp
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    monkeypatch.setattr(run_module, "HoneycombMCP", FakeHoneycombMCP)
+    shared_bucket = TokenBucket()
+
+    await run_module._hand_off_cell(tmp_path, _report(), settings, None, shared_bucket)
+    await run_module._hand_off_cell(tmp_path, _report(), settings, None, shared_bucket)
+
+    assert captured == [shared_bucket, shared_bucket]
+
+
+def test_handoff_flag_is_off_by_default_in_the_cli() -> None:
+    from evals.run import _parse_args
+
+    args = _parse_args(["--scenarios", "all"])
+    assert args.handoff is False
+
+
+def test_handoff_with_no_oauth_token_fails_fast_and_names_the_login_command(
+    tmp_path: Path,
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`--handoff` needs Canvas, which needs a usable Honeycomb OAuth token
+    on file (a management key has no user actor); with none, the CLI must
+    say so and exit before opening any session, not run the whole matrix
+    first and record an OAuthNotAuthorized crash on every cell. The
+    precondition is a token on file, not `HONEYCOMB_AUTH=oauth` in
+    settings: `_SharedSessions.write` forces OAuth on the write session it
+    opens regardless, so the read sessions the investigation itself uses
+    never need to move off the key."""
+    monkeypatch.setenv("HONEYCOMB_MCP_KEY", "fake-key-id:fake-secret")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-anthropic-key")
+    monkeypatch.setenv("ANTHROPIC_WORKSPACE_ID", "fake-workspace-id")
+    monkeypatch.setenv("HONEYCOMB_OAUTH_TOKEN_PATH", str(tmp_path / "no-such-token.json"))
+    safe = ["--results-dir", str(tmp_path / "results"), "--runs-dir", str(tmp_path / "runs")]
+
+    assert main(["--scenarios", CONTROL, "--handoff", *safe]) == 2
+
+    err = capsys.readouterr().err
+    assert "agent.auth login" in err
+    assert not (tmp_path / "results").exists()  # the matrix never started
+
+
+def test_handoff_with_a_malformed_token_file_fails_the_same_clear_way_as_missing(
+    tmp_path: Path,
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A token file whose `tokens` block fails pydantic validation (an
+    `access_token` that is a number, say) used to raise `ValidationError`
+    out of `main`: exit 1, a stack trace, no login command named. It must
+    fail the same way a missing token file does: exit 2, no matrix run, the
+    login command named."""
+    token_path = tmp_path / "malformed-token.json"
+    token_path.write_text(json.dumps({"tokens": {"access_token": 5, "token_type": []}}))
+    monkeypatch.setenv("HONEYCOMB_MCP_KEY", "fake-key-id:fake-secret")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-anthropic-key")
+    monkeypatch.setenv("ANTHROPIC_WORKSPACE_ID", "fake-workspace-id")
+    monkeypatch.setenv("HONEYCOMB_OAUTH_TOKEN_PATH", str(token_path))
+    safe = ["--results-dir", str(tmp_path / "results"), "--runs-dir", str(tmp_path / "runs")]
+
+    assert main(["--scenarios", CONTROL, "--handoff", *safe]) == 2
+
+    err = capsys.readouterr().err
+    assert "agent.auth login" in err
+    assert not (tmp_path / "results").exists()  # the matrix never started
+
+
+async def test_handoff_with_the_default_key_setting_still_reads_off_the_key(
+    settings: Settings, results_dir: Path, runs_dir: Path
+) -> None:
+    """The precondition check above only asks whether a token is on file;
+    it must not be satisfied by flipping `HONEYCOMB_AUTH` to `"oauth"`,
+    since that used to also flip every read session in the matrix onto
+    OAuth. `_SharedSessions.write` is what actually forces OAuth, and only
+    for the write session it opens for the board and Canvas calls."""
+    from evals.run import _SharedSessions
+
+    assert settings.honeycomb_auth == "key"
+    shared = _SharedSessions()
+
+    read_session = shared(settings)
+    write_session = shared.write(settings)
+
+    assert read_session._settings.honeycomb_auth == "key"
+    assert write_session._settings.honeycomb_auth == "oauth"
+    assert read_session._bucket is shared.bucket
+    assert write_session._bucket is shared.bucket

@@ -18,20 +18,23 @@ from pathlib import Path
 
 import pytest
 
+from agent.handoff import Handoff
 from agent.report import load_report
 from evals.grader import Grade, grade_file
 from evals.report import (
     OUTCOME_FAIL_BELOW,
+    HandoffEntry,
     _signed,
     config_order,
     load_results,
     main,
     num,
     provider_order,
+    read_handoffs,
     render,
     write_report,
 )
-from evals.run import GradedRun, crashed_run, graded_run, run_dir, write_run
+from evals.run import GradedRun, crashed_run, graded_run, run_dir, write_handoff, write_run
 
 FIXTURES = Path(__file__).parent / "fixtures" / "reports"
 RUNS_DIR = FIXTURES / "runs"
@@ -604,6 +607,183 @@ def test_the_total_spend_line_equals_the_sum_of_the_cost_column(live_results: Pa
         f"Total Anthropic spend across every run in this results directory: ${num(total, 2)}."
         in text
     )
+
+
+# --------------------------------------------------------------------------
+# Canvas handoffs (R12, EDW-1334)
+# --------------------------------------------------------------------------
+
+
+def _handoff(**overrides: object) -> Handoff:
+    base: dict[str, object] = {
+        "run_id": "run-abc123456789",
+        "prompt": "Top hypothesis...",
+        "status": "completed",
+        "classification": "agree",
+        "raw_text": "I agree with this.",
+        "board_id": "brd-1",
+        "board_url": "https://ui.honeycomb.io/team/boards/brd-1",
+    }
+    base.update(overrides)
+    return Handoff(**base)
+
+
+def test_no_handoff_data_renders_no_section_and_does_not_perturb_the_pinned_bytes(
+    live_results: Path,
+) -> None:
+    assert read_handoffs(live_results) == []
+    text = render(load_results(live_results))
+    assert "## Canvas handoffs" not in text
+    assert text == PINNED.read_text()
+
+
+def test_the_handoff_section_counts_classifications_per_scenario_and_config() -> None:
+    handoffs: list[HandoffEntry] = [
+        ("full", "s1", _handoff(classification="agree")),
+        ("full", "s1", _handoff(classification="agree")),
+        ("full", "s1", _handoff(classification="disagree")),
+        ("full", "s1", _handoff(classification="extend")),
+        ("full", "s1", _handoff(classification="no_response", status="timeout", board_url=None)),
+        ("no-negation", "s1", _handoff(classification="extend")),
+    ]
+    text = render([], handoffs=handoffs)
+    section = text.split("## Canvas handoffs", 1)[1]
+    header = next(line for line in section.splitlines() if line.startswith("| scenario |"))
+    assert header == "| scenario | config | agree | disagree | extend | no response | board |"
+    full_row = next(line for line in section.splitlines() if line.startswith("| s1 | full |"))
+    assert full_row == (
+        "| s1 | full | 2 | 1 | 1 | 1 | [board](https://ui.honeycomb.io/team/boards/brd-1) |"
+    )
+    ablation_row = next(
+        line for line in section.splitlines() if line.startswith("| s1 | no-negation |")
+    )
+    assert ablation_row == (
+        "| s1 | no-negation | 0 | 0 | 1 | 0 | [board](https://ui.honeycomb.io/team/boards/brd-1) |"
+    )
+
+
+def test_the_board_link_renders_on_every_config_in_a_scenario_group() -> None:
+    """`agent/board.py`'s `_find_existing` only hands back a url for the
+    config whose cell happened to create the board; a rediscovered board
+    (every other config, and every later repeat) carries `board_url=None`.
+    Picking the url per (scenario, config) group, as an earlier version
+    did, left every row but the first blank although the section's own
+    prose says it is the same board across the whole scenario group."""
+    handoffs: list[HandoffEntry] = [
+        ("full", "s1", _handoff(board_url="https://ui.honeycomb.io/team/boards/brd-1")),
+        ("no-negation", "s1", _handoff(board_url=None)),
+    ]
+    text = render([], handoffs=handoffs)
+    section = text.split("## Canvas handoffs", 1)[1]
+    full_row = next(line for line in section.splitlines() if line.startswith("| s1 | full |"))
+    ablation_row = next(
+        line for line in section.splitlines() if line.startswith("| s1 | no-negation |")
+    )
+    assert full_row.endswith("| [board](https://ui.honeycomb.io/team/boards/brd-1) |")
+    assert ablation_row.endswith("| [board](https://ui.honeycomb.io/team/boards/brd-1) |")
+
+
+def test_the_trigger_scenarios_two_configs_link_their_own_boards_not_the_first_ones() -> None:
+    """The trigger scenario is emitted once per cell (`.claude/skills/pass-run/SKILL.md`),
+    so its configs run different run ids and therefore have different boards.
+    Keying the url by `scenario_id` alone, as an earlier version did, rendered
+    the `full` row's board on the `no-negation` row too, which is a link to
+    the wrong board. Keying by `board_id` instead means each row picks up
+    only the url for the board its own handoff actually points at."""
+    handoffs: list[HandoffEntry] = [
+        (
+            "full",
+            "trigger-fired",
+            _handoff(board_id="brd-a", board_url="https://ui.honeycomb.io/team/boards/brd-a"),
+        ),
+        (
+            "no-negation",
+            "trigger-fired",
+            _handoff(board_id="brd-b", board_url="https://ui.honeycomb.io/team/boards/brd-b"),
+        ),
+    ]
+    text = render([], handoffs=handoffs)
+    section = text.split("## Canvas handoffs", 1)[1]
+    full_row = next(
+        line for line in section.splitlines() if line.startswith("| trigger-fired | full |")
+    )
+    ablation_row = next(
+        line for line in section.splitlines() if line.startswith("| trigger-fired | no-negation |")
+    )
+    assert full_row.endswith("| [board](https://ui.honeycomb.io/team/boards/brd-a) |")
+    assert ablation_row.endswith("| [board](https://ui.honeycomb.io/team/boards/brd-b) |")
+
+
+def test_a_board_id_with_no_url_anywhere_renders_blank_not_another_rows_link() -> None:
+    """The second config of a trigger-scenario handoff group can carry a
+    `board_id` that never picked up a url anywhere in the results directory
+    (only the config whose cell created the board gets a url back from
+    `agent/board.py`'s `_find_existing`); that row must render no link
+    rather than borrowing a different board's."""
+    handoffs: list[HandoffEntry] = [
+        (
+            "full",
+            "trigger-fired",
+            _handoff(board_id="brd-a", board_url="https://ui.honeycomb.io/team/boards/brd-a"),
+        ),
+        ("no-negation", "trigger-fired", _handoff(board_id="brd-b", board_url=None)),
+    ]
+    text = render([], handoffs=handoffs)
+    section = text.split("## Canvas handoffs", 1)[1]
+    ablation_row = next(
+        line for line in section.splitlines() if line.startswith("| trigger-fired | no-negation |")
+    )
+    assert ablation_row.endswith("|  |")
+
+
+def test_the_handoff_section_is_absent_when_no_run_carries_a_board_link() -> None:
+    handoffs: list[HandoffEntry] = [("full", "s1", _handoff(board_id=None, board_url=None))]
+    text = render([], handoffs=handoffs)
+    row = next(line for line in text.splitlines() if line.startswith("| s1 |"))
+    assert row.endswith("|  |")  # the board cell is blank, not a broken link
+
+
+def test_handoff_rows_are_ordered_by_scenario_then_config_order() -> None:
+    handoffs: list[HandoffEntry] = [
+        ("no-negation", "s2", _handoff()),
+        ("full", "s2", _handoff()),
+        ("full", "s1", _handoff()),
+    ]
+    text = render([], handoffs=handoffs)
+    section = text.split("## Canvas handoffs", 1)[1]
+    rows = [
+        line
+        for line in section.splitlines()
+        if line.startswith("| s") and not line.startswith("| scenario |")
+    ]
+    assert [line.split("|")[1:3] for line in rows] == [
+        [" s1 ", " full "],
+        [" s2 ", " full "],
+        [" s2 ", " no-negation "],
+    ]
+
+
+def test_read_handoffs_reads_config_and_scenario_from_the_path(tmp_path: Path) -> None:
+    handoff = _handoff()
+    write_handoff(run_dir(tmp_path, "full", "s1", 1), handoff)
+    write_handoff(run_dir(tmp_path, "no-negation", "s2", 3), handoff)
+
+    entries = read_handoffs(tmp_path)
+
+    assert sorted((config, scenario) for config, scenario, _ in entries) == [
+        ("full", "s1"),
+        ("no-negation", "s2"),
+    ]
+
+
+def test_write_report_renders_the_handoff_section_from_disk(
+    live_results: Path, tmp_path: Path
+) -> None:
+    write_handoff(run_dir(live_results, "full", "control-quiet", 1), _handoff())
+    path = write_report(live_results, tmp_path / "report.md")
+    text = path.read_text()
+    assert "## Canvas handoffs" in text
+    assert "| control-quiet | full | 1 | 0 | 0 | 0 |" in text
 
 
 def regenerate(path: Path = PINNED) -> Path:

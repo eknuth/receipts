@@ -9,10 +9,14 @@ now runs in code at the moment it matters.
 
 Blocks, with exit 2 and a reason on stderr:
 
-- `git add` or `git commit` naming `.env` or `.claude.json` as a path.
+- `git add` or `git commit` naming `.env`, `.claude.json`, or
+  `honeycomb_oauth.json` (agent/auth.py's OAuth token store, R12/EDW-1334;
+  it defaults to `~/.receipts` outside the repo, but this catches it if one
+  is ever staged from somewhere else) as a path.
 - `git commit` when the staged diff (plus the working tree for `-a`) adds a
   line matching a key pattern: `sk-ant-`, `hcaik_`, `hcamk_`, `nvapi-`, an
-  AWS access key id, `x-honeycomb-team:` followed by a key-shaped value, or
+  AWS access key id, `x-honeycomb-team:` followed by a key-shaped value, an
+  OAuth `access_token` or `refresh_token` JSON field with a value, or
   `NVIDIA_API_KEY=` with a value on a line that is not in `.env.example`.
   Placeholders in angle brackets or starting with `$` pass. The stderr names
   the file and the pattern, never the value.
@@ -45,9 +49,15 @@ KEY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("nvapi- key", re.compile(r"nvapi-[A-Za-z0-9_-]{8,}")),
     ("AWS access key id", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
     ("x-honeycomb-team header with a value", re.compile(r"x-honeycomb-team:\s*[A-Za-z0-9_-]{16,}")),
+    # R12 (EDW-1334): agent/auth.py's OAuth token store, in case one is ever
+    # staged from outside its default ~/.receipts location. Its JSON shape
+    # is {"tokens": {"access_token": "...", "refresh_token": "...", ...}},
+    # so a real one always has one of these keys with a non-empty value.
+    ("OAuth access_token in a committed file", re.compile(r'"access_token"\s*:\s*"[^"\s]{8,}"')),
+    ("OAuth refresh_token in a committed file", re.compile(r'"refresh_token"\s*:\s*"[^"\s]{8,}"')),
 ]
 ENV_ASSIGNMENT = re.compile(r"^\s*(NVIDIA_API_KEY)=(\S*)")
-FORBIDDEN_PATHS = (".env", ".claude.json")
+FORBIDDEN_PATHS = (".env", ".claude.json", "honeycomb_oauth.json")
 SEPARATORS = set("&|;\n()")
 
 

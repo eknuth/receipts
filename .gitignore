@@ -1,4 +1,9 @@
 .env
+# R12 (EDW-1334): agent/auth.py's OAuth token store. Defaults outside the
+# repo (~/.receipts), but ignored here too in case it is ever pointed at
+# the tree: it holds an access token and a refresh token, as sensitive as
+# any key in .env.
+honeycomb_oauth.json
 .venv/
 __pycache__/
 *.pyc

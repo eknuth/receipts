@@ -1,0 +1,14 @@
+{
+  "tool": "create_board",
+  "args": {
+    "environment_slug": "receipts-demo",
+    "name": "receipts probe text only",
+    "panels": [{"type": "text", "content": "## Findings\n\n- smoke test"}],
+    "tags": []
+  },
+  "structured_content": null,
+  "content_texts": [
+    "Board created successfully.\n\n---\nMetadata:\n  board_id: FAKEbrd0001x\n  board_name: receipts probe text only\n  board_url: \"https://ui.honeycomb.io/acme-team/environments/receipts-demo/board/FAKEbrd0001x\"\n  environment: receipts-demo\n  text_count: 1\n  updated_at: \"2026-09-07T03:38:51Z\"\n"
+  ],
+  "is_error": false
+}
