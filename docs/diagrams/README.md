@@ -12,3 +12,7 @@ attribute names have to be real ones from `gen/topology.py` and `gen/README.md`.
 It also renders-checks each diagram against its own SVG, so an IR edited without
 `make diagrams` fails the suite the same way a stale number fails
 `scripts/check_readme_numbers.py`.
+
+The PNGs exist for the recording (`tools/record/build.py`) and for pasting into
+the Linear issue; `README.md` embeds the SVGs directly, since GitHub renders a
+repo SVG inline.

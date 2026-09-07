@@ -8,18 +8,36 @@
 // SVG"), behind a click on the export menu. This script drives archify's
 // own bundled headless-Chrome driver (bin/visual-check.mjs's
 // ChromeVisualBrowser) to load the page and call that same in-page
-// function -- `Archify.exportMenu.run(format)` -- so the output is exactly
-// what a person clicking "Download SVG" / "Download PNG" in that page
-// would get, not a reimplementation of it.
+// function for SVG -- `Archify.exportMenu.run('svg')` -- so the SVG is
+// exactly what a person clicking "Download SVG" in that page would get,
+// not a reimplementation of it.
 //
-// PNG: the real 'png' export rasterizes at up to 4x scale for on-screen
-// crispness, which for a tall diagram can produce a file larger than this
-// project wants to commit. Rather than fabricate a different image, this
-// reuses the exact SVG bytes captured from the real 'svg' export (the
-// genuine tool output) and rasterizes them at natural (1x) size with a
-// plain canvas -- the same technique archify's own rasterize() uses
-// (new Image() from a blob: URL of the SVG, drawImage, canvas.toBlob), just
-// at a smaller, still-genuine scale.
+// PNG is not that. The real 'png' export rasterizes at up to 4x scale for
+// on-screen crispness, which for a tall diagram can produce a file larger
+// than this project wants to commit, and it is never called here. Instead
+// this script takes the genuine SVG bytes captured above and rasterizes
+// them itself, at natural (1x) size, with a plain canvas (new Image() from
+// a blob: URL of the SVG, drawImage, canvas.toBlob) -- the same technique
+// archify's own rasterize() uses internally, just run here at a smaller
+// scale rather than through `Archify.exportMenu.run('png')`.
+//
+// Theme: `Archify.exportMenu.run('svg')` always emits a dual-theme SVG
+// whose *base* `:root, svg { ... }` rule is dark and whose
+// `@media (prefers-color-scheme: light)` block is the override --
+// hardcoded in archify's own template (assets/template.html: "Dual-theme
+// SVG. Dark is the default ... light swaps in via media query"), not a
+// `meta` field or export option this project can pass in. Committed on
+// GitHub, that base-dark SVG follows the *reader's* OS color-scheme rather
+// than GitHub's own light page chrome, so a reader on dark-mode macOS gets
+// a black diagram panel dropped into a white README. `lightFirstSvg()`
+// below swaps the two blocks after capture -- base becomes light, dark
+// moves under `@media (prefers-color-scheme: dark)` -- on the genuine
+// captured SVG text, not a re-render, so every other rule (per-preset
+// blocks, the explicit `svg[data-theme="light"|"dark"]` overrides) is
+// untouched. PNG then rasterizes that already-light-first SVG under
+// headless Chrome's unmodified (light) preference, so it needs no
+// `Emulation.setEmulatedMedia` override to match: the SVG is light-first,
+// so the PNG just is.
 //
 // Usage: node tools/export_diagram.mjs <archify_root> <input.html> <output.(svg|png)> [svg|png]
 import fs from 'node:fs';
@@ -32,6 +50,31 @@ if (!archifyRoot || !htmlPath || !outPath) {
   process.exit(2);
 }
 const fmt = format || (outPath.endsWith('.png') ? 'png' : 'svg');
+
+// Swaps archify's hardcoded dark-base / light-override dual-theme block for
+// a light-base / dark-override one, so the SVG matches GitHub's (light)
+// page chrome by default and only goes dark under the reader's own
+// `prefers-color-scheme: dark`. Operates on the exact two `:root, svg { ... }`
+// var blocks the exporter writes (assets/template.html's `autoTheme` path);
+// everything else in the document (per-preset rules, the explicit
+// `svg[data-theme="..."]` overrides) is left as captured.
+function lightFirstSvg(svgString) {
+  const baseRe = /:root, svg \{ ([^}]*) \}/;
+  const lightMediaRe = /@media \(prefers-color-scheme: light\) \{ :root, svg \{ ([^}]*) \} \}/;
+  const baseMatch = svgString.match(baseRe);
+  const lightMediaMatch = svgString.match(lightMediaRe);
+  if (!baseMatch || !lightMediaMatch) {
+    throw new Error(
+      'lightFirstSvg: could not find the expected dual-theme :root rules to flip -- ' +
+      'archify may have changed its export template',
+    );
+  }
+  const darkVars = baseMatch[1];
+  const lightVars = lightMediaMatch[1];
+  return svgString
+    .replace(baseRe, `:root, svg { ${lightVars} }`)
+    .replace(lightMediaRe, `@media (prefers-color-scheme: dark) { :root, svg { ${darkVars} } }`);
+}
 
 const visualCheckPath = path.join(path.resolve(archifyRoot), 'bin', 'visual-check.mjs');
 const { ChromeVisualBrowser, findChrome } = await import(pathToFileURL(visualCheckPath).href);
@@ -68,12 +111,14 @@ try {
   if (svgResponse.exceptionDetails) {
     throw new Error(svgResponse.exceptionDetails.exception?.description || svgResponse.exceptionDetails.text);
   }
-  const svgString = svgResponse.result.value;
+  const svgString = lightFirstSvg(svgResponse.result.value);
 
   if (fmt === 'svg') {
     fs.writeFileSync(outPath, svgString + '\n');
     console.log(JSON.stringify({ ok: true, output: outPath, bytes: Buffer.byteLength(svgString) }));
   } else if (fmt === 'png') {
+    // No color-scheme emulation needed: svgString is already light-first,
+    // so headless Chrome's unmodified (light) preference already matches it.
     const rasterExpr = `(async () => {
       const svgString = ${JSON.stringify(svgString)};
       const svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });

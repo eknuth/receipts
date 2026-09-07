@@ -28,17 +28,24 @@ video:
 # bundled headless Chrome to produce the .svg and .png (see that file for
 # why: archify's CLI has no `export` subcommand, only the delivered page's
 # own "Download SVG" / "Download PNG" viewer buttons).
+#
+# No --repo-root: that flag drives archify's own repository-evidence check,
+# which requires a component's `sources` to be verified against a pinned
+# `meta.repository.revision` commit SHA -- a SHA that goes stale the moment
+# this merges, with nothing to catch the drift. architecture.json carries
+# no `sources` or `repository` for that reason; tests/test_diagrams.py's
+# own module-path check already verifies every path a diagram names exists
+# on disk, without pinning to a revision.
 diagrams:
 	@grep -v '^#' docs/diagrams/diagrams.txt | grep -v '^$$' | while read -r name type; do \
 		json="docs/diagrams/$$name.json"; \
 		html="docs/diagrams/$$name.html"; \
 		svg="docs/diagrams/$$name.svg"; \
 		png="docs/diagrams/$$name.png"; \
-		if [ "$$type" = "architecture" ]; then repo_root="--repo-root ."; else repo_root=""; fi; \
 		echo "validating $$json ($$type)"; \
-		node "$(ARCHIFY)/bin/archify.mjs" validate "$$type" "$$json" --quality showcase $$repo_root --json || exit 1; \
+		node "$(ARCHIFY)/bin/archify.mjs" validate "$$type" "$$json" --quality showcase --json || exit 1; \
 		echo "rendering $$html"; \
-		node "$(ARCHIFY)/bin/archify.mjs" deliver "$$type" "$$json" "$$html" --quality showcase $$repo_root --json || exit 1; \
+		node "$(ARCHIFY)/bin/archify.mjs" deliver "$$type" "$$json" "$$html" --quality showcase --json || exit 1; \
 		echo "exporting $$svg"; \
 		node tools/export_diagram.mjs "$(ARCHIFY)" "$$html" "$$svg" svg || exit 1; \
 		echo "exporting $$png"; \

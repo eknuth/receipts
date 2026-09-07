@@ -25,11 +25,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
 
-LIGHT_MEDIA_QUERY = "@media (prefers-color-scheme: light)"
+DARK_MEDIA_QUERY = "@media (prefers-color-scheme: dark)"
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
@@ -135,53 +136,90 @@ def caption_png(text: str, out: Path) -> None:
     render_png(f"<div class='caption'>{text}</div>", out, transparent=True)
 
 
-def _dark_svg(svg_path: Path, out_svg: Path) -> None:
-    """A copy of `svg_path` with its `prefers-color-scheme: light` override removed.
+DARK_BG = "--bg: #020617"
 
-    The SVG's base `:root` rule is already dark (`--bg: #020617`), matching
-    this recording's BACKGROUND, but archify also ships a
-    `@media (prefers-color-scheme: light) { ... }` block that repaints it
-    light, and headless Chrome's default preference is light with no flag
-    to force otherwise for an externally loaded SVG document. Stripping that
-    one block, brace-balanced so nothing else in the stylesheet is touched,
-    is simpler than fighting the media query, and it only affects this
-    scratch copy, not the delivered diagram.
+# The two var blocks tools/export_diagram.mjs's own `lightFirstSvg()` leaves
+# in a committed diagram SVG: a light-vars base rule, and the dark vars
+# under `@media (prefers-color-scheme: dark)`. Same shape, same regexes,
+# mirror-imaged: that script promotes a captured dark-first SVG to
+# light-first for GitHub's page; this promotes a committed light-first SVG
+# back to dark-first for this recording's own always-dark frame.
+BASE_ROOT_RE = re.compile(r":root, svg \{ ([^}]*) \}")
+DARK_MEDIA_RE = re.compile(r"@media \(prefers-color-scheme: dark\) \{ :root, svg \{ ([^}]*) \} \}")
+
+
+def _dark_svg(svg_path: Path, out_svg: Path) -> None:
+    """A copy of `svg_path` promoted to dark-first, for this always-dark recording.
+
+    The committed diagram SVGs are light-first (tools/export_diagram.mjs:
+    base `:root, svg { ... }` carries the light vars, a
+    `@media (prefers-color-scheme: dark) { ... }` block carries the dark
+    ones), so they match GitHub's light page by default. Headless Chrome
+    renders a standalone SVG document at its own default (light) preference
+    too, with no flag to force otherwise, so loading that SVG as-is here
+    would show up as a pale card in this recording's otherwise all-dark
+    video. This pulls the dark vars out of the media block and writes them
+    into the base rule instead, dropping the now-redundant media block, so
+    the copy is dark unconditionally. It only affects this scratch copy,
+    not the delivered diagram.
+
+    A silently wrong "dark" copy that was actually still light would be
+    worse than a loud failure, so both invariants are checked before the
+    copy is written: the dark `--bg` really is in the base rule, and no
+    `prefers-color-scheme` media query is left to override it.
     """
     text = svg_path.read_text()
-    start = text.find(LIGHT_MEDIA_QUERY)
-    if start == -1:
-        out_svg.write_text(text)
-        return
-    brace = text.index("{", start)
-    depth = 1
-    i = brace + 1
-    while depth and i < len(text):
-        if text[i] == "{":
-            depth += 1
-        elif text[i] == "}":
-            depth -= 1
-        i += 1
-    out_svg.write_text(text[:start] + text[i:])
+    dark_match = DARK_MEDIA_RE.search(text)
+    if dark_match is None:
+        raise RuntimeError(
+            f"{svg_path}: no '{DARK_MEDIA_QUERY}' block found to promote to the "
+            "base rule; the SVG may not be the light-first shape "
+            "tools/export_diagram.mjs's lightFirstSvg() produces"
+        )
+    base_match = BASE_ROOT_RE.search(text)
+    if base_match is None:
+        raise RuntimeError(f"{svg_path}: no base ':root, svg {{ ... }}' rule found")
+    dark_vars = dark_match.group(1)
+    result = text[: base_match.start()] + f":root, svg {{ {dark_vars} }}" + text[base_match.end() :]
+    result = DARK_MEDIA_RE.sub("", result, count=1)
+    if DARK_BG not in result:
+        raise RuntimeError(
+            f"{svg_path}: the dark '{DARK_BG}' rule is missing from the base "
+            "after promotion; the captured dark vars may not be what was expected"
+        )
+    if "prefers-color-scheme" in result:
+        raise RuntimeError(
+            f"{svg_path}: a 'prefers-color-scheme' media query survived promotion; "
+            "the copy could still be repainted light in a headless browser"
+        )
+    out_svg.write_text(result)
 
 
 def architecture_png(out: Path) -> None:
-    """The architecture diagram, rasterized fresh from its SVG at frame size.
+    """The architecture diagram, rasterized fresh from its SVG at frame width.
 
     docs/diagrams/architecture.png is 1184px wide, narrower than this frame;
     upscaling that raster would blur it. The SVG has no such ceiling, so this
     renders it directly with headless Chrome, the same way every card and
-    caption in this module is rendered, scaled to fit rather than stretched.
-    `_dark_svg` keeps the render on the SVG's own dark defaults rather than
-    the light `prefers-color-scheme` override headless Chrome would
-    otherwise pick, so the still matches BACKGROUND and the rest of the
-    recording instead of showing up as a pale card in an all-dark video.
+    caption in this module is rendered. The `<img>` is given an explicit
+    `width:{WIDTH}px` so the SVG rasterizes at the frame's own width and
+    fills it, height following automatically from the SVG's aspect ratio;
+    nothing here is upscaled, since the source is a vector redrawn at this
+    size, not a bitmap stretched to it. `still()`'s own scaling afterward
+    then only has to make room for the caption band, not shrink a
+    small image centered in a mostly empty frame. The committed SVG is
+    light-first (it matches GitHub's page by default; see
+    tools/export_diagram.mjs), so `_dark_svg` promotes its dark
+    `prefers-color-scheme` variant to the base before this renders it,
+    matching BACKGROUND and the rest of the recording instead of showing up
+    as a pale card in an all-dark video.
     """
     dark_svg = out.with_suffix(".dark.svg")
     _dark_svg(ARCHITECTURE_SVG, dark_svg)
     render_png(
         "<div style='width:100%;height:100%;display:flex;align-items:center;"
         "justify-content:center'>"
-        f"<img src='file://{dark_svg}' style='max-width:100%;max-height:100%'>"
+        f"<img src='file://{dark_svg}' style='width:{WIDTH}px'>"
         "</div>",
         out,
         transparent=False,

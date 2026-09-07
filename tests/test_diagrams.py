@@ -286,19 +286,20 @@ def test_rendered_svg_has_every_current_node_label():
         assert not missing, f"{path.name}: SVG is stale, missing label(s) {missing}"
 
 
-def test_dark_svg_strips_light_scheme_and_keeps_dark_root(tmp_path):
+def test_dark_svg_promotes_the_dark_media_block_to_the_base(tmp_path):
     """`tools/record/build.py`'s `_dark_svg` has to leave a genuinely dark copy.
 
-    Pure text manipulation (brace-balanced stripping of one `@media` block),
-    so this exercises it directly rather than through the Chrome-driven
-    `architecture_png` it feeds.
+    The committed diagram SVGs are light-first (tools/export_diagram.mjs's
+    `lightFirstSvg()`): a light-vars base `:root, svg { ... }` rule, and the
+    dark vars under `@media (prefers-color-scheme: dark)`. Pure text
+    manipulation, so this exercises `_dark_svg` directly rather than through
+    the Chrome-driven `architecture_png` it feeds.
     """
     from tools.record.build import _dark_svg
 
     svg = (
-        ":root, svg { --bg: #020617; --text: #ffffff; }"
-        "@media (prefers-color-scheme: light) { :root, svg { --bg: #f8fafc; } "
-        ".card { fill: #fff; } }"
+        ":root, svg { --bg: #f8fafc; --text: #0f172a; }"
+        "@media (prefers-color-scheme: dark) { :root, svg { --bg: #020617; --text: #ffffff; } }"
         "<rect/>"
     )
     src = tmp_path / "in.svg"
@@ -306,25 +307,26 @@ def test_dark_svg_strips_light_scheme_and_keeps_dark_root(tmp_path):
     out = tmp_path / "out.svg"
     _dark_svg(src, out)
     result = out.read_text()
-    assert "prefers-color-scheme: light" not in result
+    assert "prefers-color-scheme" not in result
     assert "--bg: #020617" in result
 
 
-def test_dark_svg_raises_if_a_light_override_survives(tmp_path):
-    """A second, unstripped light-scheme block is exactly the regression this guards.
+def test_dark_svg_raises_if_a_light_scheme_survives(tmp_path):
+    """A second, un-promoted dark-media block is exactly the regression this guards.
 
-    `_dark_svg` only removes the first `@media (prefers-color-scheme: light)`
-    block it finds; if archify ever emits a second one, or the brace-balance
-    walk stops short, the copy would still repaint light in a headless
-    browser with no flag telling it otherwise. The function has to catch
-    that itself rather than hand back a silently wrong "dark" copy.
+    `_dark_svg` only promotes the first `@media (prefers-color-scheme: dark)`
+    block whose selector is the exact `:root, svg { ... }` var rule it
+    expects; a second one elsewhere in the stylesheet (or a shape it does
+    not recognize) would leave the copy still repaintable to light in a
+    headless browser with no flag telling it otherwise. The function has to
+    catch that itself rather than hand back a silently wrong "dark" copy.
     """
     from tools.record.build import _dark_svg
 
     svg = (
-        ":root, svg { --bg: #020617; }"
-        "@media (prefers-color-scheme: light) { :root, svg { --bg: #f8fafc; } }"
-        "<style>@media (prefers-color-scheme: light) { .card { fill: #fff; } }</style>"
+        ":root, svg { --bg: #f8fafc; }"
+        "@media (prefers-color-scheme: dark) { :root, svg { --bg: #020617; } }"
+        "<style>@media (prefers-color-scheme: dark) { .card { fill: #000; } }</style>"
     )
     src = tmp_path / "in.svg"
     src.write_text(svg)
@@ -332,6 +334,27 @@ def test_dark_svg_raises_if_a_light_override_survives(tmp_path):
     try:
         _dark_svg(src, out)
     except RuntimeError as exc:
-        assert "prefers-color-scheme: light" in str(exc)
+        assert "prefers-color-scheme" in str(exc)
     else:
-        raise AssertionError("_dark_svg should have raised on a surviving light override")
+        raise AssertionError("_dark_svg should have raised on a surviving media query")
+
+
+def test_dark_svg_raises_if_there_is_no_dark_block_to_promote(tmp_path):
+    """A light-only SVG (no `prefers-color-scheme: dark` block at all) is not this shape.
+
+    `_dark_svg` expects the light-first shape `lightFirstSvg()` produces; if
+    a diagram were ever committed without a dark override, silently leaving
+    it light would be the same class of bug as the other two checks catch.
+    """
+    from tools.record.build import _dark_svg
+
+    svg = ":root, svg { --bg: #f8fafc; }<rect/>"
+    src = tmp_path / "in.svg"
+    src.write_text(svg)
+    out = tmp_path / "out.svg"
+    try:
+        _dark_svg(src, out)
+    except RuntimeError as exc:
+        assert "prefers-color-scheme: dark" in str(exc)
+    else:
+        raise AssertionError("_dark_svg should have raised with no dark block to promote")

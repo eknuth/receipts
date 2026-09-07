@@ -4,11 +4,7 @@
   "meta": {
     "title": "Receipts Architecture",
     "output": "docs/diagrams/architecture.html",
-    "quality_profile": "showcase",
-    "repository": {
-      "url": "https://github.com/eknuth/receipts",
-      "revision": "b5a29e576a1105fba840dd10ab1a79dc5f0f7a2b"
-    }
+    "quality_profile": "showcase"
   },
   "components": [
     {
@@ -17,8 +13,7 @@
       "label": "gen/emit.py",
       "sublabel": "baseline + fault traffic",
       "pos": [300, 40],
-      "size": [160, 60],
-      "sources": [{ "path": "gen/emit.py" }]
+      "size": [160, 60]
     },
     {
       "id": "loop",
@@ -26,8 +21,7 @@
       "label": "agent/loop.py",
       "sublabel": "investigation loop",
       "pos": [300, 200],
-      "size": [160, 60],
-      "sources": [{ "path": "agent/loop.py" }]
+      "size": [160, 60]
     },
     {
       "id": "telemetry",
@@ -35,8 +29,7 @@
       "label": "agent/telemetry.py",
       "sublabel": "self-telemetry",
       "pos": [500, 280],
-      "size": [160, 60],
-      "sources": [{ "path": "agent/telemetry.py" }]
+      "size": [160, 60]
     },
     {
       "id": "report_py",
@@ -44,8 +37,7 @@
       "label": "agent/report.py",
       "sublabel": "Report schema",
       "pos": [300, 400],
-      "size": [160, 60],
-      "sources": [{ "path": "agent/report.py" }]
+      "size": [160, 60]
     },
     {
       "id": "grader_py",
@@ -53,8 +45,7 @@
       "label": "evals/grader.py",
       "sublabel": "outcome scoring",
       "pos": [500, 400],
-      "size": [160, 60],
-      "sources": [{ "path": "evals/grader.py" }]
+      "size": [160, 60]
     },
     {
       "id": "report_md",
@@ -62,8 +53,7 @@
       "label": "evals/report.md",
       "sublabel": "generated, not hand-typed",
       "pos": [700, 400],
-      "size": [160, 60],
-      "sources": [{ "path": "evals/report.md" }]
+      "size": [160, 60]
     },
     {
       "id": "mcp_server",
@@ -71,10 +61,7 @@
       "label": "Hosted MCP",
       "sublabel": "mcp.honeycomb.io",
       "pos": [940, 200],
-      "size": [170, 60],
-      "sources": [
-        { "path": "agent/mcp_client.py", "label": "read-tool allowlist" }
-      ]
+      "size": [170, 60]
     },
     {
       "id": "dataset_shop",
@@ -106,12 +93,7 @@
       "label": "Model Providers",
       "sublabel": "Anthropic, NVIDIA NIM, or Ollama",
       "pos": [40, 200],
-      "size": [190, 60],
-      "sources": [
-        { "path": "agent/providers/anthropic.py" },
-        { "path": "agent/providers/nvidia.py" },
-        { "path": "agent/providers/ollama.py" }
-      ]
+      "size": [190, 60]
     }
   ],
   "boundaries": [
