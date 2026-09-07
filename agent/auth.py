@@ -107,8 +107,26 @@ class FileTokenStorage(TokenStorage):
             return {}
 
     def _write(self, data: dict[str, Any]) -> None:
+        """Write `data` as the token file, 0600 from the moment it exists.
+
+        `Path.write_text` on a file that does not exist yet creates it at
+        the mode `open()`'s own default gives it, subject to the process
+        umask (0644 under a umask of 022): under that path an access token
+        sat world-readable for however long it took the `chmod` right after
+        to run. `os.open` with an explicit mode closes that window: a mode
+        of 0600 has no group or other bits for umask to fail to mask off,
+        so the file is never anything but owner-only, even at the instant
+        it is created. The `chmod` still runs afterward, for a file that
+        already existed (from before this fix, or from a version that ever
+        loosens it) at some other mode.
+        """
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(json.dumps(data, indent=2))
+        text = json.dumps(data, indent=2)
+        fd = os.open(self._path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, text.encode("utf-8"))
+        finally:
+            os.close(fd)
         os.chmod(self._path, stat.S_IRUSR | stat.S_IWUSR)
 
     async def get_tokens(self) -> OAuthToken | None:

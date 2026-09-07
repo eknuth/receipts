@@ -184,11 +184,26 @@ def _parse_created_board(result: Any) -> tuple[str | None, str | None]:
     return metadata.get("board_id"), metadata.get("board_url")
 
 
+class _LookupFailed:
+    """`_find_existing` could not tell whether a board already exists.
+
+    Distinct from `None` ("looked, and there is no such board"): a
+    `list_boards` error (a 429, say) must not be read as "nothing found", or
+    `ensure_board` would fall through to `create_board` and mint a duplicate
+    mid-matrix, which is exactly what acceptance criterion 3 forbids.
+    """
+
+    def __init__(self, error: str) -> None:
+        self.error = error
+
+
 async def _find_existing(
     mcp: Any, *, environment_slug: str, name: str, tag: str | None
-) -> tuple[str, str | None] | None:
-    """The id of a board already named `name`, or None; the url is always
-    `None` here (see below), never guessed.
+) -> tuple[str, str | None] | _LookupFailed | None:
+    """The id of a board already named `name`; `None` when the listing
+    completed and found nothing; a `_LookupFailed` when the listing itself
+    could not be trusted. The url is always `None` on a found board (see
+    below), never guessed.
 
     Filtered by `tag` server-side when one is valid: a tagged listing that
     comes back with no matching row is read as "no board yet", not retried
@@ -213,7 +228,7 @@ async def _find_existing(
             args["tags"] = [tag]
         result = await mcp.call("list_boards", args)
         if getattr(result, "is_error", False):
-            return None
+            return _LookupFailed(_result_text(result) or "list_boards failed")
         text = _result_text(result)
         if page == 1:
             metadata = fmt.parse_metadata_block(text)
@@ -240,12 +255,17 @@ async def ensure_board(report: Report, mcp: Any, *, environment_slug: str) -> Bo
     Never raises: a `list_boards` or `create_board` failure comes back as a
     `BoardResult` with `created=False` and `error` set, the same "bolt-on,
     not a gate" contract `agent/handoff.py`'s `hand_off` follows, since a
-    board is a courtesy on top of a graded report, not part of it.
+    board is a courtesy on top of a graded report, not part of it. A
+    `list_boards` failure specifically must not fall through to
+    `create_board`: it is recorded as an error, not treated as "no board
+    found yet" (see `_LookupFailed`).
     """
     name = board_name(report)
     tag = run_tag(report.run_id)
     try:
         existing = await _find_existing(mcp, environment_slug=environment_slug, name=name, tag=tag)
+        if isinstance(existing, _LookupFailed):
+            return BoardResult(board_id=None, board_url=None, created=False, error=existing.error)
         if existing is not None:
             board_id, board_url = existing
             return BoardResult(board_id=board_id, board_url=board_url, created=False)

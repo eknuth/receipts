@@ -97,6 +97,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
+from agent.auth import OAuthNotAuthorized, require_oauth_provider
 from agent.board import ensure_board
 from agent.handoff import Handoff, hand_off
 from agent.loop import DEFAULT_MAX_CALLS, DEFAULT_MAX_WALL_S, AgentConfig, ScenarioRun, investigate
@@ -590,8 +591,8 @@ class _SharedSessions:
     across the whole matrix keeps the whole matrix under the cap.
     """
 
-    def __init__(self) -> None:
-        self.bucket = TokenBucket()
+    def __init__(self, bucket: TokenBucket | None = None) -> None:
+        self.bucket = bucket or TokenBucket()
 
     def __call__(self, settings: Settings) -> HoneycombMCP:
         return HoneycombMCP(settings=settings, bucket=self.bucket)
@@ -604,8 +605,21 @@ class _SharedSessions:
         session has already closed: the model itself is never offered a
         write tool (see `agent/loop.py`'s `INVESTIGATION_TOOLS`), so this is
         the one place in the matrix `allow_write=True` appears.
+
+        Builds its own session from `settings` with `honeycomb_auth`
+        forced to `"oauth"`, regardless of what `settings.honeycomb_auth`
+        already says: Canvas needs a user actor and a management key has
+        none (see `agent/auth.py`), but every read session this class opens
+        (`__call__`, above) must stay on whatever `settings` actually
+        configures. Before this override, the only way to satisfy
+        `canvas_agent_invoke`'s precondition was to set
+        `HONEYCOMB_AUTH=oauth` for the whole process, which routed the
+        investigation's own read queries through OAuth too, running them as
+        a person rather than the service identity `receipts/settings.py`
+        says the eval matrix keeps using.
         """
-        return HoneycombMCP(settings=settings, allow_write=True, bucket=self.bucket)
+        write_settings = settings.model_copy(update={"honeycomb_auth": "oauth"})
+        return HoneycombMCP(settings=write_settings, allow_write=True, bucket=self.bucket)
 
 
 async def run_one(
@@ -625,6 +639,7 @@ async def run_one(
     telemetry: Telemetry | None = None,
     handoff: bool = False,
     open_write_mcp: OpenMCP | None = None,
+    write_bucket: TokenBucket | None = None,
 ) -> GradedRun:
     """One investigation, graded and written. Never raises for the run's own failure.
 
@@ -729,7 +744,7 @@ async def run_one(
         )
     write_run(directory, graded, report)
     if handoff and report is not None and not graded.crashed:
-        await _hand_off_cell(directory, report, settings, open_write_mcp)
+        await _hand_off_cell(directory, report, settings, open_write_mcp, write_bucket)
     return graded
 
 
@@ -738,6 +753,7 @@ async def _hand_off_cell(
     report: Report,
     settings: Settings,
     open_write_mcp: OpenMCP | None,
+    write_bucket: TokenBucket | None = None,
 ) -> None:
     """Create or reuse the run's board and hand the report to Canvas.
 
@@ -746,8 +762,21 @@ async def _hand_off_cell(
     run into a crash; `ensure_board` and `hand_off` already carry their own
     failures on the value they return, so the only exceptions this needs to
     catch are the write session's own `__aenter__`/`__aexit__`.
+
+    `write_bucket` only matters when `open_write_mcp` is `None`: the
+    fallback session built right below must still share the matrix's rate
+    limit, not start a fresh, disconnected `TokenBucket` of its own the way
+    an earlier version did. `run_matrix` always resolves `open_write_mcp`
+    before a `--handoff` cell reaches here, so this fallback is normally
+    exercised only by a caller that invokes `run_one` directly.
     """
-    write_open = open_write_mcp or (lambda s: HoneycombMCP(settings=s, allow_write=True))
+    write_open = open_write_mcp or (
+        lambda s: HoneycombMCP(
+            settings=s.model_copy(update={"honeycomb_auth": "oauth"}),
+            allow_write=True,
+            bucket=write_bucket,
+        )
+    )
     try:
         async with write_open(settings) as write_session:
             board = await ensure_board(
@@ -837,18 +866,23 @@ async def run_matrix(
     `handoff` (R12) hands each cell's graded report to Canvas after it is
     written; off by default, so the matrix behaves exactly as it did before
     R12 unless a caller asks for it. `open_write_mcp` is the session
-    `agent/board.py` and `agent/handoff.py` write through; left unset, and
-    `open_mcp` is the default `_SharedSessions`, it shares that instance's
-    token bucket the same way the read-only sessions do, so a matrix run
-    with `--handoff` still stays under the one team-wide rate limit.
+    `agent/board.py` and `agent/handoff.py` write through; left unset, it
+    shares one `TokenBucket` with `open_mcp`'s reads (`open_mcp.bucket` when
+    `open_mcp` is the default `_SharedSessions`, a fresh bucket handed to a
+    caller-supplied `open_mcp` that is not, since a custom `open_mcp` does
+    not expose one to share), so a matrix run with `--handoff` still stays
+    under the one team-wide rate limit. That same bucket is also handed to
+    each cell as `write_bucket`, so `_hand_off_cell`'s own default session
+    (built only when a caller invokes `run_one` directly, bypassing this
+    resolution) draws from it too, instead of a second bucket nothing else
+    knows about.
     """
     index_path = index_path or results_dir / "runs.json"
     console = console or Console()
     open_mcp = open_mcp or _SharedSessions()
+    write_bucket = open_mcp.bucket if isinstance(open_mcp, _SharedSessions) else TokenBucket()
     if handoff and open_write_mcp is None:
-        open_write_mcp = (
-            open_mcp.write if isinstance(open_mcp, _SharedSessions) else _SharedSessions().write
-        )
+        open_write_mcp = _SharedSessions(write_bucket).write
     telemetry = telemetry or Telemetry()
     index = RunIndex.load(index_path)
 
@@ -921,6 +955,7 @@ async def run_matrix(
             telemetry=telemetry,
             handoff=handoff,
             open_write_mcp=open_write_mcp,
+            write_bucket=write_bucket,
         )
         progress.remove_task(task)
         results.append(graded)
@@ -1078,7 +1113,9 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=(
             "after grading, hand each cell's report to Canvas and create or reuse its board "
             "(R12); writes handoff.json next to grade.json. Off by default. Not applied to a "
-            "cell --resume skips or grades from a stored report.json"
+            "cell --resume skips or grades from a stored report.json. Needs a Honeycomb OAuth "
+            "token on file (`python -m agent.auth login`); adds up to DEFAULT_DEADLINE_S "
+            "(300s) per cell on top of the pass, up to 2.5 hours across a 30-cell matrix"
         ),
     )
     return parser.parse_args(argv)
@@ -1145,15 +1182,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"error: missing or invalid in .env: {missing}", file=sys.stderr)
         return 2
 
-    if args.handoff and settings.honeycomb_auth != "oauth":
-        print(
-            "error: --handoff talks to Canvas (canvas_agent_invoke), which needs a Honeycomb "
-            "OAuth session; a management key has no user actor and fails with "
-            "'actor_user_hcid is required'. Run `uv run python -m agent.auth login`, set "
-            "HONEYCOMB_AUTH=oauth in .env, and try again.",
-            file=sys.stderr,
-        )
-        return 2
+    if args.handoff:
+        # The precondition is a usable OAuth token on file, not
+        # `settings.honeycomb_auth == "oauth"`: `_SharedSessions.write`
+        # forces OAuth on the write session it builds regardless of that
+        # setting (see its docstring), so flipping it globally is no longer
+        # needed and no longer checked here. `require_oauth_provider` is
+        # the same status check `agent/mcp_client.py`'s OAuth path itself
+        # uses; running it before the matrix starts means a missing or
+        # expired token fails fast, naming the login command, instead of
+        # every one of thirty cells recording an OAuthNotAuthorized crash
+        # after the matrix already ran.
+        try:
+            asyncio.run(require_oauth_provider(settings))
+        except OAuthNotAuthorized as exc:
+            print(
+                f"error: --handoff talks to Canvas (canvas_agent_invoke), which needs a "
+                f"Honeycomb OAuth session; a management key has no user actor and fails with "
+                f"'actor_user_hcid is required'. {exc}",
+                file=sys.stderr,
+            )
+            return 2
 
     console = Console()
     telemetry = Telemetry(settings)

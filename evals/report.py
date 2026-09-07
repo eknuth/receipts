@@ -376,8 +376,16 @@ def _handoff_section(handoffs: Sequence[HandoffEntry]) -> list[str]:
 
     A scenario's repeats, and every config, investigate the same run id (one
     emit serves the whole matrix), so `ensure_board` gives them all the same
-    board; the `board` column shows the first one found in the group rather
-    than repeating an identical link once per repeat.
+    board; the `board` column shows that one link on every row of a
+    scenario's group, not just the config whose cell happened to be the one
+    that created it. `agent/board.py`'s `_find_existing` only ever hands
+    back a url for the config that ran first (a rediscovered board carries
+    `board_url=None`, since `list_boards`' table has no URL column), so the
+    url has to be picked up from wherever in the scenario it landed, across
+    every config, before any row for that scenario is built; picking it per
+    `(scenario, config)` group instead, as an earlier version did, left
+    every config but the first with a blank link although the prose here
+    always said it was the same board.
     """
     if not handoffs:
         return []
@@ -396,12 +404,15 @@ def _handoff_section(handoffs: Sequence[HandoffEntry]) -> list[str]:
     lines.append(_row(header))
     lines.append(_row(["---"] * len(header)))
     groups: dict[tuple[str, str], list[Handoff]] = {}
+    board_url_by_scenario: dict[str, str] = {}
     for config, scenario_id, handoff in handoffs:
         groups.setdefault((scenario_id, config), []).append(handoff)
+        if handoff.board_url and scenario_id not in board_url_by_scenario:
+            board_url_by_scenario[scenario_id] = handoff.board_url
     for scenario_id, config in sorted(groups, key=lambda pair: (pair[0], config_order(pair[1]))):
         group = groups[(scenario_id, config)]
         counts = Counter(item.classification for item in group)
-        board_url = next((item.board_url for item in group if item.board_url), None)
+        board_url = board_url_by_scenario.get(scenario_id)
         lines.append(
             _row(
                 [

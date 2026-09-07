@@ -662,6 +662,27 @@ def test_the_handoff_section_counts_classifications_per_scenario_and_config() ->
     )
 
 
+def test_the_board_link_renders_on_every_config_in_a_scenario_group() -> None:
+    """`agent/board.py`'s `_find_existing` only hands back a url for the
+    config whose cell happened to create the board; a rediscovered board
+    (every other config, and every later repeat) carries `board_url=None`.
+    Picking the url per (scenario, config) group, as an earlier version
+    did, left every row but the first blank although the section's own
+    prose says it is the same board across the whole scenario group."""
+    handoffs: list[HandoffEntry] = [
+        ("full", "s1", _handoff(board_url="https://ui.honeycomb.io/team/boards/brd-1")),
+        ("no-negation", "s1", _handoff(board_url=None)),
+    ]
+    text = render([], handoffs=handoffs)
+    section = text.split("## Canvas handoffs", 1)[1]
+    full_row = next(line for line in section.splitlines() if line.startswith("| s1 | full |"))
+    ablation_row = next(
+        line for line in section.splitlines() if line.startswith("| s1 | no-negation |")
+    )
+    assert full_row.endswith("| [board](https://ui.honeycomb.io/team/boards/brd-1) |")
+    assert ablation_row.endswith("| [board](https://ui.honeycomb.io/team/boards/brd-1) |")
+
+
 def test_the_handoff_section_is_absent_when_no_run_carries_a_board_link() -> None:
     handoffs: list[HandoffEntry] = [("full", "s1", _handoff(board_id=None, board_url=None))]
     text = render([], handoffs=handoffs)

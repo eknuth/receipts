@@ -441,6 +441,43 @@ async def test_a_failed_create_board_is_recorded_and_never_raises() -> None:
     assert result.error == "Unable to create board"
 
 
+async def test_a_list_boards_error_never_falls_through_to_create_board() -> None:
+    """`_find_existing` used to return `None` for both "looked, found
+    nothing" and "the lookup failed", and `ensure_board` created on either.
+    A 429 mid-matrix then minted a duplicate board, the exact thing
+    acceptance criterion 3 forbids. A failed lookup must be recorded as an
+    error instead, across as many calls as it keeps failing on."""
+
+    @dataclass
+    class FailingListMCP:
+        list_calls: int = 0
+        create_calls: int = 0
+
+        async def call(self, name: str, args: dict[str, Any] | None = None, **kwargs: Any) -> Any:
+            if name == "list_boards":
+                self.list_calls += 1
+                return _Result(text="rate limited", is_error=True)
+            if name == "create_board":
+                self.create_calls += 1
+                return _Result(text="should never be called")
+            raise AssertionError(f"unexpected call to {name!r}")
+
+    mcp = FailingListMCP()
+    report = make_report()
+
+    first = await ensure_board(report, mcp, environment_slug="receipts-demo")
+    second = await ensure_board(report, mcp, environment_slug="receipts-demo")
+
+    assert mcp.create_calls == 0
+    assert mcp.list_calls == 2
+    assert first.created is False
+    assert second.created is False
+    assert first.board_id is None
+    assert second.board_id is None
+    assert first.error == "rate limited"
+    assert second.error == "rate limited"
+
+
 async def test_a_raising_call_is_recorded_and_never_raises() -> None:
     class RaisingMCP:
         async def call(self, name: str, args: dict[str, Any] | None = None, **kwargs: Any) -> Any:

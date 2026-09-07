@@ -12,6 +12,7 @@ import os
 import stat
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 from mcp.client.auth import OAuthClientProvider
@@ -80,6 +81,35 @@ async def test_the_token_file_is_created_0600(tmp_path: Path) -> None:
 
     mode = stat.S_IMODE(os.stat(path).st_mode)
     assert mode == 0o600
+
+
+async def test_the_token_file_is_never_briefly_wider_than_0600(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An earlier version wrote with `Path.write_text` (the mode `open()`
+    gives a new file by default, subject to the process umask) and chmod'd
+    to 0600 only afterward, leaving a window where the file held an access
+    token at 0644 under a umask of 022. Spies on `os.chmod` to catch the
+    file's mode at the instant chmod runs: it must already be 0600, meaning
+    the file was created at that mode and never widened at all, not
+    widened and then narrowed back."""
+    path = tmp_path / "honeycomb_oauth.json"
+    storage = FileTokenStorage(path)
+    modes_when_chmod_ran: list[int] = []
+    real_chmod = os.chmod
+
+    def spying_chmod(target: Any, mode: int) -> None:
+        modes_when_chmod_ran.append(stat.S_IMODE(os.stat(target).st_mode))
+        real_chmod(target, mode)
+
+    monkeypatch.setattr(os, "chmod", spying_chmod)
+    old_umask = os.umask(0o022)
+    try:
+        await storage.set_tokens(OAuthToken(access_token="at-1", expires_in=60))
+    finally:
+        os.umask(old_umask)
+
+    assert modes_when_chmod_ran == [0o600]
 
 
 async def test_set_tokens_records_an_absolute_expires_at(tmp_path: Path) -> None:

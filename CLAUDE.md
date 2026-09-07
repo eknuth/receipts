@@ -102,6 +102,23 @@ Packages: `anthropic`, `boto3` (R11 only), `mcp` (streamable HTTP client), `open
   `get_dataset_columns`, `find_columns`, `find_queries`, `run_query`, `get_query_results`,
   `run_bubbleup`, `get_trace`, `get_slos`, `get_triggers`. Write tools (R12 only):
   `create_board`, `canvas_agent_invoke`, `canvas_agent_poll_response`.
+- The management key was widened to `mcp:write` on 2026-09-07. The hosted server then serves 33
+  tools instead of 22, including `create_trigger`, `create_slo`, `create_recipient`,
+  `create_marker`, and `update_board`. None of those five is called by this project. The
+  allowlist in `agent/mcp_client.py` is what holds that line.
+- Canvas needs a user actor. Under a management key, `canvas_agent_invoke` returns `poodle
+  investigation bind returned 400: actor_user_hcid is required`. Honeycomb's user-scoped MCP
+  path is OAuth (Account, Model Context Protocol, Authorized Sessions): standard OAuth 2.1 at
+  `ui.honeycomb.io` with dynamic client registration and PKCE S256, scopes `mcp:read mcp:write`,
+  public client. `agent/auth.py` runs that flow; the Bearer key stays the default for everything
+  else.
+- The Canvas tools return JSON in the text block. The board tools return Markdown. A completed
+  `canvas_agent_poll_response` carries the reply under `chat`.
+- `create_board` rejects a `type="query"` panel that omits `name`, even though its schema
+  documents `name` as optional with a default. Verified by isolating each optional field against
+  its own fresh `query_run_pk` on 2026-09-07.
+- A real Canvas handoff took 182 seconds, so the budget in `agent/handoff.py` is 300, not the
+  120 the issue assumed.
 - `mcp` is pinned to 2.x. The 2.x client entrypoint is
   `mcp.client.streamable_http.streamable_http_client` (1.x called it `streamablehttp_client`);
   Honeycomb's published snippets use the 1.x name.

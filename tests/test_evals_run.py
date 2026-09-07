@@ -27,6 +27,7 @@ from test_agent_loop import (
 )
 
 from agent.loop import SUBMIT_REPORT, AgentConfig
+from agent.mcp_client import TokenBucket
 from agent.providers.base import Completion, ToolSchema, Turn
 from agent.report import Evidence, Hypothesis, Report, load_report
 from evals.grader import grade_file
@@ -1334,8 +1335,19 @@ class FakeWriteSession:
         return None
 
 
+def _grade_json_ignoring_wall_time(directory: Path) -> dict[str, Any]:
+    """`grade.json`'s content with every real-elapsed-time field zeroed out,
+    so two separate runs of the same deterministic script can be compared
+    for equality without flaking on how long each one actually took."""
+    data = json.loads((directory / "grade.json").read_text())
+    data["wall_s"] = None
+    if data.get("grade") is not None:
+        data["grade"]["process"]["wall_s"] = None
+    return data
+
+
 async def test_handoff_writes_a_handoff_json_next_to_grade_json(
-    settings: Settings, results_dir: Path, runs_dir: Path
+    settings: Settings, results_dir: Path, runs_dir: Path, tmp_path: Path
 ) -> None:
     write_session = FakeWriteSession()
     results = await run(
@@ -1349,7 +1361,26 @@ async def test_handoff_writes_a_handoff_json_next_to_grade_json(
         handoff=True,
         open_write_mcp=lambda settings: write_session,
     )
-    assert results[0].total == results[0].total  # the grade itself is untouched by handoff
+
+    # A handoff must never move the grade it is attached to. The old
+    # assertion here was `results[0].total == results[0].total`, which
+    # holds no matter what `hand_off` does; rerun the identical script with
+    # handoff off and diff the two grade.json files instead, so a handoff
+    # that somehow perturbed grading would actually be caught.
+    baseline_dir = tmp_path / "baseline-results"
+    baseline_results = await run(
+        [PAYMENTS],
+        ["full"],
+        1,
+        settings=settings,
+        results_dir=baseline_dir,
+        runs_dir=runs_dir,
+        provider_factory=factory([lambda: FakeProvider(good_script())]),
+    )
+    assert results[0].total == baseline_results[0].total
+    assert _grade_json_ignoring_wall_time(
+        run_dir(results_dir, "full", PAYMENTS, 1)
+    ) == _grade_json_ignoring_wall_time(run_dir(baseline_dir, "full", PAYMENTS, 1))
 
     handoff_path = run_dir(results_dir, "full", PAYMENTS, 1) / "handoff.json"
     assert handoff_path.exists()
@@ -1447,6 +1478,48 @@ async def test_a_failing_write_session_still_records_a_handoff_and_never_raises(
     assert "write session could not open" in data["error"]
 
 
+async def test_hand_off_cells_default_write_session_uses_the_given_bucket(
+    tmp_path: Path, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_hand_off_cell`'s own fallback session (built only when a caller
+    invokes it, or `run_one`, directly without an `open_write_mcp`) used to
+    construct a plain `HoneycombMCP()` with no bucket at all: a fresh,
+    disconnected `TokenBucket` on every call, able to exceed the team-wide
+    rate limit on its own no matter how the matrix's read sessions were
+    already paced. Threading `write_bucket` through must make that
+    fallback share one bucket across cells instead of minting a new one
+    every time."""
+    import evals.run as run_module
+
+    captured: list[Any] = []
+
+    class FakeHoneycombMCP:
+        def __init__(
+            self,
+            *,
+            settings: Any,
+            allow_write: bool = False,
+            bucket: Any = None,
+            http_client: Any = None,
+        ) -> None:
+            captured.append(bucket)
+            self._mcp = FakeWriteMCP()
+
+        async def __aenter__(self) -> Any:
+            return self._mcp
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    monkeypatch.setattr(run_module, "HoneycombMCP", FakeHoneycombMCP)
+    shared_bucket = TokenBucket()
+
+    await run_module._hand_off_cell(tmp_path, _report(), settings, None, shared_bucket)
+    await run_module._hand_off_cell(tmp_path, _report(), settings, None, shared_bucket)
+
+    assert captured == [shared_bucket, shared_bucket]
+
+
 def test_handoff_flag_is_off_by_default_in_the_cli() -> None:
     from evals.run import _parse_args
 
@@ -1454,24 +1527,50 @@ def test_handoff_flag_is_off_by_default_in_the_cli() -> None:
     assert args.handoff is False
 
 
-def test_handoff_with_key_auth_fails_fast_and_names_the_login_command(
+def test_handoff_with_no_oauth_token_fails_fast_and_names_the_login_command(
     tmp_path: Path,
     clean_env: None,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """`--handoff` needs Canvas, which needs OAuth (a management key has no
-    user actor); with the default `honeycomb_auth="key"`, the CLI must say so
-    and exit before opening any session, not run the whole matrix first and
-    record a Canvas error on every cell."""
+    """`--handoff` needs Canvas, which needs a usable Honeycomb OAuth token
+    on file (a management key has no user actor); with none, the CLI must
+    say so and exit before opening any session, not run the whole matrix
+    first and record an OAuthNotAuthorized crash on every cell. The
+    precondition is a token on file, not `HONEYCOMB_AUTH=oauth` in
+    settings: `_SharedSessions.write` forces OAuth on the write session it
+    opens regardless, so the read sessions the investigation itself uses
+    never need to move off the key."""
     monkeypatch.setenv("HONEYCOMB_MCP_KEY", "fake-key-id:fake-secret")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-anthropic-key")
     monkeypatch.setenv("ANTHROPIC_WORKSPACE_ID", "fake-workspace-id")
+    monkeypatch.setenv("HONEYCOMB_OAUTH_TOKEN_PATH", str(tmp_path / "no-such-token.json"))
     safe = ["--results-dir", str(tmp_path / "results"), "--runs-dir", str(tmp_path / "runs")]
 
     assert main(["--scenarios", CONTROL, "--handoff", *safe]) == 2
 
     err = capsys.readouterr().err
     assert "agent.auth login" in err
-    assert "HONEYCOMB_AUTH=oauth" in err
-    assert not (tmp_path / "results").exists()  # nothing ran
+    assert not (tmp_path / "results").exists()  # the matrix never started
+
+
+async def test_handoff_with_the_default_key_setting_still_reads_off_the_key(
+    settings: Settings, results_dir: Path, runs_dir: Path
+) -> None:
+    """The precondition check above only asks whether a token is on file;
+    it must not be satisfied by flipping `HONEYCOMB_AUTH` to `"oauth"`,
+    since that used to also flip every read session in the matrix onto
+    OAuth. `_SharedSessions.write` is what actually forces OAuth, and only
+    for the write session it opens for the board and Canvas calls."""
+    from evals.run import _SharedSessions
+
+    assert settings.honeycomb_auth == "key"
+    shared = _SharedSessions()
+
+    read_session = shared(settings)
+    write_session = shared.write(settings)
+
+    assert read_session._settings.honeycomb_auth == "key"
+    assert write_session._settings.honeycomb_auth == "oauth"
+    assert read_session._bucket is shared.bucket
+    assert write_session._bucket is shared.bucket

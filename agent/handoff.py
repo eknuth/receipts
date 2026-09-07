@@ -11,10 +11,10 @@ agent, rather than a thing that only writes files.
 
 This is a bolt-on, not a gate: `hand_off` runs after a report is already
 graded, and nothing it does changes the report or the grade. Every exit path
-returns a `Handoff`, never an exception: a Canvas error, a busy server, or the
-120 second deadline expiring is a fact about this call, recorded on the
-`Handoff` and handed back, not a reason to fail the run that already produced
-the report being handed off.
+returns a `Handoff`, never an exception: a Canvas error, a busy server, or
+the `DEFAULT_DEADLINE_S` deadline expiring is a fact about this call,
+recorded on the `Handoff` and handed back, not a reason to fail the run that
+already produced the report being handed off.
 
 Both `canvas_agent_invoke` and `canvas_agent_poll_response` are new as of the
 management key gaining `mcp:write` on 2026-09-07 (see CLAUDE.md's Honeycomb
@@ -35,22 +35,30 @@ field under a different name, but `chat` is tried first for the reply and
 the rest of the candidate list is now a fallback rather than a guess.
 Sanitized fixtures of both live captures are in `tests/fixtures/mcp/`.
 
-The 120 second budget is spent as up to three polls: `wait_seconds` is
-capped at 50 by the server, so the loop asks for `min(50, time left)` each
-time and stops the moment the deadline (measured against an injectable
-`clock`, so a test can drive the whole budget without a real wait) is
-passed. `canvas_agent_poll_response`'s four statuses (`completed`, `error`,
-`busy`, `running`) and the deadline expiring are each their own outcome on
-`Handoff.status`; `running` is the only one that loops.
+The `DEFAULT_DEADLINE_S` budget (300s) is spent as up to six polls:
+`wait_seconds` is capped at `MAX_POLL_WAIT_S` (50, the server's own cap) so
+the loop asks for `min(50, time left)` each time and stops the moment the
+deadline (measured against an injectable `clock`, so a test can drive the
+whole budget without a real wait) is passed. `canvas_agent_poll_response`'s
+four statuses (`completed`, `error`, `busy`, `running`) and the deadline
+expiring are each their own outcome on `Handoff.status`; `running` is the
+only one the loop repolls without waiting further, since the server's own
+long poll already spent up to `wait_seconds` getting to that answer. A
+status the docs do not name is different: nothing says the server honored
+`wait_seconds` for it, and a live run against one answered back instantly,
+so the loop slept (through an injectable `sleep`, defaulting to
+`asyncio.sleep`) between repolls rather than hammering the server at
+whatever pace the caller's own MCP client would allow.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -75,6 +83,7 @@ DEFAULT_DEADLINE_S = 300.0
 MAX_POLL_WAIT_S = 50.0
 
 ClockFn = Callable[[], float]
+SleepFn = Callable[[float], Awaitable[None]]
 
 PollStatus = Literal["completed", "error", "busy", "timeout"]
 """How a hand-off ended. `completed` is the only status that carries a reply
@@ -181,11 +190,21 @@ def render_message(report: Report) -> str:
 # --------------------------------------------------------------------------
 
 # Small and literal on purpose: a reader should be able to see the whole
-# rule by reading these two patterns, not by tracing a scoring function.
+# rule by reading these three patterns, not by tracing a scoring function.
 # Word-bounded and case-insensitive so "Agreed" and "disagreement" both hit.
 _DISAGREE = re.compile(
     r"\b(disagree|disagrees|disagreed|incorrect|mistaken|not\s+right|doesn't\s+hold|"
     r"does\s+not\s+hold|wrong)\b",
+    re.IGNORECASE,
+)
+# A negated form of an agreement word ("I do not agree", "can't confirm
+# this", "doesn't check out") is a disagreement, but `_AGREE` below has no
+# way to tell "agree" apart from "not agree" inside its own match: it just
+# finds "agree". This pattern catches the negation first, so it has to be
+# checked before `_AGREE`, the same as `_DISAGREE` is.
+_NEGATED_AGREE = re.compile(
+    r"\b(?:don't|do\s+not|doesn't|does\s+not|can't|cannot|not)\s+"
+    r"(?:agree|correct|confirm(?:ed)?|check(?:s)?\s+out|make(?:s)?\s+sense|hold|right)\b",
     re.IGNORECASE,
 )
 _AGREE = re.compile(
@@ -195,23 +214,27 @@ _AGREE = re.compile(
 
 
 def classify(text: str) -> Classification:
-    """Agree or disagree, by the first of `_DISAGREE` and `_AGREE` to match
-    anywhere in `text`; `extend` for anything else non-empty; `no_response`
-    for empty or whitespace-only text.
+    """Agree or disagree, by the first of `_DISAGREE`/`_NEGATED_AGREE` and
+    `_AGREE` to match anywhere in `text`; `extend` for anything else
+    non-empty; `no_response` for empty or whitespace-only text.
 
     Disagree is checked first: a reply that hedges an agreement with a
     disagreement ("I agree the span is right, but I disagree on the region")
     is read as a disagreement, since missing one is the worse mistake for
-    what this classifier is for. There is no separate keyword pattern for
-    `extend`: the question always asks what to check next, so any reply that
-    takes neither side but still has content, whether it names something to
-    check or not (a live Canvas reply can be pure commentary with no
-    concrete next step named at all), counts as Canvas engaging rather than
-    as no answer. An earlier version of this function kept an unused
-    `_EXTEND` pattern that its own docstring claimed was consulted; matching
-    on it here would have missed real replies like that.
+    what this classifier is for. `_NEGATED_AGREE` is checked alongside
+    `_DISAGREE`, not folded into `_AGREE`: a bare `_AGREE` search over "I do
+    not agree with this" still finds "agree" and would read it as
+    agreement, missing the "not" in front of it entirely. There is no
+    separate keyword pattern for `extend`: the question always asks what to
+    check next, so any reply that takes neither side but still has content,
+    whether it names something to check or not (a live Canvas reply can be
+    pure commentary with no concrete next step named at all), counts as
+    Canvas engaging rather than as no answer. An earlier version of this
+    function kept an unused `_EXTEND` pattern that its own docstring claimed
+    was consulted; matching on it here would have missed real replies like
+    that.
     """
-    if _DISAGREE.search(text):
+    if _DISAGREE.search(text) or _NEGATED_AGREE.search(text):
         return "disagree"
     if _AGREE.search(text):
         return "agree"
@@ -298,6 +321,7 @@ async def hand_off(
     title: str | None = None,
     deadline_s: float = DEFAULT_DEADLINE_S,
     clock: ClockFn = time.monotonic,
+    sleep: SleepFn = asyncio.sleep,
 ) -> Handoff:
     """Send `report`'s findings to Canvas and poll for its reply.
 
@@ -305,7 +329,9 @@ async def hand_off(
     with `.raw` and `.is_error` (a `HoneycombMCP` opened with
     `allow_write=True` in production; a fake in the tests). `board_id` and
     `board_url` are carried straight onto the returned `Handoff`; this
-    function does not create the board (`agent/board.py` does).
+    function does not create the board (`agent/board.py` does). `sleep` is
+    injectable so a test can drive the whole deadline without a real wait,
+    the same reason `clock` is.
 
     Never raises. Every failure mode this function can hit on its own
     (a call that raises, a status the docs do not name, the deadline
@@ -318,7 +344,12 @@ async def hand_off(
     try:
         invoke = await mcp.call(
             "canvas_agent_invoke",
-            {"prompt": prompt, "title": title or f"receipts {report.scenario_id} {report.run_id}"},
+            # `title` never carries `report.scenario_id`: CLAUDE.md keeps
+            # `scenario.id` off the wire because its values read as
+            # answers, and Canvas is the one agent whose reply gets scored
+            # as a verdict on this investigation, so it is the last place
+            # that answer should leak.
+            {"prompt": prompt, "title": title or f"receipts {report.run_id}"},
         )
     except Exception as exc:
         logger.warning("canvas_agent_invoke failed for %s: %s", report.run_id, exc)
@@ -465,6 +496,18 @@ async def hand_off(
                 board_id=board_id,
                 board_url=board_url,
             )
-        # "running", or a status the docs do not name: keep polling. The
-        # deadline check at the top of the loop is what stops this from
-        # spinning on an unrecognized status forever.
+        if poll_status != "running":
+            # A status the docs do not name. The server's own long poll is
+            # documented for "running" only, so nothing here says this one
+            # waited `wait_seconds` before answering; a live one came back
+            # instantly. Sleeping the same `wait_seconds` this poll asked
+            # for keeps the repoll rate the caller would have gotten from a
+            # real "running" wait, instead of repolling as fast as this
+            # loop and the MCP client's own pacing allow: a fake server
+            # that always answers an unnamed status burned through a
+            # whole team-wide rate-limit window this way before this sleep
+            # was added (200 polls in one 300s budget).
+            await sleep(wait_seconds)
+        # "running": the deadline check at the top of the loop is what
+        # stops this from polling forever, not a client-side sleep, since
+        # the server's own wait already spent the time.

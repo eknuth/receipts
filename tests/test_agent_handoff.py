@@ -101,6 +101,15 @@ def test_message_with_no_hypothesis_says_so_instead_of_being_silent() -> None:
         ("Worth checking the control window too.", "extend"),
         ("", "no_response"),
         ("   ", "no_response"),
+        # A negated agreement word reads as disagree, not agree or extend:
+        # `_AGREE` alone finds "agree" inside "do not agree" and would have
+        # inflated exactly the "Canvas agreed with N of M" count the README
+        # quotes, one direction only.
+        ("I do not agree with this hypothesis.", "disagree"),
+        ("I don't agree; the region is not correct.", "disagree"),
+        ("That does not check out", "disagree"),
+        ("I can't confirm this", "disagree"),
+        ("doesn't make sense to me", "disagree"),
     ],
 )
 def test_classify_matches_the_documented_keywords(text: str, expected: str) -> None:
@@ -203,6 +212,36 @@ async def test_the_reply_field_is_chat_first_not_response() -> None:
     assert result.raw_text == "from chat"
 
 
+async def test_the_default_title_carries_no_scenario_id() -> None:
+    """CLAUDE.md keeps `scenario.id` off the wire because its values read
+    as answers; Canvas is the one agent whose reply gets scored as a
+    verdict on this investigation, so it is the last place that answer
+    should leak. The default title used to be
+    f"receipts {report.scenario_id} {report.run_id}"."""
+    mcp = FakeCanvasMCP()
+    mcp.queue("canvas_agent_invoke", INVOKE_RUNNING)
+    mcp.queue("canvas_agent_poll_response", _Result(raw={"status": "completed", "chat": "ok"}))
+    report = make_report(scenario_id="payments-stripe-v251-uswest")
+
+    await hand_off(report, mcp, clock=clock_sequence(0.0, 0.0))
+
+    _, invoke_args = next(call for call in mcp.calls if call[0] == "canvas_agent_invoke")
+    assert invoke_args["title"] == f"receipts {report.run_id}"
+    assert "payments-stripe-v251-uswest" not in invoke_args["title"]
+    assert report.scenario_id not in invoke_args["title"]
+
+
+async def test_an_explicit_title_is_still_used_as_given() -> None:
+    mcp = FakeCanvasMCP()
+    mcp.queue("canvas_agent_invoke", INVOKE_RUNNING)
+    mcp.queue("canvas_agent_poll_response", _Result(raw={"status": "completed", "chat": "ok"}))
+
+    await hand_off(make_report(), mcp, title="a custom title", clock=clock_sequence(0.0, 0.0))
+
+    _, invoke_args = next(call for call in mcp.calls if call[0] == "canvas_agent_invoke")
+    assert invoke_args["title"] == "a custom title"
+
+
 async def test_the_real_captured_completed_reply_parses_and_classifies_as_extend() -> None:
     """Drives the poll step from the real (sanitized) live capture rather
     than a hand-built dict, so the test pins the server's actual shape."""
@@ -248,6 +287,41 @@ async def test_running_then_completed_polls_again_with_the_same_ids() -> None:
     poll_calls = [args for name, args in mcp.calls if name == "canvas_agent_poll_response"]
     assert len(poll_calls) == 2
     assert poll_calls[0] == poll_calls[1]  # same investigation_id and session_id both times
+
+
+async def test_an_unrecognized_poll_status_sleeps_between_polls_instead_of_spinning() -> None:
+    """A status the docs do not name (`queued`, say) used to be polled again
+    immediately, with no client-side wait at all: a fake server answering it
+    every time produced 200 polls inside one 300s budget, driven purely by
+    however fast this loop and the caller's own MCP pacing could go, which
+    on a live run burned through the whole team-wide rate limit on a single
+    hand-off. Sleeping `wait_seconds` between such polls, the same amount a
+    real "running" reply's own long poll would have spent, caps it at up to
+    six for the 300s default (50s per poll)."""
+    mcp = FakeCanvasMCP()
+    mcp.queue("canvas_agent_invoke", INVOKE_RUNNING)
+    mcp.queue(
+        "canvas_agent_poll_response",
+        *[_Result(raw={"status": "queued"}) for _ in range(6)],
+    )
+
+    state = {"t": 0.0}
+
+    def clock() -> float:
+        return state["t"]
+
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+        state["t"] += seconds
+
+    result = await hand_off(make_report(), mcp, deadline_s=300.0, clock=clock, sleep=fake_sleep)
+
+    assert result.status == "timeout"
+    poll_calls = [name for name, _ in mcp.calls if name == "canvas_agent_poll_response"]
+    assert len(poll_calls) == 6  # not 200
+    assert sleep_calls == [50.0] * 6
 
 
 async def test_the_deadline_expiring_stops_polling_and_records_a_timeout() -> None:
