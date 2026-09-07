@@ -18,9 +18,12 @@ directory path.
   Repo paths. Anything that reads like a module path (`[a-z_/]+\\.py`) or a
   directory (`[a-z_/]+/`) has to exist on disk relative to the repo root.
 
-`DIAGRAM_FILES` is every file this applies to. A later diagram (R17's
-`ground-truth.json`, `eval-run.json`) joins the same two checks by adding its
-filename here; nothing else about this module needs to change.
+`DIAGRAM_FILES` is every file this applies to. R16's `ground-truth.json` and
+`eval-run.json` join the same two checks by adding their filenames here.
+`ground-truth.json` carries a third check of its own,
+`test_ground_truth_attribute_names_are_real`: every span-attribute-shaped
+token in it has to be a real attribute `gen/topology.py` or `gen/README.md`
+actually writes.
 """
 
 from __future__ import annotations
@@ -38,15 +41,41 @@ DIAGRAMS_DIR = REPO_ROOT / "docs" / "diagrams"
 DIAGRAM_FILES: list[str] = [
     "architecture.json",
     "investigation.json",
+    "ground-truth.json",
+    "eval-run.json",
 ]
 
 # The loop's own tool, not an MCP call (agent/loop.py SUBMIT_REPORT). It is
-# not, and should not be, in agent/mcp_client.py's READ_TOOLS.
-NON_MCP_TOOLS = {"submit_report"}
+# not, and should not be, in agent/mcp_client.py's READ_TOOLS. `run_id` is not
+# a tool at all, it just starts with `run_` like `run_query` and `run_bubbleup`
+# do, so TOOL_NAME_RE catches it too; R16's ground-truth.json names the
+# `scenario.run_id` attribute, which is where it comes from.
+NON_MCP_TOOLS = {"submit_report", "run_id"}
 
 TOOL_NAME_RE = re.compile(r"\b(?:get|run|find|list)_[a-z0-9_]+\b")
 PY_PATH_RE = re.compile(r"[a-z_][a-z0-9_/]*\.py")
 DIR_PATH_RE = re.compile(r"[a-z_][a-z0-9_/]*/")
+
+# A span-attribute-shaped token: dotted lowercase segments, e.g.
+# `scenario.run_id` or `deployment.version`. A trailing segment that is a
+# known file extension is a path (`gen/emit.py`, `runs.json`), not an
+# attribute, and is excluded rather than matched here; the path checks above
+# already cover those.
+ATTRIBUTE_RE = re.compile(r"\b[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+\b")
+FILE_EXTENSIONS = {
+    "py",
+    "json",
+    "yml",
+    "yaml",
+    "md",
+    "html",
+    "svg",
+    "png",
+    "txt",
+    "js",
+    "mjs",
+    "css",
+}
 
 MAX_PNG_BYTES = 500 * 1024
 
@@ -134,3 +163,23 @@ def test_diagram_pngs_are_under_the_size_budget():
         png = path.with_suffix(".png")
         size = png.stat().st_size
         assert size < MAX_PNG_BYTES, f"{png.name} is {size} bytes, over the {MAX_PNG_BYTES} budget"
+
+
+def test_ground_truth_attribute_names_are_real():
+    """`ground-truth.json` cannot name a span attribute the generator does not write.
+
+    Every dotted-lowercase token that is not a path or a filename (a trailing
+    segment in `FILE_EXTENSIONS`) has to appear, verbatim, somewhere in
+    `gen/topology.py` or `gen/README.md`, the two places the generator's real
+    attribute names are written down.
+    """
+    path = DIAGRAMS_DIR / "ground-truth.json"
+    topology_text = (REPO_ROOT / "gen" / "topology.py").read_text()
+    readme_text = (REPO_ROOT / "gen" / "README.md").read_text()
+    found = set(ATTRIBUTE_RE.findall(_scannable_text(path)))
+    attributes = {token for token in found if token.rsplit(".", 1)[-1] not in FILE_EXTENSIONS}
+    assert attributes, "expected at least one span-attribute-shaped token in ground-truth.json"
+    missing = {attr for attr in attributes if attr not in topology_text and attr not in readme_text}
+    assert not missing, (
+        f"ground-truth.json names attribute(s) the generator does not write: {sorted(missing)}"
+    )

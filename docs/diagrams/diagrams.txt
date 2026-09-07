@@ -4,3 +4,5 @@
 # itself has no meta field to read it from.
 architecture architecture
 investigation sequence
+ground-truth dataflow
+eval-run workflow
