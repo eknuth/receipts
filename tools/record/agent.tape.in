@@ -1,0 +1,23 @@
+# Segment 3 of the recording: one live investigation, then its report top-first.
+# Template; build.py fills @RUN_ID@ from the newest manifest for the scenario.
+Output tools/record/out/03-agent.mp4
+Set FontSize 16
+Set Width 1600
+Set Height 900
+Set Padding 30
+Set Theme "Catppuccin Mocha"
+Set TypingSpeed 35ms
+Set Framerate 30
+Sleep 1s
+Type "uv run python -m agent --scenario payments-stripe-v251-uswest --run-id @RUN_ID@"
+Sleep 800ms
+Enter
+Wait+Line@600s /^>\s*$/
+Sleep 4s
+Type "clear"
+Enter
+Sleep 500ms
+Type "uv run python tools/record/show_report.py @RUN_ID@"
+Enter
+Wait+Line@60s /^>\s*$/
+Sleep 12s

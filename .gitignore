@@ -16,3 +16,6 @@ gen/runs/
 
 # Claude Code agent worktrees
 .claude/worktrees/
+
+# tools/record/build.py output: clips, stills, and the finished mp4
+tools/record/out/
