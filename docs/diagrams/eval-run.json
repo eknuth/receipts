@@ -49,9 +49,9 @@
     },
     {
       "dot": "rose",
-      "title": "Four ways to stop",
+      "title": "Six stop reasons",
       "items": [
-        "error: raised out of investigate, or the loop itself ended with stop_reason error — skips the grader, but the total = 0 row still lands in report.md's stopped-by column",
+        "error: raised out of investigate, or the loop itself ended with stop_reason error. Skips the grader, but the total = 0 row still lands in report.md's stopped-by column",
         "report: submit_report matched the schema, inside budget or the grace turns after a cap",
         "schema: the last submit_report never matched the report schema",
         "call_cap or wall_cap or model_stopped: the budget ran out, or the model stopped, before any submit_report landed"

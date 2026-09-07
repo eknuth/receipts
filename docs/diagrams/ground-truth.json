@@ -5,7 +5,12 @@
     "title": "Ground Truth to the Wire",
     "output": "docs/diagrams/ground-truth.html",
     "quality_profile": "showcase",
-    "viewBox": [1080, 620]
+    "legend": {
+      "entries": {
+        "security": { "label": "answer boundary" }
+      }
+    },
+    "viewBox": [1080, 900]
   },
   "stages": [
     { "label": "Scenario" },
@@ -18,18 +23,23 @@
     { "id": "scenario_yaml", "type": "external", "label": "Scenario YAML", "sublabel": "gen/scenarios/*.yml", "stage": 0, "row": 1 },
     { "id": "topology", "type": "backend", "label": "gen/topology.py", "sublabel": "span tree + attributes", "stage": 1, "row": 0 },
     { "id": "emit", "type": "backend", "label": "gen/emit.py", "sublabel": "OTLP/HTTP to Honeycomb", "stage": 1, "row": 2 },
+    { "id": "manifest", "type": "security", "label": "Run manifest", "sublabel": "gen/runs/<run id>.json", "tag": "scenario.id never on the wire", "width": 200, "stage": 2, "row": 0 },
     { "id": "on_wire", "type": "cloud", "label": "On the wire", "sublabel": "receipts-shop dataset", "tag": "agent can query", "stage": 2, "row": 2 },
-    { "id": "manifest", "type": "security", "label": "Run manifest", "sublabel": "gen/runs/<run id>.json", "tag": "answer boundary", "stage": 2, "row": 0 },
+    { "id": "wire_common", "type": "cloud", "label": "Every span carries", "sublabel": "scenario.run_id, deployment.version, cloud.region, payment.provider", "tag": "propagated dims", "width": 340, "stage": 2, "row": 3 },
+    { "id": "wire_root", "type": "cloud", "label": "Root span, and the child that owns each", "sublabel": "customer.id, cart.size, http.route, http.status_code, db.statement.hash", "tag": "root + child spans", "width": 380, "stage": 2, "row": 4 },
     { "id": "runs_index", "type": "database", "label": "runs.json", "sublabel": "evals/results/runs.json", "tag": "index", "stage": 3, "row": 0 },
-    { "id": "grader", "type": "backend", "label": "evals/grader.py", "sublabel": "reads scenario id, never spans", "width": 160, "stage": 4, "row": 0 }
+    { "id": "grader", "type": "backend", "label": "evals/grader.py", "sublabel": "reads scenario id + window start", "width": 160, "stage": 4, "row": 0 }
   ],
   "flows": [
     { "id": "yaml-to-topology", "from": "scenario_yaml", "to": "topology", "label": "fault + ground_truth + herrings", "variant": "default", "labelDy": 16 },
     { "id": "topology-to-emit", "from": "topology", "to": "emit", "label": "span tree", "variant": "default", "labelDy": 24 },
     { "id": "emit-to-wire", "from": "emit", "to": "on_wire", "label": "OTLP export", "variant": "emphasis", "route": "straight", "labelDy": 40 },
-    { "id": "emit-to-manifest", "from": "emit", "to": "manifest", "label": "run id + scenario id + window", "variant": "security" },
-    { "id": "manifest-to-index", "from": "manifest", "to": "runs_index", "label": "copied into the index", "variant": "security", "labelDy": -23 },
-    { "id": "index-to-grader", "from": "runs_index", "to": "grader", "label": "run id + window bounds", "variant": "default", "labelDy": -23 }
+    { "id": "emit-to-manifest", "from": "emit", "to": "manifest", "label": "run id + scenario id + window", "variant": "security", "labelDy": -23 },
+    { "id": "wire-to-common", "from": "on_wire", "to": "wire_common", "label": "on every span", "variant": "default", "route": "straight", "labelDy": 40 },
+    { "id": "common-to-root", "from": "wire_common", "to": "wire_root", "label": "root + owning child too", "variant": "default", "route": "straight", "labelDy": 40 },
+    { "id": "manifest-to-index", "from": "manifest", "to": "runs_index", "label": "copied into the index", "variant": "security", "labelDy": -23, "labelDx": 40 },
+    { "id": "index-to-grader", "from": "runs_index", "to": "grader", "label": "which run id", "variant": "default", "labelDy": -23, "labelDx": -30 },
+    { "id": "manifest-to-grader", "from": "manifest", "to": "grader", "label": "window start, for onset", "variant": "default", "route": "top-channel", "channelY": 60 }
   ],
   "cards": [
     {
@@ -37,17 +47,17 @@
       "title": "Every span carries",
       "items": [
         "scenario.run_id, the run id every query scopes to",
-        "deployment.version, cloud.region, payment.provider — the three dims a fault or a red herring selects on",
+        "deployment.version, cloud.region, payment.provider, the three dims a fault or a red herring selects on",
         "service.component, naming the real service; error on a failing span and every ancestor above it"
       ]
     },
     {
       "dot": "emerald",
-      "title": "The root span adds",
+      "title": "The root span, and the child that owns each",
       "items": [
-        "customer.id, 2,000 Zipf-weighted ids",
-        "cart.size, http.route, http.status_code",
-        "db.statement.hash — also on inventory-db's own db.query span"
+        "customer.id, 2,000 Zipf-weighted ids: root, checkout.process, payments.charge",
+        "cart.size: root, checkout.process, inventory.reserve. http.route: root, checkout.process",
+        "http.status_code: root only. db.statement.hash: root, and inventory-db's own db.query span"
       ]
     },
     {
@@ -56,7 +66,7 @@
       "items": [
         "scenario.id never rides on a span, only scenario.run_id does",
         "gen/runs/<run id>.json is the only place a run id maps to a scenario id",
-        "evals/grader.py reads that id from the manifest, never from a query result"
+        "evals/grader.py reads that id, and the window start for onset, from the manifest, never from a query result"
       ]
     },
     {
