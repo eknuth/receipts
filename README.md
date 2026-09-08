@@ -64,7 +64,7 @@ window.
 
 ![investigation](docs/diagrams/investigation.svg)
 
-The grader scores a filed report against ground truth with no model in the loop, so the same report
+The grader scores a filed report against ground truth with no model in the loop, so a report
 always grades to the same number.
 
 | component | weight |
@@ -100,7 +100,7 @@ Ten scenarios, three repeats each, one config, two providers, one grader. Two of
 controls where nothing happens and the right answer is no incident. In `herring-customer-whale` and
 `herring-region-vs-version` the red herring is larger by count than the true cause, and
 `trigger-checkout-latency` fires a real Honeycomb trigger during the window. Every number below is
-read from `evals/report.md`, generated from the `grade.json` files.
+read from `evals/report.md`, generated from the grade files.
 
 | provider | model | total | outcome | top right | mean calls | mean wall s | total cost USD |
 |---|---|---|---|---|---|---|---|
@@ -150,8 +150,8 @@ floor step landed, so it met the earlier prompt and validator. The run-by-run re
 ## Run it
 
 You need a Honeycomb ingest key, a management v2 key with `mcp:read` for the environment, an
-Anthropic API key, Python 3.12, and `uv`. Copy `.env.example` to `.env` and fill it in. The fourth command emits a fresh run per scenario and grades three repeats each, which
-cost $16.25 on Sonnet.
+Anthropic API key, Python 3.12, and `uv`. Copy `.env.example` to `.env` and fill it in. The fourth command emits a fresh run per scenario and grades three repeats each, $16.25
+on Sonnet.
 
 ```
 uv sync
@@ -188,7 +188,7 @@ became the confidence levels here; holding a document became refusing a hypothes
 behind it.
 
 Receipts was built with Claude Code: an orchestrator session, an implementer subagent per issue on
-the model that issue is labeled for, and an adversarial review before every PR.
+the issue's labeled model, and an adversarial review before every PR.
 `docs/agentic-workflow.md` reports what the transcripts show the work re-deriving by hand and what
 `.claude/` now carries so it stops, every number in it printed by `tools/usage_stats.py`.
 
