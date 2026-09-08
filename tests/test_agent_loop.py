@@ -1123,7 +1123,7 @@ async def test_the_model_stop_reason_is_recorded_next_to_the_loop_reason(
 
 
 # --------------------------------------------------------------------------
-# The provider factory (R15 / EDW-1337): _make_provider picks the right class
+# The provider factory (R15 / EDW-1337): make_provider picks the right class
 # --------------------------------------------------------------------------
 
 
@@ -1132,7 +1132,7 @@ def test_make_provider_returns_an_nvidia_provider_for_provider_nvidia(clean_env:
 
     suite, so no real NVIDIA_API_KEY is ever needed to prove the wiring.
     """
-    from agent.loop import _make_provider
+    from agent.loop import make_provider
     from agent.providers.nvidia import NvidiaProvider
 
     nvidia_settings = Settings(
@@ -1144,6 +1144,84 @@ def test_make_provider_returns_an_nvidia_provider_for_provider_nvidia(clean_env:
         nvidia_api_key="fake-nvidia-key",
     )
     config = AgentConfig(provider="nvidia", model="nvidia/nemotron-3-super-120b-a12b")
-    made = _make_provider(config, nvidia_settings)
+    made = make_provider(config, nvidia_settings)
     assert isinstance(made, NvidiaProvider)
     assert made.model == "nvidia/nemotron-3-super-120b-a12b"
+
+
+# --------------------------------------------------------------------------
+# Keys are checked before anything is spent: the provider is built before
+# the MCP session opens, and preflight collects every missing key at once.
+# --------------------------------------------------------------------------
+
+
+async def test_a_missing_provider_key_raises_before_any_mcp_session_opens(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no `mcp` injected, investigate opens a HoneycombMCP session
+    itself. The provider must be built first, so a missing Anthropic key
+    raises with the session never entered."""
+    import agent.loop as module
+
+    entered: list[bool] = []
+
+    class RecordingMCP:
+        def __init__(self, *, settings: Settings) -> None:
+            pass
+
+        async def __aenter__(self) -> RecordingMCP:
+            entered.append(True)
+            return self
+
+        async def __aexit__(self, *exc: Any) -> None:
+            pass
+
+    monkeypatch.setattr(module, "HoneycombMCP", RecordingMCP)
+    keyless = settings.model_copy(update={"anthropic_api_key": None})
+
+    with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
+        await investigate(RUN, AgentConfig(), settings=keyless)
+
+    assert entered == []
+
+
+def test_preflight_is_quiet_when_every_key_is_present(settings: Settings) -> None:
+    from agent.loop import preflight
+
+    assert preflight(settings, AgentConfig()) == []
+    assert preflight(settings, AgentConfig(), emit=True) == []
+
+
+def test_preflight_names_every_missing_key_at_once(clean_env: None) -> None:
+    """A stranger with the unfilled template should learn all the missing
+    keys in one go, not one per run. The ingest key only counts when the
+    caller is about to emit."""
+    from agent.loop import preflight
+
+    empty = Settings(_env_file=None)
+
+    problems = preflight(empty, AgentConfig(), emit=True)
+    assert [line.split(" ", 1)[0] for line in problems] == [
+        "HONEYCOMB_INGEST_KEY",
+        "ANTHROPIC_API_KEY",
+        "HONEYCOMB_MCP_KEY",
+    ]
+
+    without_emit = preflight(empty, AgentConfig())
+    assert [line.split(" ", 1)[0] for line in without_emit] == [
+        "ANTHROPIC_API_KEY",
+        "HONEYCOMB_MCP_KEY",
+    ]
+
+
+def test_preflight_checks_the_chosen_provider_and_skips_the_mcp_key_under_oauth(
+    clean_env: None,
+) -> None:
+    """The provider check follows --provider (nvidia here), and on the OAuth
+    path the MCP key is not used, so it is not demanded."""
+    from agent.loop import preflight
+
+    oauth = Settings(_env_file=None, honeycomb_auth="oauth")
+    problems = preflight(oauth, AgentConfig(provider="nvidia"))
+    assert len(problems) == 1
+    assert problems[0].startswith("NVIDIA_API_KEY")

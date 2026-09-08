@@ -5,10 +5,14 @@ generator, the agent, and the eval runner all find the same file no matter
 where they are launched from.
 
 Settings is a plain pydantic-settings model. It is not instantiated at import
-time, so importing this module never fails on a missing .env; construction
-does, with pydantic's own error naming each missing or empty required variable.
-The three API keys are SecretStr so a stray repr, log line, or span attribute
-does not carry them. Call .get_secret_value() at the point of use.
+time, so importing this module never fails on a missing .env, and construction
+does not either: no key is required here, because no one command uses every
+key. gen/emit.py needs the ingest key alone, gen/verify.py the MCP key, the
+agent and the evals the MCP key and whichever provider's key is in play. Each
+key is optional on the model and the code that uses it raises a ValueError
+naming the variable at the point of use; agent/loop.py's preflight runs those
+checks up front for the two CLIs. The keys are SecretStr so a stray repr, log line, or span
+attribute does not carry them. Call .get_secret_value() at the point of use.
 """
 
 from __future__ import annotations
@@ -41,8 +45,14 @@ class Settings(BaseSettings):
     # spans, no warnings), and gen/emit.py, which needs a real key to send
     # anything, checks for one itself and fails with a clear message rather
     # than posting with an empty key.
+    # honeycomb_mcp_key is optional for the same reason in the other
+    # direction: gen/emit.py never talks to the MCP (gen/verify.py does), so
+    # a stranger following the README's emit step should not be stopped by a
+    # key that step does not use. agent/mcp_client.py checks for it at the
+    # point of use and fails with a clear message, and agent/loop.py's
+    # preflight runs that check before either CLI opens a session.
     honeycomb_ingest_key: SecretStr | None = Field(default=None, min_length=1)
-    honeycomb_mcp_key: SecretStr = Field(min_length=1)
+    honeycomb_mcp_key: SecretStr | None = Field(default=None, min_length=1)
     honeycomb_mcp_url: str = "https://mcp.honeycomb.io/mcp"
     honeycomb_otlp_endpoint: str = "https://api.honeycomb.io"
     honeycomb_dataset: str = "receipts-shop"
@@ -62,11 +72,17 @@ class Settings(BaseSettings):
     honeycomb_auth: Literal["key", "oauth"] = "key"
     honeycomb_oauth_token_path: Path = Path.home() / ".receipts" / "honeycomb_oauth.json"
 
-    # Anthropic. The key is identity-linked, so anthropic_workspace_id must be
-    # sent as the anthropic-workspace-id header on every request.
-    anthropic_api_key: SecretStr = Field(min_length=1)
+    # Anthropic. anthropic_api_key is optional: the generator and a
+    # --provider nvidia or --provider ollama run never call Anthropic.
+    # agent/providers/anthropic.py raises a clear ValueError at construction
+    # when the key is unset. anthropic_workspace_id is optional too. An
+    # identity-linked key (the kind this project was built on) is rejected
+    # unless every request carries the anthropic-workspace-id header; an
+    # ordinary key needs no header and most keys are ordinary. The provider
+    # sends the header only when this is set.
+    anthropic_api_key: SecretStr | None = Field(default=None, min_length=1)
     anthropic_model: str = "claude-sonnet-4-5"
-    anthropic_workspace_id: str = Field(min_length=1)
+    anthropic_workspace_id: str | None = Field(default=None, min_length=1)
 
     # AWS Bedrock, R11. Not required until then.
     aws_profile: str | None = None

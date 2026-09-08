@@ -1,8 +1,11 @@
 """The Anthropic provider: the Messages API behind the `Provider` interface.
 
-The key on this project is identity-linked, so every request carries the
-`anthropic-workspace-id` header. It goes on the client as a default header
-rather than per call, which means a request cannot be built that forgets it.
+The `anthropic-workspace-id` header is optional. The key this project was
+built on is identity-linked, and Anthropic rejects a request from such a key
+unless it names the workspace; an ordinary key needs no header, and
+`ANTHROPIC_WORKSPACE_ID` can stay unset. When it is set, the header goes on
+the client as a default header rather than per call, which means a request
+cannot be built that forgets it.
 
 The model comes from `ANTHROPIC_MODEL` in `.env`. No `thinking` parameter is
 sent: the configured model predates adaptive thinking, and the loop's own
@@ -33,6 +36,18 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_TOKENS = 8192
 
 
+def _require_anthropic_key(settings: Settings) -> str:
+    """The Anthropic key, or a clear error. `anthropic_api_key` is optional on
+    `Settings` because the generator, `gen/verify.py`, and a run on another
+    provider never call Anthropic; this provider has no such fallback."""
+    if settings.anthropic_api_key is None:
+        raise ValueError(
+            "ANTHROPIC_API_KEY is not set. The Anthropic provider cannot run without it; "
+            "set it in .env, or pick another provider with --provider nvidia or --provider ollama."
+        )
+    return settings.anthropic_api_key.get_secret_value()
+
+
 class AnthropicProvider:
     """One async Anthropic client, wrapped to the provider interface."""
 
@@ -47,10 +62,14 @@ class AnthropicProvider:
     ) -> None:
         settings = settings or Settings()
         self.model = model or settings.anthropic_model
-        self._client = client or anthropic.AsyncAnthropic(
-            api_key=settings.anthropic_api_key.get_secret_value(),
-            default_headers={"anthropic-workspace-id": settings.anthropic_workspace_id},
-        )
+        if client is None:
+            kwargs: dict[str, Any] = {"api_key": _require_anthropic_key(settings)}
+            if settings.anthropic_workspace_id is not None:
+                kwargs["default_headers"] = {
+                    "anthropic-workspace-id": settings.anthropic_workspace_id
+                }
+            client = anthropic.AsyncAnthropic(**kwargs)
+        self._client = client
 
     async def complete(
         self,

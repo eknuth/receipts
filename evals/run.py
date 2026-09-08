@@ -100,7 +100,14 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from agent.auth import OAuthNotAuthorized, require_oauth_provider
 from agent.board import BoardResult, ensure_board
 from agent.handoff import Handoff, hand_off
-from agent.loop import DEFAULT_MAX_CALLS, DEFAULT_MAX_WALL_S, AgentConfig, ScenarioRun, investigate
+from agent.loop import (
+    DEFAULT_MAX_CALLS,
+    DEFAULT_MAX_WALL_S,
+    AgentConfig,
+    ScenarioRun,
+    investigate,
+    preflight,
+)
 from agent.mcp_client import HoneycombMCP, TokenBucket
 from agent.providers.base import Provider
 from agent.report import Report, load_report
@@ -1256,6 +1263,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ValidationError as exc:
         missing = ", ".join(str(err["loc"][0]) for err in exc.errors())
         print(f"error: missing or invalid in .env: {missing}", file=sys.stderr)
+        return 2
+
+    # No key is required on Settings, since gen/emit.py runs with the ingest
+    # key alone. The keys the matrix needs are checked here, all at once and
+    # before anything is emitted or spent, by the same `preflight` the agent
+    # CLI uses; with --emit that includes the ingest key. Without this, a
+    # missing key would surface as thirty total=0 rows after the emit
+    # already ran. On the OAuth path preflight skips the MCP key; the OAuth
+    # token is checked below, and only when --handoff is given, since that
+    # is the one path that needs it.
+    problems = preflight(
+        settings, AgentConfig(provider=args.provider, model=args.model), emit=args.emit
+    )
+    if problems:
+        for problem in problems:
+            print(f"error: {problem}", file=sys.stderr)
         return 2
 
     if args.handoff:
