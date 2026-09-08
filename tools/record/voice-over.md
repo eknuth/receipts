@@ -24,8 +24,12 @@ minute ten. That is what the agent has to find.
 
 **1:12 investigation, about 58 s (121 words).** It follows Honeycomb's own playbook:
 orient, characterize, BubbleUp, traces, verify by negation. Every call goes through a
-client that only allows read tools and paces itself under the hosted limit. [the quiet
-middle runs fast here] Then the report. The top hypothesis names the three dimensions
+client that only allows read tools and paces itself under the hosted limit.
+
+> Stage direction, not read: the loop's quiet two minutes play at seven times speed for
+> about twenty seconds here. Pause, then resume when the report scrolls in.
+
+Then the report. The top hypothesis names the three dimensions
 and the slow span, at high confidence. Under it, the evidence: each line is a query
 that actually ran, with its permalink. Then the negation query, the same population
 with the finding excluded. Then the list of what was in scope and never checked. A
