@@ -68,6 +68,15 @@ GenAI tab reads evaluation events.
 A live check on 2026-09-03 found no spans from Honeycomb's hosted MCP in
 `receipts-demo` for either run's trace. `agent/mcp_client.py` sends
 `traceparent` regardless, on the chance a server reads it later.
+
+`Telemetry.start_handoff` (R23, EDW-1370) opens a second root span,
+`invoke_agent canvas`, for the Canvas handoff `evals/run.py`'s
+`_hand_off_cell` runs after a report is graded: `canvas_agent_invoke`,
+`canvas_agent_poll_response`, `create_board`, and `list_boards` each get an
+`execute_tool` child through the same `RunTrace.tool_span` the investigation
+uses, so the exchange with Canvas shows up in Agent Timeline instead of
+existing only in `handoff.json`. See `start_handoff` for why it is a second
+root rather than a child of the investigation's own span.
 """
 
 from __future__ import annotations
@@ -124,6 +133,10 @@ _COMPONENT_EXPLANATIONS: dict[str, str] = {
 # practice, and character truncation cannot split a multi-byte codepoint.
 ARGUMENTS_TRUNCATE_CHARS = 2048
 RESULT_TRUNCATE_CHARS = 500
+
+# Canvas's reply is prose, not a tool result, and is worth more room on the
+# span than RESULT_TRUNCATE_CHARS gives a query result: R23, EDW-1370.
+REPLY_TRUNCATE_CHARS = 4096
 
 _TRUNCATION_SUFFIX = "...(truncated)"
 
@@ -348,6 +361,40 @@ class ToolSpanHandle:
         except Exception:
             logger.warning("telemetry: could not record a validation rejection", exc_info=True)
         _mark_span_error(self._span, "validation_rejected")
+
+
+async def traced_call(
+    trace: RunTrace, mcp: Any, name: str, args: dict[str, Any], call_id: str
+) -> Any:
+    """One MCP call wrapped in `execute_tool {name}`.
+
+    The same shape `agent/loop.py`'s own `call_tool` gives the
+    investigation's calls: a `RunTrace.tool_span` around `mcp.call`, with
+    the span's own `traceparent`/`tracestate` passed straight through to
+    `mcp.call` the same way `agent/loop.py` line 504 onward does (CLAUDE.md:
+    every call carries it), and the exception or the result recorded on the
+    span. Shared here rather than duplicated in `agent/handoff.py` and
+    `agent/board.py` (R23, EDW-1370; both wrap `mcp.call` for tools the
+    model itself never calls, so neither goes through `agent/loop.py`'s own
+    `call_tool`), which is also why this lives in this module instead of
+    either of theirs: one place that knows how to turn an MCP call into a
+    span, reused by both callers rather than two copies drifting apart.
+    `call_id` is synthesized by the caller, not read off a model's tool
+    call, since these calls are made directly by code, not replayed from a
+    model turn.
+    """
+    with trace.tool_span(name, call_id, args) as span:
+        try:
+            result = await mcp.call(
+                name, args, traceparent=span.traceparent, tracestate=span.tracestate
+            )
+        except Exception as exc:
+            span.record_exception(exc)
+            raise
+        span.record_result(
+            getattr(result, "text", None) or "", is_error=bool(getattr(result, "is_error", False))
+        )
+        return result
 
 
 class RunTrace:
@@ -597,6 +644,69 @@ class RunTrace:
                 logger.warning("telemetry: could not mark the run's error", exc_info=True)
         self.end()
 
+    def end_with_handoff(
+        self,
+        *,
+        status: str,
+        classification: str,
+        reply: str | None,
+        board_id: str | None,
+        board_url: str | None,
+        error: str | None = None,
+        board_error: str | None = None,
+    ) -> None:
+        """End a handoff root span (see `Telemetry.start_handoff`) with what
+        Canvas and the board said back.
+
+        Takes plain fields rather than an `agent.handoff.Handoff`, so this
+        module does not need to import that one: `evals/run.py`'s
+        `_hand_off_cell` is the only caller, and it already has both a
+        `Handoff` and an `agent.board.BoardResult` in hand by the time it
+        calls this.
+
+        `status`, `classification`, and `reply` are `receipts.*` rather than
+        `gen_ai.*`: the semconv's `gen_ai.evaluation.result` is for an
+        automated grader's numeric score of this agent's own output (that
+        already lives on the investigation's own root span, from
+        `end_with_grade`), not a second agent's free-text opinion, and a
+        `agree`/`disagree`/`extend`/`no_response` label read by a keyword
+        classifier has no numeric score to report honestly. `reply` is
+        truncated to `REPLY_TRUNCATE_CHARS` (4096, longer than
+        `RESULT_TRUNCATE_CHARS`'s 500: Canvas's reply is prose someone reads,
+        not a query result skimmed for a query id); `handoff.json`
+        (`evals/run.py`'s `write_handoff`) holds the whole thing regardless
+        of what fits on the span.
+        """
+        if self._ended or self._span is None:
+            self._ended = True
+            return
+        self._ended = True
+        try:
+            self._span.set_attribute("receipts.handoff.status", status)
+            self._span.set_attribute("receipts.handoff.classification", classification)
+            if reply:
+                self._span.set_attribute(
+                    "receipts.handoff.reply", _truncate(reply, REPLY_TRUNCATE_CHARS)
+                )
+            if board_id:
+                self._span.set_attribute("receipts.board.id", board_id)
+            if board_url:
+                self._span.set_attribute("receipts.board.url", board_url)
+            if error:
+                self._span.set_attribute(
+                    "receipts.handoff.error", _truncate(error, RESULT_TRUNCATE_CHARS)
+                )
+            if board_error:
+                self._span.set_attribute(
+                    "receipts.board.error", _truncate(board_error, RESULT_TRUNCATE_CHARS)
+                )
+            if status != "completed":
+                self._span.set_status(Status(StatusCode.ERROR))
+                self._span.set_attribute("error.type", f"handoff_{status}")
+        except Exception:
+            logger.warning("telemetry: could not record the handoff outcome", exc_info=True)
+        self._end_span(self._span)
+
 
 def disabled_run_trace(conversation_id: str = "", scenario_id: str = "") -> RunTrace:
     """A `RunTrace` that does nothing, for a caller that never wired telemetry.
@@ -677,6 +787,70 @@ class Telemetry:
             span,
             conversation_id,
             scenario_id,
+            capture_content=self.capture_content,
+        )
+
+    def start_handoff(
+        self, run_id: str, *, conversation_id: str, config_label: str, provider: str
+    ) -> RunTrace:
+        """Open `invoke_agent canvas` for one Canvas handoff (R23, EDW-1370).
+
+        A second root span, not a child of the investigation's own
+        `invoke_agent receipts-investigator` span: by the time a handoff
+        runs, `evals/run.py`'s `run_one` has already called `end_with_grade`
+        (or `end_with_error`) on that span, closing it, so there is no open
+        parent left to attach to. The alternative (option 1 in the issue)
+        would instead move the handoff before that call, at the cost of
+        changing when the grade is written and stretching the investigation's
+        own root span by up to the handoff's budget (300s). `conversation_id`
+        is what keeps this span in the same Agent Timeline conversation as
+        the investigation that produced the report: `evals/run.py` passes the
+        exact id `start_run` was given for that run
+        (`f"{run_id}.{config_name}.{repeat}"`), not a new one. Checked live on
+        2026-09-07 rather than assumed (the Timeline has surprised this
+        project before: a `/` in a conversation id broke its Traces panel):
+        conversation `run-livecheck23.full.1`, two root spans sharing one
+        conversation id, rendered as one conversation with two agent lanes
+        (`receipts-investigator` and `canvas`), confirming option 2.
+
+        `run_id`, `config_label`, and `provider` land on the span as
+        `receipts.run_id`, `receipts.config`, and `gen_ai.provider.name`, the
+        same values the investigation's own root carries, so a query over
+        `invoke_agent canvas` slices by config or provider without parsing
+        the conversation id. There is no `scenario_id` parameter here, unlike
+        `start_run`: the investigation's root has already closed with
+        `scenario.id` on it by the time this trace opens, so a handoff span
+        cannot expose anything the conversation does not already show, and
+        `agent/mcp_client.py`'s dataset guard, not withholding the attribute
+        here, is what stops a later cell from reading it back.
+        """
+        try:
+            span = self._tracer.start_span(
+                "invoke_agent canvas",
+                kind=SpanKind.INTERNAL,
+                attributes={
+                    "gen_ai.operation.name": "invoke_agent",
+                    # The agent this span is about is Canvas, the one being
+                    # invoked, not this agent's own name: `tool_span`'s
+                    # children below still tag `gen_ai.agent.name` as
+                    # AGENT_NAME regardless, since this agent is the one
+                    # making those calls even though Canvas is who the root
+                    # span itself describes.
+                    "gen_ai.agent.name": "canvas",
+                    "gen_ai.conversation.id": conversation_id,
+                    "gen_ai.provider.name": provider,
+                    "receipts.run_id": run_id,
+                    "receipts.config": config_label,
+                },
+            )
+        except Exception:
+            logger.warning("telemetry: could not start the handoff root span", exc_info=True)
+            span = None
+        return RunTrace(
+            self._tracer,
+            span,
+            conversation_id,
+            "",
             capture_content=self.capture_content,
         )
 

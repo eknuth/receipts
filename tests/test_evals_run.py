@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from test_agent_loop import (
     FakeMCP,
     FakeProvider,
@@ -30,6 +31,7 @@ from agent.loop import SUBMIT_REPORT, AgentConfig
 from agent.mcp_client import TokenBucket
 from agent.providers.base import Completion, ToolSchema, Turn
 from agent.report import Evidence, Hypothesis, Report, load_report
+from agent.telemetry import Telemetry
 from evals.grader import grade_file
 from evals.run import (
     CONFIGS,
@@ -1292,10 +1294,12 @@ class FakeWriteMCP:
     boards: list[dict[str, Any]] = field(default_factory=list)
     reply: str = "I agree with this."
     calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    kwargs_seen: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
     created_count: int = 0
 
     async def call(self, name: str, args: dict[str, Any] | None = None, **kwargs: Any) -> Any:
         self.calls.append((name, dict(args or {})))
+        self.kwargs_seen.append((name, dict(kwargs)))
         if name == "list_boards":
             return _WriteResult(raw=None, text=_fake_boards_markdown(self.boards))
         if name == "create_board":
@@ -1476,6 +1480,344 @@ async def test_a_failing_write_session_still_records_a_handoff_and_never_raises(
     assert data["status"] == "error"
     assert data["classification"] == "no_response"
     assert "write session could not open" in data["error"]
+
+
+# --------------------------------------------------------------------------
+# Handoff telemetry (R23, EDW-1370)
+# --------------------------------------------------------------------------
+
+
+async def test_handoff_tools_get_execute_tool_spans_in_the_investigations_conversation(
+    settings: Settings, results_dir: Path, runs_dir: Path
+) -> None:
+    """`canvas_agent_invoke`, `canvas_agent_poll_response`, `create_board`,
+    and `list_boards` each get an `execute_tool` span (`FakeWriteMCP`'s
+    `boards` starts empty, so `ensure_board` makes exactly one of each),
+    and every one of them, plus the handoff's own root, shares
+    `gen_ai.conversation.id` with the investigation that produced the
+    report."""
+    exporter = InMemorySpanExporter()
+    telemetry = Telemetry(exporter=exporter)
+    write_session = FakeWriteSession()
+    results = await run(
+        [PAYMENTS],
+        ["full"],
+        1,
+        settings=settings,
+        results_dir=results_dir,
+        runs_dir=runs_dir,
+        provider_factory=factory([lambda: FakeProvider(good_script())]),
+        handoff=True,
+        open_write_mcp=lambda settings: write_session,
+        telemetry=telemetry,
+    )
+    telemetry.flush()
+
+    conversation_id = f"{results[0].run_id}.full.1"
+    spans = exporter.get_finished_spans()
+
+    investigation_root = next(s for s in spans if s.name == "invoke_agent receipts-investigator")
+    assert investigation_root.attributes["gen_ai.conversation.id"] == conversation_id
+
+    handoff_root = next(s for s in spans if s.name == "invoke_agent canvas")
+    assert handoff_root.attributes["gen_ai.conversation.id"] == conversation_id
+    assert handoff_root.attributes["receipts.config"] == "full"
+    assert handoff_root.attributes["gen_ai.provider.name"] == "anthropic"
+
+    expected_tools = {
+        "canvas_agent_invoke",
+        "canvas_agent_poll_response",
+        "create_board",
+        "list_boards",
+    }
+    tool_spans = {
+        span.attributes["gen_ai.tool.name"]: span
+        for span in spans
+        if span.name.startswith("execute_tool ")
+        and span.attributes["gen_ai.tool.name"] in expected_tools
+    }
+    assert set(tool_spans) == expected_tools
+    for span in tool_spans.values():
+        assert span.attributes["gen_ai.conversation.id"] == conversation_id
+        assert span.attributes["gen_ai.tool.call.arguments"]
+
+
+async def test_handoff_calls_carry_the_tool_spans_traceparent_and_tracestate(
+    settings: Settings, results_dir: Path, runs_dir: Path
+) -> None:
+    """`agent/telemetry.py`'s `traced_call` must pass `traceparent`/
+    `tracestate` to `mcp.call` the same way `agent/loop.py` does for the
+    investigation's own calls (CLAUDE.md: every call carries it), for each
+    of the four handoff and board tools. Telemetry must be a real (in-memory)
+    one, not the disabled default: a disabled trace's spans have no valid
+    context to propagate, so `traceparent` would be `None` regardless of
+    whether `traced_call` passes it through, and this test would prove
+    nothing."""
+    exporter = InMemorySpanExporter()
+    telemetry = Telemetry(exporter=exporter)
+    write_session = FakeWriteSession()
+    await run(
+        [PAYMENTS],
+        ["full"],
+        1,
+        settings=settings,
+        results_dir=results_dir,
+        runs_dir=runs_dir,
+        provider_factory=factory([lambda: FakeProvider(good_script())]),
+        handoff=True,
+        open_write_mcp=lambda settings: write_session,
+        telemetry=telemetry,
+    )
+    telemetry.flush()
+
+    seen = write_session.mcp.kwargs_seen
+    expected_tools = {
+        "canvas_agent_invoke",
+        "canvas_agent_poll_response",
+        "create_board",
+        "list_boards",
+    }
+    called_tools = {name for name, _ in seen}
+    assert expected_tools <= called_tools
+    for name, kwargs in seen:
+        if name in expected_tools:
+            # tracestate is commonly empty (W3C leaves it optional), so only
+            # presence is checked; traceparent is always non-empty, the
+            # same as `test_the_traceparent_reaches_the_mcps_call_kwargs`
+            # checks for the investigation's own calls.
+            assert "traceparent" in kwargs and kwargs["traceparent"], f"{name} missing traceparent"
+            assert "tracestate" in kwargs, f"{name} missing a tracestate kwarg"
+
+
+async def test_handoff_root_span_carries_classification_reply_and_board_link(
+    settings: Settings, results_dir: Path, runs_dir: Path
+) -> None:
+    exporter = InMemorySpanExporter()
+    telemetry = Telemetry(exporter=exporter)
+    write_session = FakeWriteSession(FakeWriteMCP(reply="I agree with this."))
+    await run(
+        [PAYMENTS],
+        ["full"],
+        1,
+        settings=settings,
+        results_dir=results_dir,
+        runs_dir=runs_dir,
+        provider_factory=factory([lambda: FakeProvider(good_script())]),
+        handoff=True,
+        open_write_mcp=lambda settings: write_session,
+        telemetry=telemetry,
+    )
+    telemetry.flush()
+
+    spans = exporter.get_finished_spans()
+    handoff_root = next(s for s in spans if s.name == "invoke_agent canvas")
+    assert handoff_root.attributes["receipts.handoff.status"] == "completed"
+    assert handoff_root.attributes["receipts.handoff.classification"] == "agree"
+    assert "I agree with this." in handoff_root.attributes["receipts.handoff.reply"]
+    assert handoff_root.attributes["receipts.board.id"] == "brd-1"
+    assert handoff_root.attributes["receipts.board.url"] == (
+        "https://ui.honeycomb.io/team/boards/brd-1"
+    )
+
+
+async def test_handoff_with_telemetry_disabled_still_hands_off_and_writes_json(
+    settings: Settings, results_dir: Path, runs_dir: Path
+) -> None:
+    """`Telemetry()` with no settings and no exporter is disabled: the
+    handoff must still run to completion and `handoff.json` must still be
+    written, the same as with no `telemetry` argument at all."""
+    write_session = FakeWriteSession()
+    results = await run(
+        [PAYMENTS],
+        ["full"],
+        1,
+        settings=settings,
+        results_dir=results_dir,
+        runs_dir=runs_dir,
+        provider_factory=factory([lambda: FakeProvider(good_script())]),
+        handoff=True,
+        open_write_mcp=lambda settings: write_session,
+        telemetry=Telemetry(),
+    )
+    assert results[0].error is None
+    handoff_path = run_dir(results_dir, "full", PAYMENTS, 1) / "handoff.json"
+    assert handoff_path.exists()
+    data = json.loads(handoff_path.read_text())
+    assert data["status"] == "completed"
+    assert data["board_id"] == "brd-1"
+
+
+async def test_a_canvas_error_leaves_grade_json_byte_identical_to_no_handoff(
+    settings: Settings, results_dir: Path, runs_dir: Path, tmp_path: Path
+) -> None:
+    """A Canvas error (here: `canvas_agent_invoke` raises) must not perturb
+    the grade it is attached to, pinned the same way
+    `test_handoff_writes_a_handoff_json_next_to_grade_json` pins a
+    successful handoff: rerun the identical script with handoff off and
+    diff the two `grade.json` files."""
+
+    class ErroringWriteMCP(FakeWriteMCP):
+        async def call(self, name: str, args: dict[str, Any] | None = None, **kwargs: Any) -> Any:
+            if name == "canvas_agent_invoke":
+                raise RuntimeError("canvas is down")
+            return await super().call(name, args, **kwargs)
+
+    exporter = InMemorySpanExporter()
+    telemetry = Telemetry(exporter=exporter)
+    write_session = FakeWriteSession(ErroringWriteMCP())
+    results = await run(
+        [PAYMENTS],
+        ["full"],
+        1,
+        settings=settings,
+        results_dir=results_dir,
+        runs_dir=runs_dir,
+        provider_factory=factory([lambda: FakeProvider(good_script())]),
+        handoff=True,
+        open_write_mcp=lambda settings: write_session,
+        telemetry=telemetry,
+    )
+    telemetry.flush()
+
+    baseline_dir = tmp_path / "baseline-results"
+    baseline_results = await run(
+        [PAYMENTS],
+        ["full"],
+        1,
+        settings=settings,
+        results_dir=baseline_dir,
+        runs_dir=runs_dir,
+        provider_factory=factory([lambda: FakeProvider(good_script())]),
+    )
+    assert results[0].total == baseline_results[0].total
+    assert _grade_json_ignoring_wall_time(
+        run_dir(results_dir, "full", PAYMENTS, 1)
+    ) == _grade_json_ignoring_wall_time(run_dir(baseline_dir, "full", PAYMENTS, 1))
+
+    handoff_data = json.loads(
+        (run_dir(results_dir, "full", PAYMENTS, 1) / "handoff.json").read_text()
+    )
+    assert handoff_data["status"] == "error"
+    assert handoff_data["classification"] == "no_response"
+
+    spans = exporter.get_finished_spans()
+    handoff_root = next(s for s in spans if s.name == "invoke_agent canvas")
+    assert handoff_root.status.status_code.name == "ERROR"
+    assert handoff_root.attributes["receipts.handoff.status"] == "error"
+
+
+async def test_a_canvas_timeout_leaves_grade_json_byte_identical_to_no_handoff(
+    settings: Settings,
+    results_dir: Path,
+    runs_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same pin as the error-path test above, for the deadline-expiring
+    path instead of a raised exception: `hand_off`'s real deadline is
+    forced to 0 (`FakeWriteMCP`'s `canvas_agent_invoke` answers `running`,
+    so the poll loop is entered, and by the time it checks the deadline
+    real time has already passed it, no faked clock needed), which must
+    still leave the grade untouched."""
+    import evals.run as run_module
+    from agent.handoff import hand_off as real_hand_off
+
+    async def zero_deadline_hand_off(*args: Any, **kwargs: Any) -> Any:
+        kwargs["deadline_s"] = 0.0
+        return await real_hand_off(*args, **kwargs)
+
+    monkeypatch.setattr(run_module, "hand_off", zero_deadline_hand_off)
+
+    exporter = InMemorySpanExporter()
+    telemetry = Telemetry(exporter=exporter)
+    write_session = FakeWriteSession()
+    results = await run(
+        [PAYMENTS],
+        ["full"],
+        1,
+        settings=settings,
+        results_dir=results_dir,
+        runs_dir=runs_dir,
+        provider_factory=factory([lambda: FakeProvider(good_script())]),
+        handoff=True,
+        open_write_mcp=lambda settings: write_session,
+        telemetry=telemetry,
+    )
+    telemetry.flush()
+
+    baseline_dir = tmp_path / "baseline-results"
+    baseline_results = await run(
+        [PAYMENTS],
+        ["full"],
+        1,
+        settings=settings,
+        results_dir=baseline_dir,
+        runs_dir=runs_dir,
+        provider_factory=factory([lambda: FakeProvider(good_script())]),
+    )
+    assert results[0].total == baseline_results[0].total
+    assert _grade_json_ignoring_wall_time(
+        run_dir(results_dir, "full", PAYMENTS, 1)
+    ) == _grade_json_ignoring_wall_time(run_dir(baseline_dir, "full", PAYMENTS, 1))
+
+    handoff_data = json.loads(
+        (run_dir(results_dir, "full", PAYMENTS, 1) / "handoff.json").read_text()
+    )
+    assert handoff_data["status"] == "timeout"
+    assert handoff_data["classification"] == "no_response"
+
+    spans = exporter.get_finished_spans()
+    handoff_root = next(s for s in spans if s.name == "invoke_agent canvas")
+    assert handoff_root.status.status_code.name == "ERROR"
+    assert handoff_root.attributes["receipts.handoff.status"] == "timeout"
+
+
+async def test_no_span_in_the_handoff_trace_carries_anything_oauth_shaped(
+    settings: Settings, results_dir: Path, runs_dir: Path
+) -> None:
+    """The handoff runs over OAuth, a different identity from the
+    investigation's own key-based sessions (CLAUDE.md's Honeycomb facts);
+    nothing identity-shaped may land on any span this trace produces. The
+    scenario id is not checked here: the investigation's own root already
+    carries `scenario.id` on purpose (`RunTrace.end`), closed before this
+    trace opens, so a handoff span cannot expose anything the conversation
+    does not already show (see `Telemetry.start_handoff`)."""
+    exporter = InMemorySpanExporter()
+    telemetry = Telemetry(exporter=exporter)
+    write_session = FakeWriteSession()
+    results = await run(
+        [PAYMENTS],
+        ["full"],
+        1,
+        settings=settings,
+        results_dir=results_dir,
+        runs_dir=runs_dir,
+        provider_factory=factory([lambda: FakeProvider(good_script())]),
+        handoff=True,
+        open_write_mcp=lambda settings: write_session,
+        telemetry=telemetry,
+    )
+    telemetry.flush()
+
+    assert results[0].scenario_id == PAYMENTS
+
+    spans = exporter.get_finished_spans()
+    handoff_root = next(s for s in spans if s.name == "invoke_agent canvas")
+    handoff_trace_id = handoff_root.context.trace_id
+    handoff_spans = [s for s in spans if s.context.trace_id == handoff_trace_id]
+    assert len(handoff_spans) >= 4  # the root plus at least the four tool spans
+
+    forbidden = [
+        "Bearer",
+        "access_token",
+        "refresh_token",
+        settings.honeycomb_mcp_key.get_secret_value(),
+    ]
+    for span in handoff_spans:
+        for key, value in span.attributes.items():
+            text = str(value)
+            for needle in forbidden:
+                assert needle not in text, f"{needle!r} found in {key}={text!r}"
 
 
 async def test_hand_off_cells_default_write_session_uses_the_given_bucket(

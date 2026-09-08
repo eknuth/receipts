@@ -41,6 +41,14 @@ at a time against fresh `query_run_pk`s. So every query panel `_panels`
 builds carries a `name`, in addition to the `description` it already set;
 `Evidence.query_id` still drops straight into a panel's `id` with no
 translation, as R12 originally specified.
+
+R23 (EDW-1370) gives `ensure_board` an optional `trace`: `list_boards` and
+`create_board` both go through `agent.telemetry.traced_call`, so they show
+up as `execute_tool` spans under the handoff's trace instead of leaving no
+telemetry at all, arguments and results untouched (see `Telemetry.start_handoff`
+for why the board's name, which carries `report.scenario_id` by design, is
+safe there). `evals/run.py`'s `_hand_off_cell` puts the board's id and url
+on the trace itself once this function returns.
 """
 
 from __future__ import annotations
@@ -52,6 +60,7 @@ from typing import Any
 from agent import format as fmt
 from agent.handoff import summary_lines
 from agent.report import Report
+from agent.telemetry import RunTrace, disabled_run_trace, traced_call
 
 MAX_EVIDENCE_PANELS = 3
 
@@ -198,7 +207,13 @@ class _LookupFailed:
 
 
 async def _find_existing(
-    mcp: Any, *, environment_slug: str, name: str, tag: str | None
+    mcp: Any,
+    *,
+    environment_slug: str,
+    name: str,
+    tag: str | None,
+    run_id: str,
+    trace: RunTrace,
 ) -> tuple[str, str | None] | _LookupFailed | None:
     """The id of a board already named `name`; `None` when the listing
     completed and found nothing; a `_LookupFailed` when the listing itself
@@ -240,7 +255,7 @@ async def _find_existing(
         args: dict[str, Any] = {"environment_slug": environment_slug, "page": page}
         if tag:
             args["tags"] = [tag]
-        result = await mcp.call("list_boards", args)
+        result = await traced_call(trace, mcp, "list_boards", args, f"{run_id}-list-boards-{page}")
         if getattr(result, "is_error", False):
             return _LookupFailed(_result_text(result) or "list_boards failed")
         text = _result_text(result)
@@ -273,7 +288,9 @@ async def _find_existing(
     return None
 
 
-async def ensure_board(report: Report, mcp: Any, *, environment_slug: str) -> BoardResult:
+async def ensure_board(
+    report: Report, mcp: Any, *, environment_slug: str, trace: RunTrace | None = None
+) -> BoardResult:
     """The board for this run: an existing one by name, or a freshly created one.
 
     Never raises: a `list_boards` or `create_board` failure comes back as a
@@ -283,18 +300,34 @@ async def ensure_board(report: Report, mcp: Any, *, environment_slug: str) -> Bo
     `list_boards` failure specifically must not fall through to
     `create_board`: it is recorded as an error, not treated as "no board
     found yet" (see `_LookupFailed`).
+
+    `trace` (R23, EDW-1370) is the handoff's `RunTrace`, from
+    `Telemetry.start_handoff`; both `list_boards` and `create_board` go
+    through `traced_call`, which wraps them in `RunTrace.tool_span`, the
+    same as `agent/handoff.py`'s calls to Canvas. A disabled one when the
+    caller does not open telemetry.
     """
+    trace = trace or disabled_run_trace()
     name = board_name(report)
     tag = run_tag(report.run_id)
     try:
-        existing = await _find_existing(mcp, environment_slug=environment_slug, name=name, tag=tag)
+        existing = await _find_existing(
+            mcp,
+            environment_slug=environment_slug,
+            name=name,
+            tag=tag,
+            run_id=report.run_id,
+            trace=trace,
+        )
         if isinstance(existing, _LookupFailed):
             return BoardResult(board_id=None, board_url=None, created=False, error=existing.error)
         if existing is not None:
             board_id, board_url = existing
             return BoardResult(board_id=board_id, board_url=board_url, created=False)
 
-        result = await mcp.call(
+        result = await traced_call(
+            trace,
+            mcp,
             "create_board",
             {
                 "environment_slug": environment_slug,
@@ -302,6 +335,7 @@ async def ensure_board(report: Report, mcp: Any, *, environment_slug: str) -> Bo
                 "panels": _panels(report),
                 "tags": [tag] if tag else [],
             },
+            f"{report.run_id}-create-board",
         )
         if getattr(result, "is_error", False):
             return BoardResult(

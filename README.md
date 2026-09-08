@@ -103,11 +103,11 @@ Penalties are applied after weighting and subtract from that total, which floors
 | Any hypothesis with zero evidence | 0.25, capped at 0.50 |
 | A report the validator rejected twice | 0.25 |
 
-Every weight and penalty, and the symptom rule that keeps a true-but-not-causal dimension from
-counting either way, are explained in `evals/grader.md`. The agent's own loop is traced with the
-OpenTelemetry GenAI semantic conventions into the same environment it is investigating, one
-`invoke_agent` span per run keyed by `gen_ai.conversation.id`, which is what Honeycomb's Agent
-Timeline groups on.
+Every weight and penalty, and the symptom rule for a true-but-not-causal dimension, are explained
+in `evals/grader.md`. The agent's own loop is traced with OpenTelemetry GenAI semantic conventions
+into the same environment it is investigating: one `invoke_agent` span per investigation and, with
+`--handoff`, a second for the Canvas exchange, both keyed by `gen_ai.conversation.id`, which is
+what Honeycomb's Agent Timeline groups on.
 
 ## Results
 
