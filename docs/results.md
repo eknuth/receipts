@@ -156,6 +156,44 @@ run that had no reason to mention it. The schema now uses `http.route` and an in
 against the prompt, the schema, the tool description, and the validator's messages, and the
 columns are being rerun on the fixed schema.
 
+## The grader was brittle on spelling, 2026-09-08
+
+The truth for `trigger-checkout-latency` is `cart.size: ">=8"`, and the grader compared a
+reported value to it three ways: the same string, the same range written the same way, or a
+single number inside the range. In the rerun on the fixed schema two Sonnet cells found the
+right span, the right onset, ran the negation, and wrote the population as `cart.size: 8-12`
+(`full/trigger-checkout-latency/1`) and `cart.size: 8, 9, 10, 11, 12`
+(`full/trigger-checkout-latency/3`). Cart sizes run 1 to 12, so both select exactly the rows
+`>=8` does. The grader scored dims 0 and charged 0.50 for confident and wrong, so two cells that
+were right all the way through scored 0.15. An earlier cell,
+`matrix2-ba6518b/no-negation/trigger-checkout-latency/1` from before the schema leak, wrote
+`8, 9, 10, 11, or 12` and was graded wrong the same way.
+
+Every other trigger cell wrote `>=8` or `>= 8`, and the reason is the leak in the section above:
+the `PartialCheck` docstring taught that spelling. Once the example was gone the model wrote the
+same answer in its own words and the grader could not read it. So the leak was covering for a
+grader that only accepted one spelling of a range.
+
+The rule now is that a reported value satisfies a ground-truth range when it selects exactly the
+same rows. `gen.topology.selects` reads a range, a single integer, or a spelled-out set as the set
+of values it names on a column with a fixed value set, and the grader and the validator both use
+it, so a claim written as `8-12` is negated by `cart.size < 8` the way `>=8` is. Same rows, same
+claim. A subset such as `8, 9` claims a narrower population and does not match, a superset such as
+`7, 8, 9, 10, 11, 12` claims a wider one and does not match, and a value on a column with no fixed
+value set falls back to the old spelling rule. The nvidia cell
+`r26-pass/full-nvidia/trigger-checkout-latency/1` wrote `8-11`, a subset, and stays wrong. The
+report schema was not changed for this; the grader reads the spellings the model already uses,
+and a second schema change would have confounded the next pass against the last one. Each report
+now records `schema_hash`, the first twelve hex characters of the sha256 of the `submit_report`
+schema it was shown, and the grade carries it, so cells from different schemas can be told apart.
+
+The grader's knowledge of the value domain comes from the generator, which wrote every cart size
+on the wire. In a real dataset that knowledge would be a distinct-values query the agent has to
+run before it can say two spellings are one claim. Every column under `evals/results/` was
+regraded under this rule before the numbers in the README were read.
+
+<!-- regrade numbers -->
+
 ## Reproducing
 
 ```
