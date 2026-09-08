@@ -34,6 +34,7 @@ from agent.loop import (
     ScenarioRun,
     config_label,
     investigate,
+    preflight,
 )
 from agent.report import Report
 from agent.telemetry import Telemetry
@@ -165,6 +166,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_wall_s=args.max_wall_s,
     )
     run = ScenarioRun.from_manifest(manifest)
+
+    # The same key check evals/run.py makes, before telemetry starts and
+    # before an MCP session is opened, printing every missing key at once.
+    problems = preflight(settings, config)
+    if problems:
+        for problem in problems:
+            print(f"error: {problem}", file=sys.stderr)
+        return 2
 
     # `python -m agent` never grades, so the root span here never carries
     # gen_ai.evaluation.result; evals/run.py is the caller that does.

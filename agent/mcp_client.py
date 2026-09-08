@@ -296,6 +296,21 @@ class TokenBucket:
             self._last_call = now
 
 
+def require_mcp_key(settings: Settings) -> str:
+    """The management key, or a clear error. `honeycomb_mcp_key` is optional
+    on `Settings` so gen/emit.py, which never talks to the MCP, can run without
+    one; this client has no such fallback, since a Bearer header with no key
+    would be refused by the server with a less useful message. `agent.loop.
+    preflight` calls this before a session is opened, so the two CLIs report
+    the missing key up front rather than on the first call."""
+    if settings.honeycomb_mcp_key is None:
+        raise ValueError(
+            "HONEYCOMB_MCP_KEY is not set. It is the management v2 key (key_id:secret) the "
+            "Honeycomb MCP client sends as its Bearer token; set it in .env."
+        )
+    return settings.honeycomb_mcp_key.get_secret_value()
+
+
 class HoneycombMCP:
     """Async context manager over one streamable-HTTP session to the hosted MCP."""
 
@@ -356,9 +371,8 @@ class HoneycombMCP:
         if self._settings.honeycomb_auth == "oauth":
             provider = await require_oauth_provider(self._settings)
             return httpx2.AsyncClient(auth=provider, timeout=httpx2.Timeout(30.0, read=300.0))
-        key = self._settings.honeycomb_mcp_key.get_secret_value()
         return httpx2.AsyncClient(
-            headers={"Authorization": f"Bearer {key}"},
+            headers={"Authorization": f"Bearer {require_mcp_key(self._settings)}"},
             timeout=httpx2.Timeout(30.0, read=300.0),
         )
 

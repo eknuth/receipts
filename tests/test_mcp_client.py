@@ -1020,6 +1020,15 @@ async def test_key_auth_sends_the_management_key_as_a_bearer_header(settings: Se
         )
 
 
+async def test_key_auth_with_no_key_raises_a_clear_error(settings: Settings) -> None:
+    """`honeycomb_mcp_key` is optional on Settings so the generator can run
+    without one. The MCP client has no such fallback and must name the variable."""
+    keyless = settings.model_copy(update={"honeycomb_mcp_key": None})
+    mcp = HoneycombMCP(settings=keyless)
+    with pytest.raises(ValueError, match="HONEYCOMB_MCP_KEY"):
+        await mcp._build_http_client()
+
+
 async def test_oauth_auth_with_no_stored_token_raises_before_building_a_client(
     settings: Settings, tmp_path: Any
 ) -> None:

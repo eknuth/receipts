@@ -73,10 +73,27 @@ TOOLS = [ToolSchema(name="run_query", description="query", input_schema={"type":
 
 
 async def test_the_workspace_header_is_on_the_client(settings: Settings) -> None:
-    """The key is identity linked, so a request without the header is rejected."""
+    """An identity-linked key is rejected unless every request names the workspace."""
     made = AnthropicProvider(settings)
     headers = made._client.default_headers  # type: ignore[attr-defined]
     assert headers["anthropic-workspace-id"] == settings.anthropic_workspace_id
+
+
+async def test_no_anthropic_key_raises_a_clear_error(settings: Settings) -> None:
+    """`anthropic_api_key` is optional on Settings so the generator and the
+    other providers can run without one. This provider must name the variable."""
+    keyless = settings.model_copy(update={"anthropic_api_key": None})
+    with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
+        AnthropicProvider(keyless)
+
+
+async def test_no_workspace_id_means_no_workspace_header(settings: Settings) -> None:
+    """Most Anthropic keys are not identity-linked. With ANTHROPIC_WORKSPACE_ID
+    unset the client is built without the header rather than with an empty one."""
+    plain = settings.model_copy(update={"anthropic_workspace_id": None})
+    made = AnthropicProvider(plain)
+    headers = made._client.default_headers  # type: ignore[attr-defined]
+    assert "anthropic-workspace-id" not in headers
 
 
 async def test_the_model_comes_from_settings_and_can_be_overridden(settings: Settings) -> None:

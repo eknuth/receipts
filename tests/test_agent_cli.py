@@ -8,6 +8,7 @@ found after a paid run.
 
 from __future__ import annotations
 
+import functools
 import json
 from pathlib import Path
 
@@ -15,6 +16,7 @@ import pytest
 
 from agent.__main__ import main, render
 from agent.report import Evidence, Hypothesis, Report, ToolCall
+from receipts.settings import Settings
 
 MANIFEST = {
     "run_id": "run-test01",
@@ -80,6 +82,43 @@ def test_a_run_from_a_different_scenario_is_refused(
     )
     assert code == 2
     assert "is a 'control-quiet' run" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("present", "missing"),
+    [
+        ({"HONEYCOMB_MCP_KEY": "fake-key-id:fake-secret"}, ["ANTHROPIC_API_KEY"]),
+        ({"ANTHROPIC_API_KEY": "fake-anthropic-key"}, ["HONEYCOMB_MCP_KEY"]),
+        ({}, ["ANTHROPIC_API_KEY", "HONEYCOMB_MCP_KEY"]),
+    ],
+)
+def test_a_missing_key_is_reported_before_anything_is_spent(
+    runs_dir: Path,
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    present: dict[str, str],
+    missing: list[str],
+) -> None:
+    """No key is required on Settings, so the CLI runs the same pre-flight
+    as evals/run.py: exit 2 with every missing key named, before telemetry
+    starts or an MCP session opens. The CLI's `Settings()` reads the real
+    .env at the repo root, so it is pinned to the shell alone here."""
+    import agent.__main__ as module
+
+    monkeypatch.setattr(module, "Settings", functools.partial(Settings, _env_file=None))
+    for name, value in present.items():
+        monkeypatch.setenv(name, value)
+
+    code = main(
+        ["--scenario", "control-quiet", "--run-id", "run-test01", "--runs-dir", str(runs_dir)]
+    )
+
+    assert code == 2
+    err = capsys.readouterr().err
+    for name in missing:
+        assert name in err
+    assert err.count("error: ") == len(missing)
 
 
 def test_the_printed_report_shows_the_evidence_and_the_process_fields(
