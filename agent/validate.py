@@ -76,7 +76,7 @@ from agent.report import (
     ReportDraft,
     ToolCall,
 )
-from gen.topology import RANGE_RE
+from gen.topology import RANGE_RE, selects, value_domain
 
 # Tools whose arguments name columns and values, which is what "was queried"
 # means for the not-checked list. Discovery calls such as `find_columns` are
@@ -313,15 +313,38 @@ def _parse_number(value: object) -> float | None:
     return None
 
 
-def _range_complement_match(claimed_value: str, op: str, filter_value: object) -> bool:
-    """True when `op filter_value` is the complement of a range claim, at the same bound."""
+def _range_complement_match(
+    claimed_value: str, op: str, filter_value: object, column: str | None = None
+) -> bool:
+    """True when `op filter_value` excludes exactly the rows the claim selects.
+
+    On a column with a fixed domain (`gen.topology.value_domain`) the claim
+    and the filter are both read with `gen.topology.selects`, the same
+    reading the grader gives a claim against the truth, and the filter
+    counts when its rows are the domain complement of the claim's. So a
+    claim written as a span or a list of the values above a bound, negated
+    by the comparison below that bound, counts the way a claim written as
+    the range does, and a comparison at another bound does not. Without a
+    domain the claim has to be a range and the filter its complement at
+    the same bound (`>= 50` against `< 50`), which is all that can be known
+    there.
+    """
+    if op not in _COMPLEMENT_OP:
+        return False
+    bound = _parse_number(filter_value)
+    if bound is None:
+        return False
+    domain = None if column is None else value_domain(column)
+    if domain is not None:
+        claimed_rows = selects(column, claimed_value)
+        if claimed_rows is None or not claimed_rows:
+            return False
+        members = frozenset(int(member) for member in domain)
+        return selects(column, f"{op}{bound}") == members - claimed_rows
     claimed = RANGE_RE.match(claimed_value)
     if claimed is None:
         return False
     if op != _COMPLEMENT_OP[claimed.group(1)]:
-        return False
-    bound = _parse_number(filter_value)
-    if bound is None:
         return False
     return bound == float(claimed.group(2))
 
@@ -367,7 +390,7 @@ def _collect_exclusions(
                 dims
                 and column in dims
                 and column not in measured
-                and _range_complement_match(dims[column], op, node.get("value"))
+                and _range_complement_match(dims[column], op, node.get("value"), column)
             ):
                 out.add(column)
         for value in node.values():

@@ -29,6 +29,7 @@ levels have to mean something.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime
 from pathlib import Path
@@ -442,6 +443,14 @@ class Report(BaseModel):
     cost_usd: float = 0.0
     tool_log: list[ToolCall] = Field(default_factory=list)
 
+    schema_hash: str | None = None
+    """The first 12 hex characters of the sha256 of the `submit_report` schema
+    the model was shown (`current_schema_hash`). The schema is generated from
+    `ReportDraft`, and a change to a docstring or a field description changes
+    what the model reads, so two cells with different hashes were not run
+    under the same instructions. None for a report written before the field
+    existed."""
+
     stop_reason: str = "unknown"
     """Why the loop ended: report, schema, call_cap, wall_cap, model_stopped,
     or error. Only `report` means a draft was filed; `schema` is a run whose
@@ -553,6 +562,12 @@ def submit_report_schema() -> dict[str, Any]:
     schema = ReportDraft.model_json_schema()
     schema.pop("title", None)
     return schema
+
+
+def current_schema_hash() -> str:
+    """The schema epoch: sha256 of the canonical JSON of `submit_report_schema()`, first 12 hex."""
+    canonical = json.dumps(submit_report_schema(), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()[:12]
 
 
 def load_report(path: Path) -> Report:

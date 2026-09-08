@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from agent.report import (
     Report,
     ReportDraft,
     ToolCall,
+    current_schema_hash,
     load_report,
     submit_report_schema,
 )
@@ -105,6 +107,18 @@ def test_from_draft_merges_findings_and_process_fields() -> None:
     assert report.hypotheses[0].evidence[0].query_id == "Q1"
     assert report.tool_calls == 7
     assert report.tool_log[0].name == "run_query"
+
+
+def test_the_schema_hash_is_twelve_hex_characters_and_stable() -> None:
+    assert re.fullmatch(r"[0-9a-f]{12}", current_schema_hash())
+    assert current_schema_hash() == current_schema_hash()
+
+
+def test_a_report_written_before_the_schema_hash_loads_as_none() -> None:
+    report = Report.model_validate(
+        {"run_id": "run-old", "scenario_id": "s", "provider": "fake", "model": "fake-model"}
+    )
+    assert report.schema_hash is None
 
 
 def test_write_lands_at_run_id_report_json_and_reads_back(tmp_path: Path) -> None:

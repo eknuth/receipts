@@ -26,7 +26,7 @@ from agent.loop import (
 )
 from agent.mcp_client import ToolResult, ToolSpec
 from agent.providers.base import Completion, ToolSchema, ToolUse, Turn, Usage
-from agent.report import Report
+from agent.report import Report, current_schema_hash
 from receipts.settings import Settings
 
 RUN = ScenarioRun(
@@ -389,6 +389,23 @@ async def test_the_loop_stops_when_a_valid_report_is_submitted(settings: Setting
         "run_query",
         "run_query",
     ]
+
+
+async def test_a_fresh_report_carries_the_schema_epoch(settings: Settings) -> None:
+    """Two runs under one schema carry one hash, so a results reader can tell
+    cells that saw different `submit_report` schemas apart."""
+    reports = []
+    for _ in range(2):
+        provider = FakeProvider(
+            [
+                completion(use("get_workspace_context", ident="a")),
+                completion(query_use("b"), negation_use("c"), baseline_use("d")),
+                completion(use(SUBMIT_REPORT, report_args(), ident="d")),
+            ]
+        )
+        reports.append(await run_loop(provider, FakeMCP(), settings=settings))
+    assert reports[0].schema_hash == current_schema_hash()
+    assert reports[0].schema_hash == reports[1].schema_hash
 
 
 async def test_the_process_fields_are_counted_not_taken_from_the_model(

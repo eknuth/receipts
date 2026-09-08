@@ -1416,6 +1416,55 @@ def test_excluded_columns_without_dims_ignores_the_measured_set() -> None:
     assert excluded_columns([call], dims={"duration_ms": "> 1000"}) == {"duration_ms"}
 
 
+@pytest.mark.parametrize("spelling", ["8-12", "8, 9, 10, 11, 12"])
+def test_a_spelled_out_claim_is_negated_by_its_complement(spelling: str) -> None:
+    """2026-09-08: two Sonnet cells wrote the population as a span and as a
+    list. `cart.size < 8` excludes exactly those rows, read the way the grader
+    reads the claim (`gen.topology.selects`), so it is the negation."""
+    range_claim = hypothesis(
+        dims={"cart.size": spelling},
+        negation=Evidence(query_id="Q2", summary="P99 flat under cart.size < 8"),
+    )
+    log = [
+        query_call("Q1", breakdowns=["cart.size"]),
+        query_call("Q2", filters=[{"column": "cart.size", "op": "<", "value": 8}]),
+        baseline_call(),
+    ]
+    assert validate_draft(draft(hypotheses=[range_claim]), log, run_id=RUN_ID) == []
+
+
+@pytest.mark.parametrize("spelling", ["8-12", "8, 9, 10, 11, 12"])
+def test_a_spelled_out_claim_is_negated_by_not_in(spelling: str) -> None:
+    range_claim = hypothesis(
+        dims={"cart.size": spelling},
+        negation=Evidence(query_id="Q2", summary="P99 flat outside 8 to 12"),
+    )
+    log = [
+        query_call("Q1", breakdowns=["cart.size"]),
+        query_call(
+            "Q2", filters=[{"column": "cart.size", "op": "not-in", "value": [8, 9, 10, 11, 12]}]
+        ),
+        baseline_call(),
+    ]
+    assert validate_draft(draft(hypotheses=[range_claim]), log, run_id=RUN_ID) == []
+
+
+def test_a_spelled_out_claim_against_less_than_9_fails_the_wrong_bound() -> None:
+    range_claim = hypothesis(
+        dims={"cart.size": "8-12"},
+        negation=Evidence(query_id="Q2", summary="P99 flat under cart.size < 9"),
+    )
+    log = [
+        query_call("Q1", breakdowns=["cart.size"]),
+        query_call("Q2", filters=[{"column": "cart.size", "op": "<", "value": 9}]),
+        baseline_call(),
+    ]
+    issues = validate_draft(draft(hypotheses=[range_claim]), log, run_id=RUN_ID)
+    assert [issue.code for issue in issues] == ["partial"]
+    assert "complementary comparison" in issues[0].message
+    assert "8" not in issues[0].message.replace("Q2", "")
+
+
 def test_cart_size_less_than_9_against_gte_8_fails_the_wrong_bound() -> None:
     range_claim = hypothesis(
         dims={"cart.size": ">= 8"},

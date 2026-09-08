@@ -49,6 +49,7 @@ from agent.validate import (
 )
 from gen.emit import RUNS_DIR, load_manifest
 from gen.scenario import GroundTruth, Scenario, load_scenario
+from gen.topology import RANGE_RE, selects
 
 WEIGHTS: dict[str, float] = {
     "dims": 0.35,
@@ -91,9 +92,6 @@ _NO_SYMPTOMS: Mapping[str, str] = MappingProxyType({})
 
 # The only values `_satisfies` compares case-insensitively.
 _BOOLEANS = frozenset({"true", "false"})
-
-# A ground-truth value like ">=8": an operator and a number.
-_RANGE = re.compile(r"^\s*(>=|<=|>|<)\s*(-?\d+(?:\.\d+)?)\s*$")
 
 
 class Components(BaseModel):
@@ -167,6 +165,9 @@ class Process(BaseModel):
     tokens_out: int
     cost_usd: float
     wall_s: float
+    schema_hash: str | None = None
+    """Which `submit_report` schema the run saw, copied from the report; None
+    for a report written before the field existed."""
     honeycomb_process_score: float
     honeycomb_process_passed: bool
     honeycomb: HoneycombProcess
@@ -334,6 +335,7 @@ def grade(
             tokens_out=report.tokens_out,
             cost_usd=report.cost_usd,
             wall_s=report.wall_s,
+            schema_hash=report.schema_hash,
             honeycomb_process_score=honeycomb.score,
             honeycomb_process_passed=honeycomb.passed,
             honeycomb=honeycomb,
@@ -377,8 +379,8 @@ def dims_jaccard(
 
     A truth pair matches when the report names the same key and its value
     satisfies the truth value: equal as a string, or, when the truth is a
-    range like `>=8`, a number inside it or the same range written the same
-    way.
+    range like `>=8`, a value that selects exactly the same rows
+    (`_satisfies`).
 
     `neutral` is the scenario's symptom set, derived from the fault by
     `Scenario.symptom_dims`. A reported pair whose key is in there, whose
@@ -399,12 +401,12 @@ def dims_jaccard(
     if not reported and not truth:
         return 1.0
     matched = sum(
-        1 for key, want in truth.items() if key in reported and _satisfies(reported[key], want)
+        1 for key, want in truth.items() if key in reported and _satisfies(reported[key], want, key)
     )
     ignored = sum(
         1
         for key, value in reported.items()
-        if key not in truth and key in neutral and _satisfies(value, neutral[key])
+        if key not in truth and key in neutral and _satisfies(value, neutral[key], key)
     )
     union = len(truth) + len(reported) - matched - ignored
     return matched / union if union else 0.0
@@ -433,23 +435,39 @@ def _best_dims_jaccard(
     )
 
 
-def _satisfies(value: str, want: str) -> bool:
+def _satisfies(value: str, want: str, column: str | None = None) -> bool:
     """Whether a reported value meets a truth or symptom value.
 
     Equality is exact, except for the two booleans: Honeycomb renders the
     `error` column as `true` and a report may write it back as `True`, and
     that is the same claim. Nothing else is casefolded, and no numbers are
     normalised, so `500.0` is not `500`.
+
+    When `want` is a range like `>=8` and `column` has a fixed domain, both
+    sides are read with `gen.topology.selects`, and the value matches when
+    it selects exactly the rows the truth does and those rows exist. So on
+    `cart.size`, whose values are 1 to 12, `8-12`, `8 to 12`, `8, 9, 10,
+    11, 12`, `8, 9, 10, 11, or 12`, `in [8, 9, 10, 11, 12]`, `8+`, and `>7`
+    all satisfy `>=8`. The population is the same rows, so the claim is
+    the same claim. A subset (`8, 9`, or the single value `9`) claims a
+    narrower population, a superset (`>=7`) a wider one, and neither
+    matches. With no column, or a column with no fixed domain, a range
+    matches only with the same operator and bound, a single number matches
+    when it is inside the range, and a set never matches.
     """
     if value.strip() == want.strip():
         return True
     if want.strip().lower() in _BOOLEANS and value.strip().lower() == want.strip().lower():
         return True
-    rng = _RANGE.match(want)
+    rng = RANGE_RE.match(want)
     if rng is None:
         return False
+    if column is not None:
+        truth_rows = selects(column, want)
+        if truth_rows is not None:
+            return bool(truth_rows) and selects(column, value) == truth_rows
     op, bound = rng.group(1), float(rng.group(2))
-    as_range = _RANGE.match(value)
+    as_range = RANGE_RE.match(value)
     if as_range is not None:
         return as_range.group(1) == op and float(as_range.group(2)) == bound
     try:

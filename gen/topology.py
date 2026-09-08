@@ -291,6 +291,87 @@ def cart_size_weights() -> dict[str, float]:
     return {str(size): 0.75 ** (size - 1) for size in range(1, 13)}
 
 
+def value_domain(column: str) -> frozenset[str] | None:
+    """Every value a numeric-range column takes on the wire, as strings.
+
+    Only the columns in `NUMERIC_RANGE_DIMS` have one, `cart.size` today,
+    because those are the only columns a ground truth can write a range on.
+    Every other column returns None: `customer.id` is two thousand ids, a
+    hash is a hash, a duration is a draw, and the categorical dims are
+    overridden per scenario, so a fixed set would be wrong for some of them
+    and no range truth can name one anyway. `selects` reads this to turn a
+    reported value into the rows it picks out.
+    """
+    if column == "cart.size":
+        return frozenset(cart_size_weights())
+    return None
+
+
+# A reported value that spells out a set of integers instead of a range: a
+# hyphen, "to", or ".." between two integers (`8-12`, `8 to 12`, `8..12`).
+_INT_SPAN = re.compile(r"^(-?\d+)\s*(?:-|to|\.\.)\s*(-?\d+)$")
+# Or a list: commas, with "and" or "or" allowed before the last value.
+_LIST_SEP = re.compile(r"\s*,\s*(?:(?:and|or)\s+)?|\s+(?:and|or)\s+")
+_INT = re.compile(r"^-?\d+$")
+# `8+` is `>=8`.
+_PLUS = re.compile(r"^(-?\d+)\s*\+$")
+# The brackets a list may sit in, with an optional leading `in`.
+_BRACKETS = re.compile(r"^(?:in\s*)?[\[\{\(](.*)[\]\}\)]$")
+
+
+def selects(column: str, value: str) -> frozenset[int] | None:
+    """The rows `column: value` picks out, as the integer values it names.
+
+    This is the one definition of "which rows a value selects" that the
+    grader and the validator share, so a claim and its negation are read
+    the same way a truth and a claim are. None when the column has no
+    fixed domain (`value_domain`), or when `value` is none of the spellings
+    below. Otherwise:
+
+    A range, `>=8` or `> 7` (`RANGE_RE`), or `8+`, is the domain values
+    inside it. A single integer is that one value. A set spelling is the
+    values it names: two integers joined by a hyphen, `to`, or `..`
+    (inclusive, low first), or a comma-separated list with an optional
+    `and` or `or` before the last, either of those inside `[]`, `{}`, or
+    `()` with an optional leading `in`. A trailing `.` or `,` is dropped.
+    A set is not cut down to the domain: `8-13` names 13, which is not a
+    cart size, and a claim that names it is not the claim `>=8` makes. A
+    list with a token that is not an integer is not a set. En dashes and
+    prose forms are not read.
+    """
+    domain = value_domain(column)
+    if domain is None:
+        return None
+    members = frozenset(int(member) for member in domain)
+    text = value.strip().rstrip(".,").strip()
+    rng = RANGE_RE.match(text)
+    if rng is not None:
+        op, bound = rng.group(1), float(rng.group(2))
+        return frozenset(member for member in members if _compare(member, op, bound))
+    plus = _PLUS.match(text)
+    if plus is not None:
+        return frozenset(member for member in members if member >= int(plus.group(1)))
+    if _INT.match(text):
+        return frozenset({int(text)})
+    named = _set_values(text)
+    return None if named is None else frozenset(named)
+
+
+def _set_values(text: str) -> set[int] | None:
+    """The integers a set spelling names, or None when `text` is not one."""
+    bracketed = _BRACKETS.match(text)
+    if bracketed is not None:
+        text = bracketed.group(1).strip()
+    span = _INT_SPAN.match(text)
+    if span is not None:
+        low, high = int(span.group(1)), int(span.group(2))
+        return set(range(low, high + 1)) if low <= high else None
+    tokens = [token for token in _LIST_SEP.split(text) if token]
+    if len(tokens) < 2 or not all(_INT.match(token) for token in tokens):
+        return None
+    return {int(token) for token in tokens}
+
+
 @dataclass
 class SpanRecord:
     """One generated span: name, service, position inside the trace, attributes."""
