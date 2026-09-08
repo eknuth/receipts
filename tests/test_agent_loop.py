@@ -221,23 +221,9 @@ def test_the_prompt_has_no_em_dashes() -> None:
     assert "—" not in render_prompt(RUN, AgentConfig())
 
 
-def test_the_prompt_names_no_scenario_and_no_ground_truth() -> None:
-    """The method is general. Naming a dimension here would be tuning to the data."""
-    prompt = render_prompt(RUN, AgentConfig()).lower()
-    for word in (
-        "payments",
-        "stripe",
-        "adyen",
-        "paypal",
-        "us-west",
-        "eu-west",
-        "2.5.1",
-        "2.6.0",
-        "checkout",
-        "inventory",
-        "scenario.id",
-    ):
-        assert word not in prompt, word
+# The check that the prompt names no service, provider, or ground-truth value
+# lives in tests/test_answer_leak.py, which applies one list to every surface
+# the model reads.
 
 
 def test_the_prompt_makes_the_split_in_time_a_precondition() -> None:

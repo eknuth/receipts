@@ -1511,7 +1511,7 @@ def test_the_rejection_message_names_the_complement_as_an_accepted_form() -> Non
         baseline_call(),
     ]
     issues = validate_draft(draft(hypotheses=[range_claim]), log, run_id=RUN_ID)
-    assert "complementary comparison (< 8) at the same bound" in issues[0].message
+    assert "complementary comparison (< 50) at the same bound" in issues[0].message
 
 
 # --------------------------------------------------------------------------

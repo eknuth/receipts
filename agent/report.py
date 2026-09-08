@@ -206,7 +206,7 @@ class PartialCheck(BaseModel):
     `not_checked` and `rejected_candidates` do not have a slot for this. A
     column you broke down on was queried, so an entry naming it on
     `not_checked` is false and the validator rejects it; but "I broke down on
-    `cart.size` and did not look at individual values below 8" is a true
+    `http.route` and never compared one route against another" is a true
     statement, and it sits outside `rejected_candidates` too, since nothing
     was measured and ruled out. This is that slot: the column, what was run
     on it, and what was not.
@@ -224,12 +224,12 @@ class PartialCheck(BaseModel):
     subject: str = Field(
         description=(
             "A column as it appears in the breakdowns, filters, or calculations of a query "
-            "you ran, for example cart.size, deployment.version, or duration_ms: something a "
+            "you ran, for example http.route, db.statement.hash, or duration_ms: something a "
             "query broke down, filtered, or calculated over. A value the column took, such as "
-            "us-west-2, names the column here instead of being the subject itself. It has to "
-            "be something the run queried; a subject you never queried belongs in not_checked "
-            "instead. A time window is not a subject here either: a window you did not query "
-            "goes in not_checked."
+            "/api/v2/search, names the column here instead of being the subject itself. "
+            "It has to be something the run queried; a subject you never queried belongs in "
+            "not_checked instead. A time window is not a subject here either: a window you "
+            "did not query goes in not_checked."
         )
     )
     queried_as: str = Field(description="The measurement that was run on it, one sentence.")
@@ -330,7 +330,7 @@ class ReportDraft(BaseModel):
         a wrong top-level key: `{"permalink": {"incident_present": true,
         "hypotheses": [...], ...}}`. `ReportDraft` rejected the outer dict
         as missing `incident_present` and carrying an unknown `permalink`
-        field, and an investigation that had found the cause (adyen) filed
+        field, and an investigation that had found the cause filed
         nothing.
 
         Unwrapped only when `value` is a dict with exactly one key, whose

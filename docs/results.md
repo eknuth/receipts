@@ -125,6 +125,37 @@ models on the same key answered: a per-model quota, not the 40 requests per minu
 `nvidia/nemotron-3-super-120b-a12b` is the default. The developer tier is rate limited, not
 metered, so its cost column reads $0.
 
+## An answer in the tool schema, 2026-09-07
+
+The `submit_report` tool schema is generated from `ReportDraft`, and pydantic copies class
+docstrings and field descriptions into it. From ce34615 (EDW-1365, 2026-09-05 16:04) the
+`PartialCheck` docstring carried "I broke down on `cart.size` and did not look at individual
+values below 8" as its worked example, and the `subject` description named `cart.size`,
+`deployment.version`, and `us-west-2` as examples. `cart.size >= 8` is the ground truth of
+`trigger-checkout-latency`, and the other two are root-cause dimensions elsewhere. No test read
+the schema, so nothing caught it until 2026-09-07. The `full` column in `evals/report.md` ran on
+2026-09-06 under that schema, and so did `r17-pass`, `r18-pass`, and `full-nvidia`.
+
+The recorded cells say how far it reached. Eight reports across those columns carry `cart.size`
+as a `partially_checked` subject, six of them in scenarios where cart size is not the answer
+(`deploy-regression-v260` twice, `herring-region-vs-version` twice, `payments-stripe-v251-uswest`,
+`control-quiet`). That is the example being copied, since nothing in those runs' data points at
+that column. On the trigger scenario itself the example had nothing to give. Every Sonnet `full`
+cell on `trigger-checkout-latency` scored dims 1.0 from matrix2 (2026-09-05 00:55) on, fifteen
+cells across five columns, and the earliest of those predates the commit by fifteen hours. The
+matrix2 ablation columns hold one 0.0 and one 0.5 on the same scenario, also before the leak.
+
+The sentence itself came from the model. `r16-pass2/full/trigger-checkout-latency/3`, written at
+or before 15:49 on 2026-09-05 and with no `partially_checked` field in it at all, lists
+"individual cart.size values below 8 to see if there's a threshold between 7 and 8" under
+`not_checked`, where the validator rejected it for naming a column the run had queried. The
+docstring quoted that rejected entry back as the example of what the new field was for. So the
+example did not manufacture the trigger result, and it did put one column name in front of every
+run that had no reason to mention it. The schema now uses `http.route` and an invented
+`/api/v2/search`, `tests/test_answer_leak.py` checks every ground-truth value and fault column
+against the prompt, the schema, the tool description, and the validator's messages, and the
+columns are being rerun on the fixed schema.
+
 ## Reproducing
 
 ```
