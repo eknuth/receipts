@@ -24,11 +24,10 @@ detail; `list_boards` returns a `# Boards` heading, a Markdown table (`ID`,
 `Name`, `Description`, `Private`, `QueryCount`, `SLOCount`, `TextCount`,
 `UpdatedAt`, `Tags`) when there is at least one board, or just the heading
 and a `Metadata:` block when there are none, plus its own `Metadata:` block
-naming `page`, `total_pages`, and `total_items`. An earlier version of this
-module read both as JSON via a private `_payload`/`_field` pair copied from
-`agent/handoff.py`; against real Markdown that always returned `{}`, so
-`_find_existing` never found anything and every run created a fresh,
-duplicate board. This version parses the same way `agent/format.py` already
+naming `page`, `total_pages`, and `total_items`. Read as JSON, the way
+`agent/handoff.py` reads the Canvas tools, both come back as `{}`, so
+`_find_existing` would never find anything and every run would create a
+duplicate board. This module parses the same way `agent/format.py` already
 does for every read tool: `parse_metadata_block` for the `Metadata:` block,
 `parse_results_table` for the table, reused rather than re-implemented.
 
@@ -40,9 +39,9 @@ and a `name` alone succeeds. Verified live 2026-09-07 by varying one field
 at a time against fresh `query_run_pk`s. So every query panel `_panels`
 builds carries a `name`, in addition to the `description` it already set;
 `Evidence.query_id` still drops straight into a panel's `id` with no
-translation, as R12 originally specified.
+translation.
 
-R23 (EDW-1370) gives `ensure_board` an optional `trace`: `list_boards` and
+`ensure_board` takes an optional `trace`: `list_boards` and
 `create_board` both go through `agent.telemetry.traced_call`, so they show
 up as `execute_tool` spans under the handoff's trace instead of leaving no
 telemetry at all, arguments and results untouched (see `Telemetry.start_handoff`
@@ -72,9 +71,9 @@ MAX_EVIDENCE_PANELS = 3
 # content; the board name this module builds is always well under 255.
 MAX_PANEL_DESCRIPTION = 1023
 # A panel name is a heading on the board, not the finding itself. The server
-# accepts a long one, but a live board built on 2026-09-07 titled every panel
-# with a whole paragraph of evidence and was unreadable, so the name is cut to
-# a short label here and the full summary stays in `description`.
+# accepts a long one, but a board whose panels are each titled with a whole
+# paragraph of evidence is unreadable, so the name is cut to a short label
+# here and the full summary stays in `description`.
 MAX_PANEL_NAME = 70
 MAX_TEXT_PANEL_CONTENT = 10000
 
@@ -242,8 +241,8 @@ async def _find_existing(
     there are, and if that is greater than zero while not one row anywhere
     in the pages read could actually be checked against `name`, this
     function has no way to tell whether the board being looked for is one
-    of them. Reading that as "not found", as an earlier version did, is
-    indistinguishable from a real miss and lets `ensure_board` fall through
+    of them. Reading that as "not found" is indistinguishable from a real
+    miss and lets `ensure_board` fall through
     to `create_board`, minting a duplicate; it is read as a `_LookupFailed`
     instead, the same as a `list_boards` error.
     """
@@ -301,7 +300,7 @@ async def ensure_board(
     `create_board`: it is recorded as an error, not treated as "no board
     found yet" (see `_LookupFailed`).
 
-    `trace` (R23, EDW-1370) is the handoff's `RunTrace`, from
+    `trace` is the handoff's `RunTrace`, from
     `Telemetry.start_handoff`; both `list_boards` and `create_board` go
     through `traced_call`, which wraps them in `RunTrace.tool_span`, the
     same as `agent/handoff.py`'s calls to Canvas. A disabled one when the

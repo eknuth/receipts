@@ -24,16 +24,15 @@ A `grade.json` the current schema cannot read is listed at the end of the
 report by path instead of stopping the render, since repeats append across
 schema changes and an old file next to a new one is the expected shape.
 
-R12 (EDW-1334) adds one more section, read from `handoff.json` rather than
-`grade.json`: a `--handoff` run hands its report to Canvas after grading and
+One more section, for the R12 handoff, is read from `handoff.json` rather
+than `grade.json`: a `--handoff` run hands its report to Canvas after grading and
 records the reply next to the grade, and this renders the agree, disagree,
 extend, and no-response counts per scenario and config, plus a link to the
 board. `render` takes the handoffs as a plain sequence, the same as it takes
 `runs`, so the section is exercised without touching disk; `write_report` is
-the only thing that reads `evals/results/` for it. No cell in the results
-directory has ever carried a `handoff.json` before this, so an empty list
-here (the normal case for every column so far) renders no section at all,
-and every existing table is untouched by its presence.
+the only thing that reads `evals/results/` for it. An empty list here (every
+column without a `--handoff` run) renders no section at all, and every other
+table is untouched by its presence.
 """
 
 from __future__ import annotations
@@ -380,9 +379,9 @@ def _handoff_section(handoffs: Sequence[HandoffEntry]) -> list[str]:
     them. The trigger scenario breaks that assumption: it is emitted once
     per cell (see `.claude/skills/pass-run/SKILL.md`), so its configs carry
     different run ids and therefore different boards. Keying the url by
-    `scenario_id` alone, as an earlier version did, rendered the first
-    config's board link on every other config's row too, which is wrong
-    whenever the row's own handoff points at a different board.
+    `scenario_id` alone would render the first config's board link on every
+    other config's row too, which is wrong whenever the row's own handoff
+    points at a different board.
 
     The url is instead keyed by `board_id`, collected across every handoff
     regardless of scenario or config, and each row looks up its link by the
@@ -551,7 +550,7 @@ def _ablation_section(
     `configs` is already sorted `full` first (`config_order`). The section
     is rendered only when `full` is among the configs and at least one other
     config is too; an empty results directory and a single-config directory
-    both render as they did before this section existed. Each config's means
+    both render without it. Each config's means
     and deltas are taken over the scenarios it shares with `full`, so a
     scenario present in one config only cannot move a delta; the paragraph
     names any such scenario, and any scenario whose cells carry more than one

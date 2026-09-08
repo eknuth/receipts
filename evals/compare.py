@@ -9,9 +9,8 @@ is over the cells present in both columns, which is the number to read when
 the columns differ in size: a headline mean over an unequal set moves for
 reasons that have nothing to do with the change under test.
 
-Ported from the session scratchpad script that was rewritten by hand for
-every before-and-after pass since EDW-1364. Every number is read from a
-`grade.json` or `report.json`, nothing is typed in.
+Every number is read from a `grade.json` or `report.json`, nothing is typed
+in.
 """
 
 from __future__ import annotations
@@ -123,8 +122,8 @@ def validation_classes(
 
     `validation_messages` only ever holds a run's *last* rejection, the one
     that was kept and flagged; `rejections` holds every attempt, fixed or
-    not (`None` on a run recorded before EDW-1369, skipped rather than
-    counted as zero).
+    not (`None` on an older run that did not record them, skipped rather
+    than counted as zero).
     """
     counts: dict[str, int] = defaultdict(int)
     for cell in cells.values():

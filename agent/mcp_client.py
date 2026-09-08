@@ -103,14 +103,14 @@ READ_TOOLS: frozenset[str] = frozenset(
 
 # Write tools, R12 (boards and Canvas). Need the `mcp:write` key scope on
 # the server side and `allow_write=True` here. This is deliberately exactly
-# the two tools R12 uses to write, not everything the key can now reach: the
-# management key was widened to `mcp:write` on 2026-09-07 and the hosted
-# server started serving `update_board`, `create_trigger`, `create_slo`,
-# `create_recipient`, and `create_marker` alongside it. None of those five
-# are here, and none are in READ_TOOLS either, so `_allowed` refuses every
-# one of them regardless of `allow_write`: R12's scope is a board and a
-# Canvas message, not triggers, SLOs, recipients, or markers, and a wider
-# key must not silently widen what this client will call. `list_boards` and
+# the two tools R12 uses to write, not everything the key can reach: with
+# `mcp:write` on the management key the hosted server also serves
+# `update_board`, `create_trigger`, `create_slo`, `create_recipient`, and
+# `create_marker`. None of those five are here, and none are in READ_TOOLS
+# either, so `_allowed` refuses every one of them regardless of
+# `allow_write`: R12's scope is a board and a Canvas message, not triggers,
+# SLOs, recipients, or markers, and a wider key must not silently widen
+# what this client will call. `list_boards` and
 # `canvas_agent_poll_response` are reads and live in READ_TOOLS instead.
 WRITE_TOOLS: frozenset[str] = frozenset(
     {
@@ -141,21 +141,20 @@ DATASET_SCOPED_TOOLS: frozenset[str] = frozenset(
 
 # `run_bubbleup` takes no `dataset_slug` at all: its inputs are `query_pk`,
 # `selection`, `bubbleup_result_id`, `clause_name`, `items_per_page`,
-# `max_columns`, `page`, and `team`, confirmed against the hosted schema.
-# Before 2026-09-04 it was listed in DATASET_SCOPED_TOOLS above; since the
-# server never sends a `dataset_slug` for it, the model never did either,
-# and the guard refused every real `run_bubbleup` call since the guard
-# landed on 2026-09-03, 32 of 32 in the stored runs. It is scoped by
-# provenance instead: a `run_bubbleup` call is allowed only when the id the
-# server will actually key its lookup on names something this session
-# itself received from a `run_query` or `run_bubbleup` call that passed the
-# dataset guard above. The live schema gives `bubbleup_result_id` priority
-# over `query_pk` when both are present (paging into an existing analysis
-# ignores which query built it), so the check does too: `bubbleup_result_id`
-# must be in that set when it is given at all, and only otherwise does
-# `query_pk` have to be. `HoneycombMCP` tracks the set in `_produced_ids`. A
-# stray `dataset_slug` the model adds anyway is stripped before the call
-# goes out, since the server does not define that parameter.
+# `max_columns`, `page`, and `team`, confirmed against the hosted schema on
+# 2026-09-04. Listing it in DATASET_SCOPED_TOOLS would refuse every real
+# call, since the server never sends a `dataset_slug` for it and so the
+# model never does either. It is scoped by provenance instead: a
+# `run_bubbleup` call is allowed only when the id the server will actually
+# key its lookup on names something this session itself received from a
+# `run_query` or `run_bubbleup` call that passed the dataset guard above.
+# The live schema gives `bubbleup_result_id` priority over `query_pk` when
+# both are present (paging into an existing analysis ignores which query
+# built it), so the check does too: `bubbleup_result_id` must be in that set
+# when it is given at all, and only otherwise does `query_pk` have to be.
+# `HoneycombMCP` tracks the set in `_produced_ids`. A stray `dataset_slug`
+# the model adds anyway is stripped before the call goes out, since the
+# server does not define that parameter.
 
 DEFAULT_RATE = 40
 DEFAULT_PERIOD_S = 60.0
@@ -695,10 +694,10 @@ class HoneycombMCP:
         Two facts the server's own message leaves out: what JSON type each
         group column wants, and whether the query it pages into broke down
         on that column at all. Both have to hold for a group selection to
-        work; a live check on 2026-09-04 found every stored call with a
-        correctly-typed value against a query with no breakdowns still
-        failed the same way, and every one against a query that broke down
-        on the group column succeeded.
+        work (checked against the hosted server on 2026-09-04): a correctly
+        typed value against a query with no breakdowns fails with the same
+        message, and the same value against a query that broke down on the
+        group column succeeds.
 
         Reads the args as they went on the wire, after `_coerce_bubbleup_group`,
         so a value the client already retyped is not sent back to the model
