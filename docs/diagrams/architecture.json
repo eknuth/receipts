@@ -1,0 +1,131 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Receipts Architecture",
+    "output": "docs/diagrams/architecture.html",
+    "quality_profile": "showcase"
+  },
+  "components": [
+    {
+      "id": "emit",
+      "type": "backend",
+      "label": "gen/emit.py",
+      "sublabel": "baseline + fault traffic",
+      "pos": [300, 40],
+      "size": [160, 60]
+    },
+    {
+      "id": "loop",
+      "type": "backend",
+      "label": "agent/loop.py",
+      "sublabel": "investigation loop",
+      "pos": [300, 200],
+      "size": [160, 60]
+    },
+    {
+      "id": "telemetry",
+      "type": "backend",
+      "label": "agent/telemetry.py",
+      "sublabel": "self-telemetry",
+      "pos": [500, 280],
+      "size": [160, 60]
+    },
+    {
+      "id": "report_py",
+      "type": "backend",
+      "label": "agent/report.py",
+      "sublabel": "Report schema",
+      "pos": [300, 400],
+      "size": [160, 60]
+    },
+    {
+      "id": "grader_py",
+      "type": "backend",
+      "label": "evals/grader.py",
+      "sublabel": "outcome scoring",
+      "pos": [500, 400],
+      "size": [160, 60]
+    },
+    {
+      "id": "report_md",
+      "type": "external",
+      "label": "evals/report.md",
+      "sublabel": "generated, not hand-typed",
+      "pos": [700, 400],
+      "size": [160, 60]
+    },
+    {
+      "id": "mcp_server",
+      "type": "cloud",
+      "label": "Hosted MCP",
+      "sublabel": "mcp.honeycomb.io",
+      "pos": [940, 200],
+      "size": [170, 60]
+    },
+    {
+      "id": "dataset_shop",
+      "type": "database",
+      "label": "receipts-shop",
+      "sublabel": "dataset, receipts-demo",
+      "pos": [940, 40],
+      "size": [170, 60]
+    },
+    {
+      "id": "dataset_investigator",
+      "type": "database",
+      "label": "receipts-investigator",
+      "sublabel": "dataset, receipts-demo",
+      "pos": [940, 320],
+      "size": [180, 60]
+    },
+    {
+      "id": "agent_timeline",
+      "type": "frontend",
+      "label": "Agent Timeline",
+      "sublabel": "Honeycomb UI",
+      "pos": [940, 460],
+      "size": [180, 60]
+    },
+    {
+      "id": "providers",
+      "type": "external",
+      "label": "Model Providers",
+      "sublabel": "Anthropic, NVIDIA NIM, or Ollama",
+      "pos": [40, 200],
+      "size": [190, 60]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "local machine",
+      "wraps": ["emit", "loop", "telemetry", "report_py", "grader_py", "report_md"],
+      "pad": 24
+    },
+    {
+      "kind": "region",
+      "label": "Honeycomb (receipts-demo)",
+      "wraps": ["mcp_server", "dataset_shop", "dataset_investigator", "agent_timeline"],
+      "pad": 24
+    },
+    {
+      "kind": "region",
+      "label": "model provider",
+      "wraps": ["providers"],
+      "pad": 24
+    }
+  ],
+  "connections": [
+    { "from": "emit", "to": "dataset_shop", "label": "OTLP/HTTP", "variant": "emphasis" },
+    { "from": "loop", "to": "mcp_server", "label": "streamable HTTP, Bearer key, read tools", "variant": "emphasis" },
+    { "from": "mcp_server", "to": "dataset_shop", "label": "queries", "variant": "dashed" },
+    { "from": "loop", "to": "providers", "label": "messages + tool use", "variant": "emphasis", "labelDy": -24 },
+    { "from": "loop", "to": "telemetry", "label": "gen_ai.* spans", "labelDy": 10 },
+    { "from": "telemetry", "to": "dataset_investigator", "label": "OTLP/HTTP" },
+    { "from": "dataset_investigator", "to": "agent_timeline", "label": "grouped by gen_ai.conversation.id", "variant": "dashed", "labelDy": 24 },
+    { "from": "loop", "to": "report_py", "label": "submit_report", "labelDy": 24 },
+    { "from": "report_py", "to": "grader_py", "label": "graded against ground truth", "labelDy": -24 },
+    { "from": "grader_py", "to": "report_md", "label": "renders" }
+  ]
+}

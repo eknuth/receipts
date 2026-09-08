@@ -1,0 +1,70 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "The Eval Matrix",
+    "quality_profile": "showcase",
+    "output": "docs/diagrams/eval-run.html"
+  },
+  "lanes": [
+    { "id": "harness", "label": "Eval Harness" },
+    { "id": "investigation", "label": "Investigation" },
+    { "id": "outcome", "label": "Graded" },
+    { "id": "exception", "label": "Filed Nothing", "variant": "exception" }
+  ],
+  "mainPath": ["matrix", "emit", "loop", "stop", "filed", "grade", "report_render"],
+  "nodes": [
+    { "id": "matrix", "lane": "harness", "col": 0, "type": "backend", "label": "Eval matrix", "sublabel": "N scenarios x M configs x K repeats", "width": 180 },
+    { "id": "emit", "lane": "harness", "col": 1, "type": "cloud", "label": "gen/emit.py", "sublabel": "one per scenario, reused across cells", "width": 190 },
+    { "id": "loop", "lane": "investigation", "col": 2, "type": "backend", "label": "agent/loop.py", "sublabel": "orient to verify by negation", "width": 190 },
+    { "id": "stop", "lane": "investigation", "col": 3, "type": "messagebus", "label": "Loop ends", "sublabel": "stop_reason", "width": 130 },
+    { "id": "error", "lane": "exception", "col": 4, "type": "security", "label": "error", "sublabel": "raised, or stop_reason == error", "width": 190 },
+    { "id": "filed", "lane": "outcome", "col": 4, "type": "backend", "label": "report", "sublabel": "submit_report matched the schema", "width": 190 },
+    { "id": "empty", "lane": "exception", "col": 5, "type": "security", "label": "schema, call_cap, wall_cap, model_stopped", "sublabel": "no submit_report was ever accepted", "width": 280, "yOffset": 78 },
+    { "id": "skip_grade", "lane": "exception", "col": 5, "type": "database", "label": "total = 0", "sublabel": "error text recorded, grader skipped", "width": 190 },
+    { "id": "grade", "lane": "outcome", "col": 5, "type": "backend", "label": "evals/grader.py", "sublabel": "filed and empty reports both graded", "width": 190 },
+    { "id": "report_render", "lane": "harness", "col": 5, "type": "backend", "label": "evals/report.py", "sublabel": "renders report.md from every grade.json", "width": 200 }
+  ],
+  "edges": [
+    { "id": "matrix-emit", "from": "matrix", "to": "emit", "role": "main" },
+    { "id": "emit-loop", "from": "emit", "to": "loop", "label": "run id scopes every query", "role": "main" },
+    { "id": "loop-stop", "from": "loop", "to": "stop", "label": "budget, model, or a filed report", "role": "main" },
+    { "id": "stop-error", "from": "stop", "to": "error", "label": "error", "role": "error" },
+    { "id": "stop-filed", "from": "stop", "to": "filed", "label": "report", "role": "main" },
+    { "id": "stop-empty", "from": "stop", "to": "empty", "label": "schema / call_cap / wall_cap / model_stopped", "role": "branch" },
+    { "id": "error-skip", "from": "error", "to": "skip_grade", "role": "error" },
+    { "id": "filed-grade", "from": "filed", "to": "grade", "role": "main" },
+    { "id": "empty-grade", "from": "empty", "to": "grade", "label": "graded as no answer, incident or control alike", "role": "branch" },
+    { "id": "grade-render", "from": "grade", "to": "report_render", "role": "main" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "One emit, every cell",
+      "items": [
+        "--emit makes a fresh run; otherwise the newest run id per scenario in evals/results/runs.json is reused",
+        "every config and repeat for a scenario investigates the same data",
+        "each cell writes evals/results/<config>/<scenario>/<n>/report.json and grade.json"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Six stop reasons",
+      "items": [
+        "error: raised out of investigate, or the loop itself ended with stop_reason error. Skips the grader, but the total = 0 row still lands in report.md's stopped-by column",
+        "report: submit_report matched the schema, inside budget or the grace turns after a cap",
+        "schema: the last submit_report never matched the report schema",
+        "call_cap or wall_cap or model_stopped: the budget ran out, or the model stopped, before any submit_report landed"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "A default is not a claim",
+      "items": [
+        "an empty report is graded, not skipped, so its findings fields sit at their defaults",
+        "since 2026-09-06 that scores near zero on an incident scenario and on a control alike",
+        "before that date it scored as restraint on a control, which is what changed"
+      ]
+    }
+  ]
+}
