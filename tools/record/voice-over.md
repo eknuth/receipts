@@ -35,7 +35,7 @@ with the finding excluded. Then the list of what was in scope and never checked.
 validator drops any hypothesis that lacks a query id or a negation that ran. If the
 not-checked list names anything the tool log shows was queried, the report fails.
 
-**2:10 Agent Timeline, 8 s (22 words).** The same run in Agent Timeline, and a second lane beside it: the investigator handing its report to Canvas, Honeycomb's own agent.
+**2:10 Agent Timeline, 8 s (20 words).** The same run in Agent Timeline, with a second lane: the investigator handing its report to Canvas, Honeycomb's own agent.
 
 **2:18 a graded run, 8 s (20 words).** The harness writes the grade onto the run's own
 root span, so a run and its score are one thing.
