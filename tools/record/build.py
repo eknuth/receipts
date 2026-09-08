@@ -25,9 +25,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+DARK_MEDIA_QUERY = "@media (prefers-color-scheme: dark)"
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
@@ -39,13 +43,19 @@ BACKGROUND = "0x1e1e2e"
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 FINAL = OUT / "receipts-demo-2026-09.mp4"
 
+ARCHITECTURE_SVG = ROOT / "docs" / "diagrams" / "architecture.svg"
+ARCHITECTURE_CAPTION = "How it fits together: generator, hosted MCP, agent, grader"
+
 # The agent clip keeps its head and tail at real speed and compresses the quiet
 # middle, where the loop runs and the terminal shows nothing, to this length.
 AGENT_HEAD_S, AGENT_TAIL_S, AGENT_MIDDLE_S = 12.0, 26.0, 20.0
 
 STILLS = {
     "02-heatmap.png": (12, "duration_ms heatmap scoped to the run id: the step at minute ten"),
-    "04-timeline.png": (8, "Agent Timeline: the agent's own loop, GenAI semantic conventions"),
+    "04-timeline.png": (
+        8,
+        "Agent Timeline: the investigator hands its report to Canvas, two agents, one conversation",
+    ),
     "05-timeline-score.png": (8, "A graded run: gen_ai.evaluation.result on the root span"),
 }
 CAPTIONS = {
@@ -128,6 +138,96 @@ def card_png(lines: list[tuple[str, str]], out: Path) -> None:
 
 def caption_png(text: str, out: Path) -> None:
     render_png(f"<div class='caption'>{text}</div>", out, transparent=True)
+
+
+DARK_BG = "--bg: #020617"
+
+# The two var blocks tools/export_diagram.mjs's own `lightFirstSvg()` leaves
+# in a committed diagram SVG: a light-vars base rule, and the dark vars
+# under `@media (prefers-color-scheme: dark)`. Same shape, same regexes,
+# mirror-imaged: that script promotes a captured dark-first SVG to
+# light-first for GitHub's page; this promotes a committed light-first SVG
+# back to dark-first for this recording's own always-dark frame.
+BASE_ROOT_RE = re.compile(r":root, svg \{ ([^}]*) \}")
+DARK_MEDIA_RE = re.compile(r"@media \(prefers-color-scheme: dark\) \{ :root, svg \{ ([^}]*) \} \}")
+
+
+def _dark_svg(svg_path: Path, out_svg: Path) -> None:
+    """A copy of `svg_path` promoted to dark-first, for this always-dark recording.
+
+    The committed diagram SVGs are light-first (tools/export_diagram.mjs:
+    base `:root, svg { ... }` carries the light vars, a
+    `@media (prefers-color-scheme: dark) { ... }` block carries the dark
+    ones), so they match GitHub's light page by default. Headless Chrome
+    renders a standalone SVG document at its own default (light) preference
+    too, with no flag to force otherwise, so loading that SVG as-is here
+    would show up as a pale card in this recording's otherwise all-dark
+    video. This pulls the dark vars out of the media block and writes them
+    into the base rule instead, dropping the now-redundant media block, so
+    the copy is dark unconditionally. It only affects this scratch copy,
+    not the delivered diagram.
+
+    A silently wrong "dark" copy that was actually still light would be
+    worse than a loud failure, so both invariants are checked before the
+    copy is written: the dark `--bg` really is in the base rule, and no
+    `prefers-color-scheme` media query is left to override it.
+    """
+    text = svg_path.read_text()
+    dark_match = DARK_MEDIA_RE.search(text)
+    if dark_match is None:
+        raise RuntimeError(
+            f"{svg_path}: no '{DARK_MEDIA_QUERY}' block found to promote to the "
+            "base rule; the SVG may not be the light-first shape "
+            "tools/export_diagram.mjs's lightFirstSvg() produces"
+        )
+    base_match = BASE_ROOT_RE.search(text)
+    if base_match is None:
+        raise RuntimeError(f"{svg_path}: no base ':root, svg {{ ... }}' rule found")
+    dark_vars = dark_match.group(1)
+    result = text[: base_match.start()] + f":root, svg {{ {dark_vars} }}" + text[base_match.end() :]
+    result = DARK_MEDIA_RE.sub("", result, count=1)
+    if DARK_BG not in result:
+        raise RuntimeError(
+            f"{svg_path}: the dark '{DARK_BG}' rule is missing from the base "
+            "after promotion; the captured dark vars may not be what was expected"
+        )
+    if "prefers-color-scheme" in result:
+        raise RuntimeError(
+            f"{svg_path}: a 'prefers-color-scheme' media query survived promotion; "
+            "the copy could still be repainted light in a headless browser"
+        )
+    out_svg.write_text(result)
+
+
+def architecture_png(out: Path) -> None:
+    """The architecture diagram, rasterized fresh from its SVG at frame width.
+
+    docs/diagrams/architecture.png is 1184px wide, narrower than this frame;
+    upscaling that raster would blur it. The SVG has no such ceiling, so this
+    renders it directly with headless Chrome, the same way every card and
+    caption in this module is rendered. The `<img>` is given an explicit
+    `width:{WIDTH}px` so the SVG rasterizes at the frame's own width and
+    fills it, height following automatically from the SVG's aspect ratio;
+    nothing here is upscaled, since the source is a vector redrawn at this
+    size, not a bitmap stretched to it. `still()`'s own scaling afterward
+    then only has to make room for the caption band, not shrink a
+    small image centered in a mostly empty frame. The committed SVG is
+    light-first (it matches GitHub's page by default; see
+    tools/export_diagram.mjs), so `_dark_svg` promotes its dark
+    `prefers-color-scheme` variant to the base before this renders it,
+    matching BACKGROUND and the rest of the recording instead of showing up
+    as a pale card in an all-dark video.
+    """
+    dark_svg = out.with_suffix(".dark.svg")
+    _dark_svg(ARCHITECTURE_SVG, dark_svg)
+    render_png(
+        "<div style='width:100%;height:100%;display:flex;align-items:center;"
+        "justify-content:center'>"
+        f"<img src='file://{dark_svg}' style='width:{WIDTH}px'>"
+        "</div>",
+        out,
+        transparent=False,
+    )
 
 
 def normalize_filter(band: bool = False) -> str:
@@ -268,6 +368,12 @@ def assemble() -> None:
     if missing:
         raise SystemExit("missing in tools/record/out/: " + ", ".join(missing))
 
+    # R23's acceptance screenshot is the two-lane conversation; once it is in the
+    # tree it replaces the captured single-lane still without a browser step.
+    handoff_shot = ROOT / "docs" / "r23-agent-timeline-handoff.png"
+    if handoff_shot.exists():
+        shutil.copyfile(handoff_shot, OUT / "04-timeline.png")
+
     seg = OUT / "seg"
     seg.mkdir(exist_ok=True)
     parts: list[Path] = []
@@ -282,6 +388,10 @@ def assemble() -> None:
         seg / "00-title.mp4",
     )
     parts.append(seg / "00-title.mp4")
+
+    architecture_png(seg / "00b-architecture-src.png")
+    still(seg / "00b-architecture-src.png", 10, ARCHITECTURE_CAPTION, seg / "00b-architecture.mp4")
+    parts.append(seg / "00b-architecture.mp4")
 
     clip(OUT / "01-emit.mp4", CAPTIONS["01-emit.mp4"], seg / "01-emit.mp4")
     parts.append(seg / "01-emit.mp4")
