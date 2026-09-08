@@ -47,6 +47,13 @@ NOT_DONE_BULLETS = 5
 ALLOWLIST: dict[str, str] = {
     # `requires-python = ">=3.12"` in pyproject.toml, quoted in the "Run it" prerequisites.
     "3.12": "pyproject.toml requires-python",
+    # `uv run python -m evals.compare r26-pass/full full`: the paired deltas between the
+    # 2026-09-06 Sonnet column, parked under evals/results/r26-pass/ (gitignored), and the
+    # 2026-09-08 rerun of the same rules. The README uses them as the yardstick for what a
+    # rerun moves on its own. Neither column carries them, since the report has no row for
+    # a parked column.
+    "0.007": "evals.compare r26-pass/full full, paired outcome delta",
+    "0.013": "evals.compare r26-pass/full full, paired total delta",
 }
 
 # A run of digits, with optional thousands separators, decimal part, and percent sign.

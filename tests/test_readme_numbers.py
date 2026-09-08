@@ -47,7 +47,7 @@ def test_tokenizer_reads_the_shapes_the_readme_uses():
 
 def test_an_invented_number_fails(tmp_path, monkeypatch):
     check = _load()
-    readme = (ROOT / "README.md").read_text().replace("| 24.5 |", "| 24.7 |")
+    readme = (ROOT / "README.md").read_text().replace("| 24.2 |", "| 24.7 |")
     fake = tmp_path / "README.md"
     fake.write_text(readme)
     monkeypatch.setattr(check, "README", fake)
@@ -64,7 +64,7 @@ def test_identifiers_do_not_vouch_for_numbers():
     tokens = [token for token, _ in check.tokens_with_lines(check.strip_code(line))]
     assert tokens == ["0.91"]
     known = check.source_tokens()
-    for leaked in ("974", "85", "2026", "7", "9", "10"):
+    for leaked in ("974", "85", "2026", "65", "9"):
         assert leaked not in known, leaked
 
 
@@ -130,16 +130,36 @@ def _runs_rows() -> list[dict[str, str]]:
 def test_counts_the_readme_spells_out_match_the_report_rows():
     """The checker reads digits; these are the counts the Results reading writes in words."""
     rows = _runs_rows()
-    sonnet = [r for r in rows if r["provider"] == "anthropic"]
     nemotron = [r for r in rows if r["provider"] == "nvidia"]
-    readme = (ROOT / "README.md").read_text()
+    # Line breaks fall wherever the paragraph wraps, so the phrases are matched on one line.
+    readme = " ".join((ROOT / "README.md").read_text().split())
 
-    assert len(sonnet) == 30 and "Thirty of thirty Sonnet runs" in readme
-    rejected = [r for r in sonnet if r["stopped by"] == "report (validation failed)"]
-    assert len(rejected) == 9 and "nine of the thirty runs paid the 0.25" in readme
-    at_060 = [r for r in rejected if r["total"] == "0.60"]
-    assert len(at_060) == 2 and "left them at 0.60" in readme
-    assert len(rejected) - len(at_060) == 7 and "seven for a not-checked list" in readme
+    def sonnet(config: str) -> list[dict[str, str]]:
+        return [r for r in rows if r["provider"] == "anthropic" and r["config"] == config]
+
+    def rejected(config: str) -> list[dict[str, str]]:
+        return [r for r in sonnet(config) if r["stopped by"] == "report (validation failed)"]
+
+    full = sonnet("full")
+    assert len(full) == 30 and "Thirty of thirty Sonnet runs" in readme
+    assert len(rejected("full")) == 6 and "six of the thirty runs paid the 0.25" in readme
+    at_060 = [r for r in rejected("full") if r["total"] == "0.60"]
+    assert len(at_060) == 3 and "three for a negation" in readme and "left them at 0.60" in readme
+    assert len(rejected("full")) - len(at_060) == 3
+    assert "three for the report's lists of what it checked" in readme
+
+    assert len(sonnet("no-negation")) == 30 and len(rejected("no-negation")) == 10
+    assert "ten validation failures against six" in readme
+    assert len(sonnet("no-notchecked")) == 30 and len(rejected("no-notchecked")) == 4
+    assert "four validation failures against six" in readme
+
+    # The runs table's `receipts` column is the receipts weight (0.15) plus the not-checked
+    # weight (0.10), so a list the grader scored 0 shows as 0.15 or 0.00 there.
+    def false_lists(config: str) -> list[dict[str, str]]:
+        return [r for r in sonnet(config) if r["receipts"] in ("0.15", "0.00")]
+
+    assert len(false_lists("no-notchecked")) == 7 and len(false_lists("full")) == 0
+    assert "7 of 30 lists false without it, 0 of 30 with it" in readme
 
     unfiled = [r for r in nemotron if not r["stopped by"].startswith("report")]
     assert len(unfiled) == 18 and "eighteen of its thirty runs never filed" in readme
