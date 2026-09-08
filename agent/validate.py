@@ -38,8 +38,7 @@ against the tool log. Nothing in this module trusts a field the model wrote.
   was missing is itself checked against the log: a query that broke down on
   the subject contradicts `per_value`, one that broke down on it or calculated over it
   with a granularity contradicts `over_time` (a filter to one of its values
-  with a granularity reads that value over time rather than the column, and
-  the EDW-1367 after-pass had two entries rejected on exactly that), one that
+  with a granularity reads that value over time rather than the column), one that
   carried it in a breakdown, a filter, or a calculation with no other filter
   narrowing the traffic contradicts `outside_selection`, and one whose
   calculations already computed the named `measurement` contradicts
@@ -705,8 +704,8 @@ def _check_negation(
     satisfied by citing the evidence query twice, or by citing an unrelated
     ranking, which would make the receipts rule a formality.
 
-    One claimed dimension is enough. A live run reported three dimensions and
-    negated the deployment version alone, which is a real test of the claim, so
+    One claimed dimension is enough. A report that claims three dimensions and
+    negates the deployment version alone has made a real test of the claim, so
     requiring every dimension to be excluded would reject a correct report.
     """
     negation = hypothesis.negation
@@ -774,9 +773,9 @@ def _check_baseline(
 ) -> list[Issue]:
     """Both answers need the baseline, and for the same reason.
 
-    This used to be asked only of a report that said nothing happened, which
-    made denying an incident cost a query that asserting one did not. The
-    cheaper path was the one the code enforced. An incident is a claim that
+    Asking it only of a report that says nothing happened would make denying
+    an incident cost a query that asserting one does not, and the cheaper
+    path is the one a model takes. An incident is a claim that
     something changed, so it rests on what the level was beforehand exactly as
     a quiet window rests on the level holding steady.
 
@@ -787,12 +786,12 @@ def _check_baseline(
     One shape is checked, when the run window is known: a baseline_evidence
     entry whose run_query has a time range that lies entirely before or after
     the window has no rows from this run in it at all, whatever number it
-    returned. A live run cited "0% error rate for the 10 minutes before the
-    window" from a query that ended exactly when the window began, a period
-    this run has no rows for, so the baseline was a rate over an empty
-    population. `window_start` and `window_end` are optional, and the check
-    is skipped without both of them: the window is context the loop passes
-    in, not something every caller of this module has to supply.
+    returned. "0% error rate for the 10 minutes before the window" from a
+    query that ended exactly when the window began covers a period this run
+    has no rows for, so that baseline is a rate over an empty population.
+    `window_start` and `window_end` are optional, and the check is skipped
+    without both of them: the window is context the loop passes in, not
+    something every caller of this module has to supply.
     """
     issues = _check_ids(draft.baseline_evidence, index, "baseline_evidence")
     for candidate in draft.rejected_candidates:
@@ -1011,8 +1010,7 @@ def not_checked_scope_issues(not_checked: Sequence[str]) -> list[Issue]:
     different question, whether an entry says anything about the traffic,
     and only the validator asks it. An entry naming only instrumentation or
     trace-structure columns is rejected here, all such entries in one issue,
-    so the grader's score for a report is what it was before this check
-    existed.
+    so the grader's score for a report does not depend on this check.
     """
     out_of_scope = [
         entry

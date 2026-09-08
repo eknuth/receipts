@@ -44,7 +44,7 @@ from pydantic import ValidationError
 
 from agent import format as fmt
 from agent import validate
-from agent.mcp_client import HoneycombMCP, ToolNotAllowed
+from agent.mcp_client import HoneycombMCP, ToolNotAllowed, require_mcp_key
 from agent.providers.base import (
     Completion,
     Provider,
@@ -56,6 +56,7 @@ from agent.providers.base import (
 from agent.report import SCHEMA_REJECTION, Report, ReportDraft, ToolCall, submit_report_schema
 from agent.telemetry import RunTrace, disabled_run_trace
 from evals.pricing import cost_usd
+from gen.emit import require_ingest_key
 from receipts.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -266,7 +267,13 @@ async def build_tools(mcp: HoneycombMCP, config: AgentConfig) -> list[ToolSchema
     return tools
 
 
-def _make_provider(config: AgentConfig, settings: Settings) -> Provider:
+def make_provider(config: AgentConfig, settings: Settings) -> Provider:
+    """The provider `config.provider` names, built once per investigation.
+
+    Each provider checks for its own key at construction and raises a
+    ValueError naming the variable, so building one is also the check that
+    the key is there; `preflight` and `investigate` both rely on that.
+    """
     if config.provider == "anthropic":
         from agent.providers.anthropic import AnthropicProvider
 
@@ -283,6 +290,39 @@ def _make_provider(config: AgentConfig, settings: Settings) -> Provider:
         f"unknown provider {config.provider!r}; only 'anthropic', 'ollama', and 'nvidia' "
         "exist so far"
     )
+
+
+def preflight(settings: Settings, config: AgentConfig, *, emit: bool = False) -> list[str]:
+    """Every key an investigation will need that is missing, as messages.
+
+    No key is required on `Settings`, so a missing one would otherwise
+    surface at the point of use: after the emit, after the MCP session
+    opened, or as thirty `total=0` rows in an eval matrix. Both CLIs
+    (`agent/__main__.py` and `evals/run.py`) call this first and print
+    every message, so a stranger with the unfilled template learns all the
+    missing keys in one go. The checks are the same ones the code makes
+    later: building the provider is the provider's own key check, the MCP
+    key check is the one `_build_http_client` makes, without opening a
+    session, and `emit` adds the ingest key check `gen/emit.py` makes
+    before it builds a span. On the OAuth path the MCP key is not used;
+    the token check belongs to the caller that needs it.
+    """
+    problems: list[str] = []
+    if emit:
+        try:
+            require_ingest_key(settings)
+        except ValueError as exc:
+            problems.append(str(exc))
+    try:
+        make_provider(config, settings)
+    except ValueError as exc:
+        problems.append(str(exc))
+    if settings.honeycomb_auth == "key":
+        try:
+            require_mcp_key(settings)
+        except ValueError as exc:
+            problems.append(str(exc))
+    return problems
 
 
 async def investigate(
@@ -310,22 +350,23 @@ async def investigate(
     config = config or AgentConfig()
     settings = settings or Settings()
     trace = trace or disabled_run_trace(run.run_id)
+    # The provider is built before the MCP session is opened: a missing
+    # provider key raises here, and no session is spent finding that out.
+    provider = provider or make_provider(config, settings)
     if mcp is not None:
-        return await _investigate(run, config, settings, mcp, provider, clock, trace)
+        return await _investigate(run, config, mcp, provider, clock, trace)
     async with HoneycombMCP(settings=settings) as session:
-        return await _investigate(run, config, settings, session, provider, clock, trace)
+        return await _investigate(run, config, session, provider, clock, trace)
 
 
 async def _investigate(
     run: ScenarioRun,
     config: AgentConfig,
-    settings: Settings,
     mcp: HoneycombMCP,
-    provider: Provider | None,
+    provider: Provider,
     clock: Callable[[], float],
     trace: RunTrace,
 ) -> Report:
-    provider = provider or _make_provider(config, settings)
     budget = _Budget(
         max_calls=config.max_calls,
         max_wall_s=config.max_wall_s,

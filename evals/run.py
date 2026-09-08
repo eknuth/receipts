@@ -100,7 +100,14 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from agent.auth import OAuthNotAuthorized, require_oauth_provider
 from agent.board import BoardResult, ensure_board
 from agent.handoff import Handoff, hand_off
-from agent.loop import DEFAULT_MAX_CALLS, DEFAULT_MAX_WALL_S, AgentConfig, ScenarioRun, investigate
+from agent.loop import (
+    DEFAULT_MAX_CALLS,
+    DEFAULT_MAX_WALL_S,
+    AgentConfig,
+    ScenarioRun,
+    investigate,
+    preflight,
+)
 from agent.mcp_client import HoneycombMCP, TokenBucket
 from agent.providers.base import Provider
 from agent.report import Report, load_report
@@ -125,7 +132,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
 
 PROVIDERS: tuple[str, ...] = ("anthropic", "bedrock", "ollama", "nvidia")
 
-# The ollama provider's own wall budget default (R15, EDW-1337): 20 minutes
+# The ollama provider's own wall budget default: 20 minutes
 # rather than the 8 every other provider gets, because prompt eval on a 30
 # to 40k token context late in a run is the expected weak spot on local
 # hardware. Applied only when `--max-wall-s` was not given on the command
@@ -296,12 +303,12 @@ class GradedRun(BaseModel):
     wall_s: float
     max_wall_s: float = 0.0
     """The wall budget the run was given, copied from `Report.max_wall_s`. Default 0
-    for a `grade.json` written before this field existed, read by `evals/report.py`
-    as "not recorded" rather than a real zero-second budget."""
+    for an older `grade.json` without the field, read by `evals/report.py` as "not
+    recorded" rather than a real zero-second budget."""
     malformed_calls: int = 0
     """Tool calls a provider handed back with arguments that could not be parsed at
     all, copied from `Report.malformed_calls`. Zero both when none happened and for
-    a `grade.json` written before this field existed."""
+    an older `grade.json` without the field."""
     honeycomb_process_score: float | None
     honeycomb_process_passed: bool | None
 
@@ -611,9 +618,9 @@ class _SharedSessions:
         already says: Canvas needs a user actor and a management key has
         none (see `agent/auth.py`), but every read session this class opens
         (`__call__`, above) must stay on whatever `settings` actually
-        configures. Before this override, the only way to satisfy
-        `canvas_agent_invoke`'s precondition was to set
-        `HONEYCOMB_AUTH=oauth` for the whole process, which routed the
+        configures. Without this override, the only way to satisfy
+        `canvas_agent_invoke`'s precondition would be to set
+        `HONEYCOMB_AUTH=oauth` for the whole process, which routes the
         investigation's own read queries through OAuth too, running them as
         a person rather than the service identity `receipts/settings.py`
         says the eval matrix keeps using.
@@ -665,8 +672,8 @@ async def run_one(
     Canvas. Every failure in that sequence, including the write session
     itself failing to open or close, is caught here and never reaches the
     caller: a handoff is a bolt-on record next to an already-graded run,
-    never a reason to change or fail it. `_hand_off_cell` (R23, EDW-1370)
-    gets this same `telemetry` and `conversation_id`, so the handoff's own
+    never a reason to change or fail it. `_hand_off_cell` gets this same
+    `telemetry` and `conversation_id`, so the handoff's own
     trace lands in the same Agent Timeline conversation as the
     investigation that produced the report, as a second root span opened
     after this one has already ended (see `Telemetry.start_handoff`).
@@ -789,18 +796,18 @@ async def _hand_off_cell(
 
     `write_bucket` only matters when `open_write_mcp` is `None`: the
     fallback session built right below must still share the matrix's rate
-    limit, not start a fresh, disconnected `TokenBucket` of its own the way
-    an earlier version did. `run_matrix` always resolves `open_write_mcp`
+    limit, not start a fresh, disconnected `TokenBucket` of its own.
+    `run_matrix` always resolves `open_write_mcp`
     before a `--handoff` cell reaches here, so this fallback is normally
     exercised only by a caller that invokes `run_one` directly.
 
     The fallback is `_SharedSessions(write_bucket).write` itself, not a
-    second copy of what that method does: an earlier version duplicated its
-    body verbatim here, which left two places that had to agree on how a
-    write session is built and no way to stop them drifting apart.
+    second copy of what that method does: a duplicate body here would leave
+    two places that had to agree on how a write session is built and no way
+    to stop them drifting apart.
 
-    `telemetry`, `conversation_id`, `config_label`, and `provider` (R23,
-    EDW-1370) open a second root span, `invoke_agent canvas`
+    `telemetry`, `conversation_id`, `config_label`, and `provider` open a
+    second root span, `invoke_agent canvas`
     (`Telemetry.start_handoff`), sharing `conversation_id` with the
     investigation's own root so both land in the same Agent Timeline
     conversation; see `agent/telemetry.py`'s `start_handoff` for why this is
@@ -1256,6 +1263,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ValidationError as exc:
         missing = ", ".join(str(err["loc"][0]) for err in exc.errors())
         print(f"error: missing or invalid in .env: {missing}", file=sys.stderr)
+        return 2
+
+    # No key is required on Settings, since gen/emit.py runs with the ingest
+    # key alone. The keys the matrix needs are checked here, all at once and
+    # before anything is emitted or spent, by the same `preflight` the agent
+    # CLI uses; with --emit that includes the ingest key. Without this, a
+    # missing key would surface as thirty total=0 rows after the emit
+    # already ran. On the OAuth path preflight skips the MCP key; the OAuth
+    # token is checked below, and only when --handoff is given, since that
+    # is the one path that needs it.
+    problems = preflight(
+        settings, AgentConfig(provider=args.provider, model=args.model), emit=args.emit
+    )
+    if problems:
+        for problem in problems:
+            print(f"error: {problem}", file=sys.stderr)
         return 2
 
     if args.handoff:

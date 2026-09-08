@@ -1896,6 +1896,60 @@ def test_handoff_with_no_oauth_token_fails_fast_and_names_the_login_command(
     assert not (tmp_path / "results").exists()  # the matrix never started
 
 
+@pytest.mark.parametrize(
+    ("present", "flags", "missing"),
+    [
+        ({"HONEYCOMB_MCP_KEY": "fake-key-id:fake-secret"}, [], ["ANTHROPIC_API_KEY"]),
+        ({"ANTHROPIC_API_KEY": "fake-anthropic-key"}, [], ["HONEYCOMB_MCP_KEY"]),
+        (
+            {"HONEYCOMB_MCP_KEY": "fake-key-id:fake-secret"},
+            ["--provider", "nvidia"],
+            ["NVIDIA_API_KEY"],
+        ),
+        ({}, [], ["ANTHROPIC_API_KEY", "HONEYCOMB_MCP_KEY"]),
+        ({}, ["--emit"], ["HONEYCOMB_INGEST_KEY", "ANTHROPIC_API_KEY", "HONEYCOMB_MCP_KEY"]),
+        (
+            {"HONEYCOMB_MCP_KEY": "fake-key-id:fake-secret", "ANTHROPIC_API_KEY": "k"},
+            ["--emit"],
+            ["HONEYCOMB_INGEST_KEY"],
+        ),
+    ],
+)
+def test_a_missing_key_fails_before_the_matrix_starts(
+    tmp_path: Path,
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    present: dict[str, str],
+    flags: list[str],
+    missing: list[str],
+) -> None:
+    """No key is required on Settings, so a missing provider, MCP, or (with
+    --emit) ingest key must be caught by the runner's pre-flight: exit 2,
+    every missing variable named in one go, and no results directory, rather
+    than thirty total=0 rows after the emit.
+
+    The runner's `Settings()` reads the real .env at the repo root, which on
+    Ed's machine has every key, so it is pinned to the shell alone here."""
+    import functools
+
+    import evals.run as module
+
+    monkeypatch.setattr(module, "Settings", functools.partial(Settings, _env_file=None))
+    for name, value in present.items():
+        monkeypatch.setenv(name, value)
+    safe = ["--results-dir", str(tmp_path / "results"), "--runs-dir", str(tmp_path / "runs")]
+
+    assert main(["--scenarios", CONTROL, *flags, *safe]) == 2
+
+    err = capsys.readouterr().err
+    for name in missing:
+        assert name in err
+    assert err.count("error: ") == len(missing)
+    assert not (tmp_path / "results").exists()  # the matrix never started
+    assert not (tmp_path / "runs").exists()  # nothing was emitted
+
+
 def test_handoff_with_a_malformed_token_file_fails_the_same_clear_way_as_missing(
     tmp_path: Path,
     clean_env: None,

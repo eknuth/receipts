@@ -16,23 +16,21 @@ the `DEFAULT_DEADLINE_S` deadline expiring is a fact about this call,
 recorded on the `Handoff` and handed back, not a reason to fail the run that
 already produced the report being handed off.
 
-Both `canvas_agent_invoke` and `canvas_agent_poll_response` are new as of the
-management key gaining `mcp:write` on 2026-09-07 (see CLAUDE.md's Honeycomb
-facts and the R12 issue notes). Canvas itself needs an OAuth session, not the
+Both `canvas_agent_invoke` and `canvas_agent_poll_response` need `mcp:write`
+on the key (see CLAUDE.md's Honeycomb facts). Canvas itself needs an OAuth session, not the
 management key: `canvas_agent_invoke` under the key fails with
 `actor_user_hcid is required`, since a management key has no user actor
 (verified live 2026-09-07; `agent/auth.py` and `agent/mcp_client.py`'s
 `_open_streams` are what select OAuth). Both tools return JSON text, and both
 were captured live: `canvas_agent_invoke`'s success payload carries `status`,
 `investigation_id`, `investigation_url`, `session_id`, and
-`investigation_created` (a bool, new information over what Honeycomb's own
-docs describe); `canvas_agent_poll_response`'s completed payload carries
-`status` and the reply under `chat`, not `response` (an earlier draft of this
-module guessed `response` first and never saw `chat` at all, which would
-have read every real reply as empty). `_payload` and `_field` below still
+`investigation_created` (a bool Honeycomb's own docs do not describe);
+`canvas_agent_poll_response`'s completed payload carries `status` and the
+reply under `chat`, not `response`, and a reader that tried `response` first
+would take every real reply as empty. `_payload` and `_field` below still
 read that JSON a little defensively, in case a future server version adds a
 field under a different name, but `chat` is tried first for the reply and
-the rest of the candidate list is now a fallback rather than a guess.
+the rest of the candidate list is a fallback.
 Sanitized fixtures of both live captures are in `tests/fixtures/mcp/`.
 
 The `DEFAULT_DEADLINE_S` budget (300s) is spent as up to six polls:
@@ -44,15 +42,16 @@ four statuses (`completed`, `error`, `busy`, `running`) and the deadline
 expiring are each their own outcome on `Handoff.status`. `running` and any
 status the docs do not name are both repolled the same way: the server's
 long poll is documented to spend up to `wait_seconds` getting to a
-`running` answer, but nothing here trusts that claim, because a live run
-against a server that answered `running` instantly burned through a whole
-team-wide rate-limit window doing exactly that. The loop instead measures
+`running` answer, but nothing here trusts that claim: the server has
+answered `running` instantly, and a loop that repolled on every such answer
+would spend the team's whole rate-limit window doing so. The loop instead
+measures
 the elapsed time around the call (against the same injectable `clock`) and
 sleeps (through an injectable `sleep`, defaulting to `asyncio.sleep`) only
 what is left of `wait_seconds`, so the repoll rate stays capped regardless
 of whether the server actually held the connection.
 
-R23 (EDW-1370) gives `hand_off` an optional `trace` (a `RunTrace` from
+`hand_off` takes an optional `trace` (a `RunTrace` from
 `Telemetry.start_handoff`): both MCP calls this function makes go through
 `traced_call`, which wraps them in `RunTrace.tool_span`, the same
 `execute_tool` span shape `agent/loop.py`'s own calls get, so the exchange
@@ -78,13 +77,12 @@ from agent.telemetry import RunTrace, disabled_run_trace, traced_call
 
 logger = logging.getLogger(__name__)
 
-# The whole budget. The issue said 120 seconds, and a live run on 2026-09-07
-# showed that is not enough: handed a real report, the Canvas agent runs its
-# own investigation (schema discovery, a BubbleUp, a cart-size breakdown, a
-# trace) and took 182 seconds to answer. At 120 it timed out with the
-# investigation still running, which scores as no_response and reads as
-# Canvas having nothing to say, the opposite of what happened. 300 covers
-# that measurement with headroom. A smoke-test prompt still comes back in
+# The whole budget. Handed a real report, the Canvas agent runs its own
+# investigation (schema discovery, a BubbleUp, a breakdown, a trace) and has
+# taken 182 seconds to answer (measured 2026-09-07). A budget of 120 times
+# out with that investigation still running, which scores as no_response
+# and reads as Canvas having nothing to say, the opposite of what happened.
+# 300 covers the measurement with headroom. A smoke-test prompt still comes back in
 # seconds, since the loop returns on the first completed poll and does not
 # wait out the budget. Measured against `clock`, not wall-clock sleep, so a
 # test can exhaust it without waiting.
@@ -577,10 +575,10 @@ async def hand_off(
         # documented to hold the connection for `wait_seconds` on a
         # "running" reply, but nothing here measures that, and a fake (or a
         # real server under load) can answer "running" immediately; treating
-        # "running" as already having spent the wait, as an earlier version
-        # did, repolls as fast as this loop and the MCP client's own pacing
-        # allow, which burned through a whole team-wide rate-limit window
-        # this way (199 polls, 0 sleeps, in one 300s budget). Measuring the
+        # "running" as already having spent the wait repolls as fast as this
+        # loop and the MCP client's own pacing allow, which is enough to spend
+        # a whole team-wide rate-limit window inside one 300s budget.
+        # Measuring the
         # elapsed time around the call and sleeping the rest of `wait_seconds`
         # keeps the repoll rate capped regardless of what the server actually
         # honored. The deadline check at the top of the loop is still what

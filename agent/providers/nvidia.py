@@ -1,21 +1,18 @@
 """The NVIDIA provider: NVIDIA's hosted NIM endpoint, which speaks the OpenAI chat
 completions protocol, behind the `Provider` interface.
 
-History, 2026-09-06: a live smoke run against `moonshotai/kimi-k3`, tried
-first as the default, crashed after 4 MCP calls and 5 completions (about 40k
-input tokens in 55 seconds) with a 429 whose body was
+The default model is `nvidia/nemotron-3-super-120b-a12b`: eight back-to-back
+22k-token requests each come back 200 in about a second, and a tool probe
+returns a well-formed `run_query` call. Two other models on the same endpoint
+are not used. `moonshotai/kimi-k3` answers a short burst of requests (about
+40k input tokens in a minute) with a 429 whose body is
 `{"status":429,"title":"Too Many Requests"}` and no `Retry-After` header, and
-kept returning 429 to a 5-token request for over five minutes while other
-models on the same key answered 200. That is a per-model quota window, not
-the roughly 40 requests/minute limit the endpoint documents. The current
-default, `nvidia/nemotron-3-super-120b-a12b`, was verified on the same key
-the same day: eight back-to-back 22k-token requests each came back 200 in
-about a second, and a tool probe returned a well-formed `run_query` call
-with a UUID-style id (`call-7d69eddc-...`), the same `content: null` /
-`reasoning_content` shape kimi-k3 used. `deepseek-ai/deepseek-v4-pro-0813`
-was also tried and timed out at 120 seconds on every request, so it is not
-used either. `_post_with_retry` retries a 429 or a 5xx up to `_MAX_ATTEMPTS`
-times (six, sized to kimi-k3's five-minute quota window: 5s, 10s, 20s, 40s,
+keeps returning 429 to a 5-token request for over five minutes while other
+models on the same key answer 200: a per-model quota window, not the roughly
+40 requests/minute limit the endpoint documents. `deepseek-ai/deepseek-v4-pro-0813`
+times out at 120 seconds on every request. `_post_with_retry` retries a 429
+or a 5xx up to `_MAX_ATTEMPTS` times (six, sized to that five-minute quota
+window: 5s, 10s, 20s, 40s,
 60s, about 2.5 minutes total), doubling from `_INITIAL_BACKOFF_S` and capped
 at `_BACKOFF_CAP_S`, honouring a `Retry-After` header in seconds when the
 server sends one. A connection failure (`httpx2.TransportError`:
@@ -42,12 +39,11 @@ rather than the tool name, so there is no id-to-name map to rebuild on every
 request: a `ToolResultBlock.tool_use_id` becomes `tool_call_id` directly.
 
 Tool call ids come from the server, and their shape is not something to rely
-on: kimi-k3 (2026-09-06) handed back ids shaped like `run_query:0`, which
-repeat across separate completions in the same run rather than being unique
-for the life of the conversation; the current default,
-`nvidia/nemotron-3-super-120b-a12b`, instead handed back a UUID-style id
-(`call-7d69eddc-...`) on verification, with nothing yet observed about
-whether it ever repeats. Nothing in this module keys on an id across turns
+on: kimi-k3 hands back ids shaped like `run_query:0`, which repeat across
+separate completions in the same run rather than being unique for the life
+of the conversation; `nvidia/nemotron-3-super-120b-a12b` hands back a
+UUID-style id (`call-7d69eddc-...`), with nothing observed about whether it
+ever repeats. Nothing in this module keys on an id across turns
 either way (unlike `ollama.py`, which has to invent ids and track them
 because its native API gives none at all): each request carries its own
 tool_calls/tool-results pair in the right adjacency regardless of what the
@@ -66,8 +62,8 @@ answers it always carry the same id.
 
 A live response can also carry `content: null` on an assistant message that
 is all tool calls, and a `reasoning_content` field the neutral `Turn`/
-`Completion` shape does not model at all; both kimi-k3 (2026-09-06) and
-`nvidia/nemotron-3-super-120b-a12b` on verification used this shape. Text
+`Completion` shape does not model at all; both kimi-k3 and
+`nvidia/nemotron-3-super-120b-a12b` use this shape. Text
 comes back as `""` for the former. For the latter, `raw` on the assistant
 `Turn` is the whole response message dict, and echoing it back verbatim on
 the next request (the same

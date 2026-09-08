@@ -135,7 +135,7 @@ ARGUMENTS_TRUNCATE_CHARS = 2048
 RESULT_TRUNCATE_CHARS = 500
 
 # Canvas's reply is prose, not a tool result, and is worth more room on the
-# span than RESULT_TRUNCATE_CHARS gives a query result: R23, EDW-1370.
+# span than RESULT_TRUNCATE_CHARS gives a query result.
 REPLY_TRUNCATE_CHARS = 4096
 
 _TRUNCATION_SUFFIX = "...(truncated)"
@@ -374,7 +374,7 @@ async def traced_call(
     `mcp.call` the same way `agent/loop.py` line 504 onward does (CLAUDE.md:
     every call carries it), and the exception or the result recorded on the
     span. Shared here rather than duplicated in `agent/handoff.py` and
-    `agent/board.py` (R23, EDW-1370; both wrap `mcp.call` for tools the
+    `agent/board.py` (both wrap `mcp.call` for tools the
     model itself never calls, so neither goes through `agent/loop.py`'s own
     `call_tool`), which is also why this lives in this module instead of
     either of theirs: one place that knows how to turn an MCP call into a
@@ -793,25 +793,25 @@ class Telemetry:
     def start_handoff(
         self, run_id: str, *, conversation_id: str, config_label: str, provider: str
     ) -> RunTrace:
-        """Open `invoke_agent canvas` for one Canvas handoff (R23, EDW-1370).
+        """Open `invoke_agent canvas` for one Canvas handoff.
 
         A second root span, not a child of the investigation's own
         `invoke_agent receipts-investigator` span: by the time a handoff
         runs, `evals/run.py`'s `run_one` has already called `end_with_grade`
         (or `end_with_error`) on that span, closing it, so there is no open
-        parent left to attach to. The alternative (option 1 in the issue)
-        would instead move the handoff before that call, at the cost of
-        changing when the grade is written and stretching the investigation's
-        own root span by up to the handoff's budget (300s). `conversation_id`
-        is what keeps this span in the same Agent Timeline conversation as
-        the investigation that produced the report: `evals/run.py` passes the
-        exact id `start_run` was given for that run
-        (`f"{run_id}.{config_name}.{repeat}"`), not a new one. Checked live on
-        2026-09-07 rather than assumed (the Timeline has surprised this
-        project before: a `/` in a conversation id broke its Traces panel):
-        conversation `run-livecheck23.full.1`, two root spans sharing one
-        conversation id, rendered as one conversation with two agent lanes
-        (`receipts-investigator` and `canvas`), confirming option 2.
+        parent left to attach to. The alternative would be to move the
+        handoff before that call, at the cost of changing when the grade is
+        written and stretching the investigation's own root span by up to
+        the handoff's budget (300s). `conversation_id` is what keeps this
+        span in the same Agent Timeline conversation as the investigation
+        that produced the report: `evals/run.py` passes the exact id
+        `start_run` was given for that run
+        (`f"{run_id}.{config_name}.{repeat}"`), not a new one. Two root
+        spans sharing one conversation id render in Agent Timeline as one
+        conversation with a lane per agent (`receipts-investigator` and
+        `canvas`), checked live on 2026-09-07 rather than assumed, since a
+        `/` in a conversation id is enough to break the Timeline's Traces
+        panel.
 
         `run_id`, `config_label`, and `provider` land on the span as
         `receipts.run_id`, `receipts.config`, and `gen_ai.provider.name`, the

@@ -150,8 +150,10 @@ floor step landed, so it met the earlier prompt and validator. The run-by-run re
 ## Run it
 
 You need a Honeycomb ingest key, a management v2 key with `mcp:read` for the environment, an
-Anthropic API key, Python 3.12, and `uv`. Copy `.env.example` to `.env` and fill it in. The fourth command emits a fresh run per scenario and grades three repeats each, $16.25
-on Sonnet.
+Anthropic API key, Python 3.12, and `uv`. Copy `.env.example` to `.env`. The environment
+`HONEYCOMB_ENV` names, default `receipts-demo`, must already exist in your team.
+`trigger-checkout-latency` grades low unless your team has the trigger its scenario file's
+`trigger:` block describes. The fourth command emits and grades every scenario, $16.25 on Sonnet.
 
 ```
 uv sync
@@ -164,14 +166,13 @@ uv run python -m evals.report
 ## What it does not do
 
 - No memory across investigations: every run starts cold.
-- No spatial awareness of Canvas: the agent can put a board and a question there and cannot see
-  what is already laid out.
-- Synthetic traffic only: the incidents are scripted, so nothing here says how the agent does in
-  production.
-- One team's data model: everything assumes the shape of `receipts-shop`, one dataset with a known
-  set of columns.
-- Single agent: one loop, one investigation, no work claims, no awareness of other agents working
-  the same incident.
+- No spatial awareness of Canvas: the agent can post a board and a question, not see what is
+  already laid out.
+- Synthetic traffic only: scripted incidents say nothing about how it does in production.
+- One team's data model: everything assumes `receipts-shop`, one dataset with a known set of
+  columns.
+- Single agent: one loop, one investigation, no work claims, no awareness of others on the
+  incident.
 
 ## Credits
 
@@ -188,9 +189,9 @@ became the confidence levels here; holding a document became refusing a hypothes
 behind it.
 
 Receipts was built with Claude Code: an orchestrator session, an implementer subagent per issue on
-the issue's labeled model, and an adversarial review before every PR.
+its labeled model, and an adversarial review before every PR.
 `docs/agentic-workflow.md` reports what the transcripts show the work re-deriving by hand and what
-`.claude/` now carries so it stops, every number in it printed by `tools/usage_stats.py`.
+`.claude/` now carries so it stops, every number printed by `tools/usage_stats.py`.
 
 ## License
 

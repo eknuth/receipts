@@ -373,6 +373,17 @@ def test_emit_without_an_ingest_key_fails_clearly_before_sending_anything(
         E.emit(shrink("control-quiet", minutes=1, rps=1), settings, now_s=NOW)
 
 
+def test_emit_builds_settings_with_only_the_ingest_key(clean_env: None) -> None:
+    """The README's emit step is the second command a stranger runs. It needs
+    the ingest key and nothing from the agent's side of .env, so Settings must
+    load with that key alone."""
+    settings = Settings(_env_file=None, honeycomb_ingest_key="fake-ingest-key")
+    assert settings.honeycomb_mcp_key is None
+    assert settings.anthropic_api_key is None
+    assert settings.anthropic_workspace_id is None
+    assert E.require_ingest_key(settings) == "fake-ingest-key"
+
+
 def test_pacing_holds_the_submission_rate(monkeypatch: pytest.MonkeyPatch) -> None:
     """A thousand spans at 500 per second waits about two seconds in total."""
     clock = {"now": 0.0}

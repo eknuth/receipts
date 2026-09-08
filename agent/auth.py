@@ -2,8 +2,8 @@
 
 Canvas (`canvas_agent_invoke`) needs a user actor: a management key's call
 fails with `poodle investigation bind returned 400: actor_user_hcid is
-required`, verified live on 2026-09-07 (see CLAUDE.md's Honeycomb facts and
-the R12 issue notes). Every read-only path, including the whole eval matrix,
+required`, verified live on 2026-09-07 (see CLAUDE.md's Honeycomb facts).
+Every read-only path, including the whole eval matrix,
 keeps working under `HONEYCOMB_MCP_KEY`; OAuth is opt-in, selected by
 `Settings.honeycomb_auth = "oauth"`, and only ever needed for Canvas.
 
@@ -131,14 +131,13 @@ class FileTokenStorage(TokenStorage):
 
         `Path.write_text` on a file that does not exist yet creates it at
         the mode `open()`'s own default gives it, subject to the process
-        umask (0644 under a umask of 022): under that path an access token
-        sat world-readable for however long it took the `chmod` right after
-        to run. `os.open` with an explicit mode closes that window: a mode
-        of 0600 has no group or other bits for umask to fail to mask off,
-        so the file is owner-only from the instant it is created. The
-        `chmod` still runs afterward, for a file that already existed (from
-        before this fix, or from a version that ever loosens it) at some
-        other mode.
+        umask (0644 under a umask of 022), and a `chmod` right after leaves
+        the access token world-readable for the gap between the two calls.
+        `os.open` with an explicit mode closes that window: a mode of 0600
+        has no group or other bits for umask to fail to mask off, so the
+        file is owner-only from the instant it is created. The `chmod`
+        still runs afterward, for a file that already exists at some other
+        mode.
         """
         self._path.parent.mkdir(parents=True, exist_ok=True)
         text = json.dumps(data, indent=2)

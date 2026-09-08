@@ -26,3 +26,6 @@ tools/record/out/
 tools/record/remotion/public/
 tools/record/remotion/node_modules/
 tools/record/remotion/out/
+
+# Finder metadata
+.DS_Store

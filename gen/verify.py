@@ -12,10 +12,9 @@ The queries go through the hosted Honeycomb MCP (`agent/mcp_client.py`), which
 is what is already authenticated here, and they are scoped to `scenario.run_id`
 so two runs of the same scenario never contaminate each other.
 
-`run_query`'s `query_spec` takes its time bounds as `from`/`to`; a live check
-on 2026-09-04 found the hosted MCP now rejects the `start_time`/`end_time`
-names this file used to send, with an error naming the rename. Every query
-spec here uses `from`/`to`.
+`run_query`'s `query_spec` takes its time bounds as `from`/`to`; the hosted
+MCP rejects the `start_time`/`end_time` names with an error naming the rename
+(checked 2026-09-04). Every query spec here uses `from`/`to`.
 
 What is checked, per scenario class:
 
@@ -408,9 +407,8 @@ def full_population_query_spec(
     `where` names only `service.component`, which root spans do not carry a
     matching value for (every root span's own `service.component` is
     `"gateway"`, whatever service the fault names): ANDing it onto the usual
-    population query measures zero root spans instead of the whole run,
-    which is the bug a live run against `dependency-inventory-db-timeouts`
-    found (affected share came back 0.000 against a ground truth of 1.000).
+    population query measures zero root spans instead of the whole run, and
+    the affected share comes back 0.000 against a ground truth of 1.000.
 
     So the total counts root spans, scoped only to the run id, and the
     "inside" count is a real measurement of its own: every span the fault's
