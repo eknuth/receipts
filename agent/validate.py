@@ -6,8 +6,8 @@ against the tool log. Nothing in this module trusts a field the model wrote.
   Receipts. Every hypothesis carries at least one `run_query` that was made in
   this run, and, when negation is required, a query that was made in this run
   and that actually excluded one of the dimensions the hypothesis claims. A
-  range claim such as `cart.size: ">= 8"` is negated by its complementary
-  comparison (`cart.size < 8`) at the same bound, rather than by `!=`. Every
+  range claim such as `queue.depth: ">= 50"` is negated by its complementary
+  comparison (`queue.depth < 50`) at the same bound, rather than by `!=`. Every
   `query_id` in the report has to appear in the log against the tool that
   returned it.
 
@@ -135,14 +135,14 @@ _COLUMN_KEYS: frozenset[str] = frozenset({"column", "columns", "breakdowns", "gr
 _VALUE_KEYS: frozenset[str] = frozenset({"value", "values"})
 
 # The complementary comparison for each range operator: what negates a claim
-# of `>= 8` is `< 8` at the same bound, not `!=`. `RANGE_RE` (from
+# of `>= 50` is `< 50` at the same bound, not `!=`. `RANGE_RE` (from
 # `gen.topology`, the one definition of what a range value looks like) is
-# what tells a range claim like "cart.size: >= 8" apart from an exact one.
+# what tells a range claim like "queue.depth: >= 50" apart from an exact one.
 _COMPLEMENT_OP: dict[str, str] = {">=": "<", ">": "<=", "<=": ">", "<": ">="}
 
 # Identifier-shaped words inside a free-text `not_checked` entry. A match has
 # to carry a dot, an underscore, or a hyphen, which is what separates
-# `payments.charge`, `duration_ms`, and `us-west-2` from ordinary prose. A
+# `http.route`, `duration_ms`, and `shard-7` from ordinary prose. A
 # live run showed why: an entry reading "did not examine specific error
 # message text" was rejected for naming the `error` column, which it was not.
 _TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:[.\-][A-Za-z0-9_]+)+|[A-Za-z]+_[A-Za-z0-9_]+")
@@ -154,11 +154,11 @@ _QUOTED = re.compile(r"[`\"']\s*([A-Za-z_][A-Za-z0-9_.\-]*)\s*[`\"']")
 
 # Models write entries as "column - why it was not checked". The claim is the
 # subject, and the explanation after the separator names other columns as
-# context. A live run listed "deployment.version - did not break down
-# payments.charge by deployment version", which was true: the run never
-# queried the version. Reading every word of it flagged the entry for naming
-# `payments.charge`, a column the run did query but the entry never claimed
-# was unchecked. So the check reads the subject when there is one.
+# context. A live run listed an entry of the shape "shard.id - did not break
+# down http.route by shard", which was true: the run never queried the shard.
+# Reading every word of it flagged the entry for naming `http.route`, a
+# column the run did query but the entry never claimed was unchecked. So the
+# check reads the subject when there is one.
 _SUBJECT = re.compile(r"^(.*?)(?:\s+[-:]\s+|\s*:\s+)")
 
 
@@ -260,8 +260,8 @@ def excluded_columns(
     """The columns these calls filtered out, by any operator that excludes.
 
     With `dims`, a filter on a claimed dimension whose claimed value is a
-    numeric range (matches `RANGE_RE`, e.g. ">= 8") also counts when the
-    filter's operator is the complement at the same bound (`< 8`), even
+    numeric range (matches `RANGE_RE`, e.g. ">= 50") also counts when the
+    filter's operator is the complement at the same bound (`< 50`), even
     though `<` is not itself in `EXCLUDING_OPS`: the complement is what
     negates a range claim, the way `!=` negates an exact one. Plain values
     are unaffected. `dims` defaults to None, which is the old behaviour.
@@ -758,7 +758,7 @@ def _check_negation(
                 f"{label} negation query {negation.query_id!r} excludes {sorted(excluded)} and "
                 f"the claim rests on {sorted(claimed)}. Run the same measurement with a "
                 "!= or not-in on at least one of the dimensions in dims, or, for a range "
-                "value such as >= 8, the complementary comparison (< 8) at the same bound "
+                "value such as >= 50, the complementary comparison (< 50) at the same bound "
                 "on a column the query does not itself calculate over.",
             )
         ]
@@ -1060,17 +1060,17 @@ def _remainder_names_something_else(entry: str, named: Sequence[str]) -> bool:
     """True when what is left after `named` is stripped out still names its
     own column: an identifier-shaped token, or something quoted.
 
-    "cart.size, customer.id" with only `cart.size` queried leaves
-    "customer.id" behind, and that is a second name rather than a reading of
-    `cart.size`. Calling it a qualifier would send the model to
-    `partially_checked` to describe a reading of `cart.size` that was never
+    "http.route, db.statement.hash" with only `http.route` queried leaves
+    "db.statement.hash" behind, and that is a second name rather than a reading of
+    `http.route`. Calling it a qualifier would send the model to
+    `partially_checked` to describe a reading of `http.route` that was never
     claimed; the entry names two different things, and only one of them was
     queried.
 
     The remainder is computed over `_subject_text(entry)`, the same text
-    `_candidates` read `named` from, not the whole entry: "cart.size - broke
-    down but did not compare values below 8 on P99(duration_ms)" has a
-    subject of just "cart.size", and the explanation naming
+    `_candidates` read `named` from, not the whole entry: "http.route - broke
+    down but did not compare one route against another on P99(duration_ms)" has a
+    subject of just "http.route", and the explanation naming
     "P99(duration_ms)" is context, the same way `_has_qualifier` already
     reads it as one.
     """
@@ -1090,10 +1090,10 @@ def partially_checked_issues(
     case-insensitively; a subject that fails this is `partially_checked_false`
     and the check goes no further for that entry. When the subject does fail
     that check but names a column that terms does contain (a qualified
-    subject such as "cart.size < 8", where "cart.size" was in fact queried),
+    subject such as "queue.depth < 50", where "queue.depth" was in fact queried),
     the message points at that column instead of at `not_checked`: sending it
     there would only bounce back here, since `not_checked_issues` recognizes
-    "cart.size" in the entry and tells the model to move it to
+    "queue.depth" in the entry and tells the model to move it to
     `partially_checked`.
 
     Passing the membership check is not enough: `subject` also has to be a
