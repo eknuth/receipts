@@ -1,4 +1,4 @@
-.PHONY: install lint test
+.PHONY: install lint test video
 
 install:
 	uv sync
@@ -10,3 +10,7 @@ lint:
 
 test:
 	uv run pytest
+
+# The three-minute recording: one emit, one investigation, ffmpeg. See tools/record/build.py.
+video:
+	uv run python tools/record/build.py
