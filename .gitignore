@@ -29,3 +29,6 @@ tools/record/remotion/out/
 
 # Finder metadata
 .DS_Store
+
+# wrangler state and cache from the site deploy
+.wrangler/
