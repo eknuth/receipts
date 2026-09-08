@@ -1,49 +1,51 @@
-# Voice-over for the recording
+# Voice-over, technical in plain words
 
-Read against `tools/record/out/receipts-demo-2026-09.mp4`. Times are where each
-segment starts in the silent cut; the exact figures print at the end of `make video`.
-Record as one audio file (QuickTime, File, New Audio Recording, or Voice Memos),
-then `uv run python tools/record/build.py --assemble --voice <file>`.
+Same segments and start times as before. The technical names stay; each one gets a
+short plain clause the first time it appears.
 
-**0:00 title, 5 s (11 words).** Any agent can explain what went wrong. This one
-proves it.
+**0:00 title, 5 s (13 words).** An agent can explain why production broke. This one
+has to prove it.
 
-**0:05 architecture, 10 s (21 words).** Four pieces: a generator, a hosted MCP, the
-agent with its model, and a grader. The agent sees one dataset, receipts-shop.
+**0:05 architecture, 10 s (26 words).** Four parts. A generator that injects faults
+into a fake shop. Honeycomb, over its hosted MCP. The agent. And a grader that holds
+the answer key.
 
-**0:15 emit, 45 s (77 words).** The system under investigation is synthetic, so the
-root cause is a file. This scenario adds about 800 milliseconds to Stripe charges on
-version 2.5.1 in us-west-2, starting at minute ten. eu-west-1 has been slow on the
-database since minute zero. That one is the red herring. The emitter backdates twenty
-minutes of traffic, ninety thousand spans, in under a minute, and prints the run id.
-That run id is the only thing the agent is told.
+**0:15 emit, 45 s (87 words).** The shop is synthetic, so the root cause is written
+in a file before anything runs. This scenario: version 2.5.1 rolls out to us-west-2,
+and Stripe charges gain about 800 milliseconds from minute ten. There is a decoy too.
+eu-west-1 has been slow on its database since minute zero, and that is old news, not
+the incident. The emitter backdates twenty minutes of traffic, ninety thousand spans,
+into Honeycomb in under a minute and prints a run id. That run id is all the agent is
+told.
 
-**1:00 heatmap, 12 s (21 words).** In Honeycomb, scoped to the run id, the step is at
-minute ten. That is what the agent has to find.
+**1:00 heatmap, 12 s (23 words).** In Honeycomb, a heatmap of request duration for that
+run id. The step at minute ten is what the agent has to find.
 
-**1:12 investigation, about 58 s (113 words).** It follows Honeycomb's own playbook:
-orient, characterize, BubbleUp, traces, verify by negation. Every call goes through a
-client that only allows read tools and paces itself under the hosted limit.
+**1:12 investigation, about 58 s (117 words).** The agent runs Honeycomb's own
+playbook. Orient: learn the columns. Characterize: find where the latency steps.
+BubbleUp: ask which attributes the slow requests share. Then a trace, to see which span
+carries the time. Every call is a read over the hosted MCP, paced under the rate limit.
 
 > Stage direction, not read: the loop's quiet two minutes play at seven times speed for
-> about twenty seconds here. Pause, then resume when the report scrolls in.
+> about twenty seconds here. Keep talking through it if the lines above run long; pick
+> up the next line when the report scrolls in.
 
-Then the report. The top hypothesis names the three dimensions
-and the slow span, at high confidence. Under it, the evidence: each line is a query
-that ran, with its permalink. Then the negation query, the same population
-with the finding excluded. Then the list of what was in scope and never checked. The
-validator drops any hypothesis that lacks a query id or a negation that ran. If the
-not-checked list names anything the tool log shows was queried, the report fails.
+Then the report. The top hypothesis names the version, the region, and the payment
+provider, plus the slow span, at high confidence. Under it, each claim cites the query
+that ran, with a link. Then the negation query: everything outside that population
+stayed fast. Then the not-checked list, the attributes it never queried. A claim with
+no query behind it, or no negation, never makes it into the report.
 
-**2:10 Agent Timeline, 8 s (20 words).** The same run in Agent Timeline, with a second lane: the investigator handing its report to Canvas, Honeycomb's own agent.
+**2:10 Agent Timeline, 8 s (20 words).** The agent traces its own loop, so Honeycomb
+shows it as a timeline. Here it hands its report to Canvas.
 
-**2:18 a graded run, 8 s (20 words).** The harness writes the grade onto the run's own
-root span, so a run and its score are one thing.
+**2:18 a graded run, 8 s (21 words).** Under the eval harness the grade is written onto
+the run's root span. The run and its score are one record.
 
-**2:26 tables, 16 s (41 words).** Ten scenarios, three repeats, two models. On
-Sonnet, all thirty top hypotheses were right, or called no incident. The second model
-passes Honeycomb's evaluator on every run and scores under 0.5 here on twenty-five.
-That column argues for grading the answer.
+**2:26 tables, 16 s (40 words).** Ten scripted incidents, three repeats, two models.
+Sonnet named the right cause thirty times out of thirty. The second model passed
+Honeycomb's process evaluator on every run and scored under 0.5 here on twenty-five.
+Grade the answer, not the steps.
 
-**2:42 end card, 6 s (12 words).** Every hypothesis cites its evidence. A confident
+**2:42 end card, 6 s (12 words).** Every hypothesis carries its receipts. A confident
 wrong answer costs the most.
