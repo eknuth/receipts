@@ -397,9 +397,9 @@ def _describe_query_spec(args: dict[str, Any] | None) -> str:
     breakdowns = spec.get("breakdowns") or []
     breakdown_str = ", ".join(breakdowns) if breakdowns else "none"
 
-    # The hosted MCP names the bounds `from` and `to` (it renamed them from
-    # `start_time` and `end_time` on 2026-09-04); the old names still render
-    # so tool logs recorded before then read the same.
+    # The hosted MCP names the bounds `from` and `to`. Stored tool logs from
+    # before the server renamed them carry `start_time` and `end_time`, and
+    # those still render so every log reads the same.
     if spec.get("from") or spec.get("to"):
         time_range = f"{spec.get('from', '?')}..{spec.get('to', '?')}"
     elif spec.get("start_time") or spec.get("end_time"):

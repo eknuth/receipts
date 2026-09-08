@@ -51,10 +51,10 @@ def _coerce_json_container(
 ) -> Any:
     """Accept a JSON-encoded string in place of a list or a dict.
 
-    A live run had a model call `submit_report` with `hypotheses` as the
-    JSON text of a list (`'[{"claim": ...}]'`) rather than a list. The call
-    budget was already spent by the time that was rejected, so an
-    investigation that had found the answer filed nothing. This decodes a
+    A model can call `submit_report` with `hypotheses` as the JSON text of a
+    list (`'[{"claim": ...}]'`) rather than a list, and by the time that is
+    rejected the call budget is spent, so an investigation that found the
+    answer files nothing. This decodes a
     string field before pydantic's own type check runs, but only when it
     parses as JSON and the result is the container the field expects; any
     other string, or JSON that decodes to the wrong shape (an object where a

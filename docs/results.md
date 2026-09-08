@@ -137,3 +137,27 @@ uv run python -m evals.compare r18-pass/full full
 The two run commands write to `evals/results/full/`, so run the second with `--results-dir` pointing
 somewhere else and copy its `full/` directory in beside the first as `evals/results/full-nvidia/`.
 The report keys columns by provider when more than one is present.
+
+## Server behaviors the client works around
+
+Facts about the hosted Honeycomb MCP and Agent Timeline that shaped the client code, with the
+date each was checked. CLAUDE.md's "Honeycomb facts" holds the rest.
+
+- 2026-09-04: `run_query`'s `query_spec` takes its time bounds as `from` and `to`. The older
+  `start_time` and `end_time` names are rejected with an error naming the rename. Stored tool
+  logs from before the rename carry the old names, and `agent/format.py` renders both.
+- 2026-09-04: `run_bubbleup` takes no `dataset_slug`. A client guard that requires one refuses
+  every real call, so `agent/mcp_client.py` scopes it by provenance instead: the `query_pk` or
+  `bubbleup_result_id` has to be one this session received from a guarded query.
+- 2026-09-04: a BubbleUp group selection needs both the column's JSON type for the value and a
+  source query that broke down on that column. Either one missing fails with the same
+  `failed to calculate group indices` message, so the client's error hint adds both facts.
+- 2026-09-07: Agent Timeline breaks its Traces panel on a `/` in `gen_ai.conversation.id`. Two
+  root spans that share one conversation id render as one conversation with a lane per agent,
+  which is how the Canvas handoff sits next to the investigation that produced the report.
+- 2026-09-07: `canvas_agent_poll_response` can answer `running` at once instead of holding the
+  long poll for `wait_seconds`. A loop that trusts the documented wait repolls as fast as the
+  client's pacing allows and spends the team's rate-limit window inside one handoff budget, so
+  `agent/handoff.py` measures the elapsed time around each poll and sleeps the remainder.
+- 2026-09-07: `list_boards` returns a Markdown table with no URL column, so a board found by name
+  carries `board_url=None`; only a freshly created board gets a url back from `create_board`.

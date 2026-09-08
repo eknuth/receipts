@@ -1,11 +1,11 @@
 """The Ollama provider: the native `/api/chat` endpoint behind the `Provider` interface.
 
-Verified live on this machine 2026-09-02 and again during R15's smoke test
-against `qwen3.8:27b` on `http://localhost:11434`: about 14 tokens/second
-generation, an 11 second cold load, and a well-formed `run_query` tool call
-back with `think: false`. The expected weak spot is prompt eval on a late-run
-30 to 40k token context, which is why the loop's wall budget for this
-provider defaults to 20 minutes instead of 8 (see `evals/run.py`).
+Measured on this machine against `qwen3.8:27b` on `http://localhost:11434`
+(2026-09-02): about 14 tokens/second generation, an 11 second cold load, and
+a well-formed `run_query` tool call back with `think: false`. The expected
+weak spot is prompt eval on a late-run 30 to 40k token context, which is why
+the loop's wall budget for this provider defaults to 20 minutes instead of 8
+(see `evals/run.py`).
 
 Message shapes, read from Ollama's docs and checked against the live server:
 
