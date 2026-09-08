@@ -53,7 +53,14 @@ from agent.providers.base import (
     ToolUse,
     Turn,
 )
-from agent.report import SCHEMA_REJECTION, Report, ReportDraft, ToolCall, submit_report_schema
+from agent.report import (
+    SCHEMA_REJECTION,
+    Report,
+    ReportDraft,
+    ToolCall,
+    current_schema_hash,
+    submit_report_schema,
+)
 from agent.telemetry import RunTrace, disabled_run_trace
 from evals.pricing import cost_usd
 from gen.emit import require_ingest_key
@@ -751,6 +758,7 @@ class _RunState:
             "coerced_fields": coerced_fields,
             "malformed_calls": self.malformed_calls,
             "error": error,
+            "schema_hash": current_schema_hash(),
         }
         if draft is None:
             return Report(**process)

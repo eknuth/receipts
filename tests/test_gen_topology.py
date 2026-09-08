@@ -606,3 +606,57 @@ def test_a_red_herring_burst_only_fires_inside_its_window() -> None:
 def _median(values: list[float]) -> float:
     ordered = sorted(values)
     return ordered[len(ordered) // 2]
+
+
+# --------------------------------------------------------------------------
+# value_domain and selects: which rows a value picks out
+# --------------------------------------------------------------------------
+
+
+def test_the_cart_size_domain_is_exactly_one_to_twelve() -> None:
+    assert topology.value_domain("cart.size") == frozenset(str(n) for n in range(1, 13))
+
+
+@pytest.mark.parametrize(
+    "column",
+    ["customer.id", "db.statement.hash", "duration_ms", "deployment.version", "http.route", "no"],
+)
+def test_only_a_numeric_range_column_has_a_domain(column: str) -> None:
+    assert column not in topology.NUMERIC_RANGE_DIMS
+    assert topology.value_domain(column) is None
+
+
+BIG_CARTS = frozenset({8, 9, 10, 11, 12})
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (">=8", BIG_CARTS),
+        ("> 7", BIG_CARTS),
+        ("8+", BIG_CARTS),
+        ("8-12", BIG_CARTS),
+        ("8 to 12", BIG_CARTS),
+        ("8..12", BIG_CARTS),
+        ("8, 9, 10, 11, 12", BIG_CARTS),
+        ("8, 9, 10, 11, or 12", BIG_CARTS),
+        ("in [8, 9, 10, 11, 12]", BIG_CARTS),
+        ("{8, 9, 10, 11, 12}.", BIG_CARTS),
+        ("9", frozenset({9})),
+        ("8-13", frozenset({8, 9, 10, 11, 12, 13})),
+        (">=13", frozenset()),
+        ("<8", frozenset({1, 2, 3, 4, 5, 6, 7})),
+        ("12-8", None),
+        ("8, nine", None),
+        ("large", None),
+    ],
+)
+def test_selects_reads_every_spelling_the_same_way(
+    value: str, expected: frozenset[int] | None
+) -> None:
+    assert topology.selects("cart.size", value) == expected
+
+
+def test_selects_is_none_off_the_domain() -> None:
+    assert topology.selects("duration_ms", ">=8") is None
+    assert topology.selects("cloud.region", "us-west-2") is None

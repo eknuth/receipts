@@ -20,6 +20,7 @@ from agent.validate import validate_draft
 from evals.grader import (
     WEIGHTS,
     Grade,
+    _satisfies,
     arithmetic,
     dims_jaccard,
     grade,
@@ -387,19 +388,162 @@ def test_a_quiet_report_with_no_baseline_query_has_no_receipts() -> None:
 @pytest.mark.parametrize(
     ("reported", "expected"),
     [
-        ({"cart.size": "9"}, 1.0),
         ({"cart.size": ">=8"}, 1.0),
         ({"cart.size": " >= 8 "}, 1.0),
-        ({"cart.size": "8"}, 1.0),
+        # A single value inside the range is a subset of it since 2026-09-08:
+        # `9` claims one cart size and `>=8` claims five. No stored cell
+        # wrote a single number, so no grade moved.
+        ({"cart.size": "9"}, 0.0),
+        ({"cart.size": "8"}, 0.0),
         ({"cart.size": "3"}, 0.0),
         ({"cart.size": ">8"}, 0.0),
         ({"cart.size": "large"}, 0.0),
     ],
 )
-def test_a_range_dim_is_satisfied_by_a_value_inside_it(
+def test_a_range_dim_is_satisfied_by_the_same_rows(
     reported: dict[str, str], expected: float
 ) -> None:
     assert dims_jaccard(reported, {"cart.size": ">=8"}) == expected
+
+
+# --------------------------------------------------------------------------
+# 2026-09-08: a spelled-out set that is the range's rows is the range
+# --------------------------------------------------------------------------
+
+TRIGGER = load_scenario("trigger-checkout-latency")
+CART_SIZE_RANGE = {"cart.size": ">=8"}
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "8-12",
+        "8 - 12",
+        "8 to 12",
+        "8..12",
+        "8, 9, 10, 11, 12",
+        "8,9,10,11,12",
+        "8, 9, 10, 11, or 12",
+        "8, 9, 10, 11, and 12",
+        "8, 9, 10, 11 and 12",
+        "in [8, 9, 10, 11, 12]",
+        "[8, 9, 10, 11, 12]",
+        "{8, 9, 10, 11, 12}",
+        "(8, 9, 10, 11, 12)",
+        ">7",  # a range is held to the same test: 8 to 12 on this column
+        "> 7",
+        ">=8",
+        "8+",
+        "8, 9, 10, 11, 12.",  # a trailing full stop or comma is dropped
+        "8, 9, 10, 11, 12,",
+    ],
+)
+def test_a_set_that_is_exactly_the_ranges_rows_matches_the_range(spelling: str) -> None:
+    """Cart sizes run 1 to 12, so every one of these is the rows `>=8` selects."""
+    assert dims_jaccard({"cart.size": spelling}, CART_SIZE_RANGE) == 1.0
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "8, 9",  # a subset claims a narrower population
+        "7, 8, 9, 10, 11, 12",  # a superset claims a wider one
+        "8-13",  # 13 is not a cart size, so this is not the domain's rows
+        ">=7",  # a different range: it takes 7 too
+        ">8",  # and this one drops 8
+        "<=12",  # every cart size, so a wider claim
+        ">=13",  # no cart size at all: empty never matches
+        "8, nine",  # a token that is not a number
+        "12-8",  # backwards is not a span
+        "7+",  # `7+` is `>=7`
+        "8\u201312",  # an en dash is not read
+        "eight to twelve",  # nor is prose
+    ],
+)
+def test_a_set_that_is_not_the_ranges_rows_does_not_match(spelling: str) -> None:
+    assert dims_jaccard({"cart.size": spelling}, CART_SIZE_RANGE) == 0.0
+
+
+def test_a_set_spelling_on_a_column_with_no_domain_does_not_match() -> None:
+    """Without a fixed value set there is no way to know what rows `8-12` is."""
+    assert dims_jaccard({"customer.id": "8-12"}, {"customer.id": ">=8"}) == 0.0
+    assert dims_jaccard({"duration_ms": "8, 9, 10"}, {"duration_ms": ">=8"}) == 0.0
+
+
+def test_a_range_on_a_column_with_no_domain_falls_back_to_the_same_spelling() -> None:
+    """`>7` is `>=8` only when the values between are known. On `duration_ms`
+    they are not, so the old rule holds: same operator, same bound, or a
+    single number inside the range."""
+    assert dims_jaccard({"duration_ms": ">=8"}, {"duration_ms": ">=8"}) == 1.0
+    assert dims_jaccard({"duration_ms": ">= 8"}, {"duration_ms": ">=8"}) == 1.0
+    assert dims_jaccard({"duration_ms": ">7"}, {"duration_ms": ">=8"}) == 0.0
+    assert dims_jaccard({"duration_ms": "9"}, {"duration_ms": ">=8"}) == 1.0
+
+
+def test_satisfies_without_a_column_reads_no_set_and_keeps_the_same_spelling() -> None:
+    """The two-argument path every caller before 2026-09-08 used."""
+    assert _satisfies("8-12", ">=8") is False
+    assert _satisfies(">=8", ">=8") is True
+    assert _satisfies(">7", ">=8") is False
+    assert _satisfies("9", ">=8") is True
+
+
+def test_a_set_spelling_is_not_read_when_the_truth_is_not_a_range() -> None:
+    assert dims_jaccard({"cart.size": "8-12"}, {"cart.size": "8"}) == 0.0
+    assert dims_jaccard({"cloud.region": "us-west-2, us-east-1"}, TRUE_DIMS) == 0.0
+
+
+def trigger_report(cart_size: str) -> Report:
+    """A report shaped like the two Sonnet cells of 2026-09-08 on the trigger
+    scenario: right span, incident, onset, evidence, and a `not-in` negation
+    over the cart sizes named, with the population written as `cart_size`."""
+    log = [
+        ToolCall(name="get_workspace_context", args={}),
+        query_call(
+            "Q1",
+            breakdowns=["cart.size"],
+            filters=[{"column": "name", "op": "=", "value": "checkout.process"}],
+        ),
+        query_call(
+            "Q2",
+            filters=[
+                {"column": "cart.size", "op": "not-in", "value": [8, 9, 10, 11, 12]},
+                {"column": "name", "op": "=", "value": "checkout.process"},
+            ],
+        ),
+        query_call("Q3"),
+    ]
+    top = hypothesis(
+        claim="checkout.process got slow for big carts",
+        dims={"cart.size": cart_size, "name": "checkout.process"},
+        slow_or_failing_span="checkout.process",
+        evidence=[Evidence(query_id="Q1", summary="P99 jumps for cart.size 8 and up")],
+        negation=Evidence(query_id="Q2", summary="P99 flat for the rest"),
+    )
+    return report(
+        scenario_id=TRIGGER.id,
+        hypotheses=[top],
+        not_checked=["customer.id", "http.route"],
+        tool_log=log,
+    )
+
+
+@pytest.mark.parametrize("cart_size", ["8-12", "8, 9, 10, 11, 12", "8, 9, 10, 11, or 12"])
+def test_the_trigger_cells_that_spelled_the_range_out_grade_as_right(cart_size: str) -> None:
+    """Before this rule these three cells graded dims 0 and paid the confident-wrong
+    penalty, 0.15 in total, for the same answer every other trigger cell gave as `>=8`."""
+    result = grade(trigger_report(cart_size), TRIGGER, window_start=WINDOW_START)
+    assert result.components.dims == 1.0
+    assert result.top_wrong is False
+    assert result.penalties.calibration == 0.0
+    assert result.total == 1.0
+    assert result.total == grade(trigger_report(">=8"), TRIGGER, window_start=WINDOW_START).total
+
+
+def test_a_subset_on_the_trigger_scenario_is_still_confident_wrong() -> None:
+    result = grade(trigger_report("8, 9"), TRIGGER, window_start=WINDOW_START)
+    assert result.components.dims == 0.0
+    assert result.penalties.calibration == -0.5
 
 
 def test_jaccard_counts_missing_and_spurious_pairs_the_same() -> None:
@@ -689,6 +833,12 @@ def test_process_fields_are_copied_through_not_recomputed() -> None:
     assert result.process.tokens_out == 3
     assert result.process.wall_s == 1.5
     assert result.process.tool_calls == 4
+
+
+def test_the_schema_hash_is_carried_into_the_grade() -> None:
+    """So a results reader can tell cells from different `submit_report` schemas apart."""
+    assert grade_synthetic(report(schema_hash="56f5f961a8cb")).process.schema_hash == "56f5f961a8cb"
+    assert grade_synthetic(report()).process.schema_hash is None
 
 
 def test_honeycomb_passes_a_run_that_only_oriented_and_queried_a_p99() -> None:
